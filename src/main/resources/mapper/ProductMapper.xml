@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!-- namespace 必须指向你的 Mapper 接口全类名 -->
+<mapper namespace="org.example.takeout.mapper.ProductMapper">
+    <!-- 我们的 SQL 就会写在这里 -->
+    <select id="listMerchantProducts" resultType="org.example.takeout.Product.VO.MerchantProductVO">
+        SELECT
+        p.id,
+        p.name AS productName,
+        p.price,
+        p.stock,
+        p.status,
+        p.description,
+        p.image_url AS imageUrl,
+        c.name AS categoryName
+        FROM product p
+        LEFT JOIN category c ON p.category_id = c.id
+        <where>
+            <!-- 必须满足的条件 -->
+            p.merchant_id = #{merchantId}
+            AND p.is_deleted = 0
+
+            <!-- 动态条件：如果传了 status，则按状态查 -->
+            <if test="status != null">
+                AND p.status = #{status}
+            </if>
+
+            <!-- 动态条件：如果传了 categoryId，则按分类查 -->
+            <if test="categoryId != null">
+                AND p.category_id = #{categoryId}
+            </if>
+        </where>
+    </select>
+
+    <update id="restoreDeletedProduct" >
+        UPDATE product_table
+        SET is_delete = 0
+        WHERE id = #{id}
+        AND merchant_id = #{merchantId}
+        AND is_delete != 0   <!-- 确保只恢复已删除的商品，is_delete 为非0时间戳 -->
+    </update>
+</mapper>
