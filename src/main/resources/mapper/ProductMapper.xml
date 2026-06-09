@@ -3,42 +3,44 @@
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 
 <!-- namespace 必须指向你的 Mapper 接口全类名 -->
-<mapper namespace="org.example.takeout.mapper.ProductMapper">
-    <!-- 我们的 SQL 就会写在这里 -->
-    <select id="listMerchantProducts" resultType="org.example.takeout.Product.VO.MerchantProductVO">
-        SELECT
-        p.id,
-        p.name AS productName,
-        p.price,
-        p.stock,
-        p.status,
-        p.description,
-        p.image_url AS imageUrl,
-        c.name AS categoryName
-        FROM product p
-        LEFT JOIN category c ON p.category_id = c.id
-        <where>
-            <!-- 必须满足的条件 -->
-            p.merchant_id = #{merchantId}
-            AND p.is_deleted = 0
+<mapper namespace="org.example.takeout.Product.Mapper.ProductMapper">
+<select id="listMerchantProducts" resultType="org.example.takeout.Product.VO.MerchantProductVO">
+    SELECT
+    p.id,
+    p.product_name AS productName,
+    p.price,
+    p.stock,
+    p.status,
+    p.description,
+    p.image_url AS imageUrl,
+    c.name AS categoryName
+    FROM product p
+    LEFT JOIN category c ON p.category_id = c.id
+    <where>
+        p.merchant_id = #{merchantId}
+        AND p.is_deleted = 0
 
-            <!-- 动态条件：如果传了 status，则按状态查 -->
-            <if test="status != null">
-                AND p.status = #{status}
-            </if>
+        <if test="status != null">
+            AND p.status = #{status}
+        </if>
 
-            <!-- 动态条件：如果传了 categoryId，则按分类查 -->
-            <if test="categoryId != null">
-                AND p.category_id = #{categoryId}
-            </if>
-        </where>
-    </select>
+        <if test="categoryId != null">
+            AND p.category_id = #{categoryId}
+        </if>
+    </where>
+</select>
 
-    <update id="restoreDeletedProduct" >
-        UPDATE product_table
-        SET is_delete = 0
-        WHERE id = #{id}
-        AND merchant_id = #{merchantId}
-        AND is_delete != 0   <!-- 确保只恢复已删除的商品，is_delete 为非0时间戳 -->
+    <update id="restoreDeletedProduct">
+        UPDATE product p1
+        SET p1.is_deleted = 0
+        WHERE p1.id = #{id}
+          AND p1.merchant_id = #{merchantId}
+          AND p1.is_deleted != 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM (SELECT product_name, merchant_id FROM product WHERE is_deleted = 0) p2
+          WHERE p2.name = p1.name
+            AND p2.merchant_id = p1.merchant_id
+      )
     </update>
 </mapper>
