@@ -92,11 +92,22 @@ public class OrderDomainService {
     //NOTE:计算金额方法
     BigDecimal calculateTotalAmount(@NonNull List<CartItem> cartItems, Map<Long, Product> productMap) {
         return cartItems.stream().
-                filter(cartItem -> cartItem.getProductId() != null && cartItem.getQuantity() != null).
-                filter(cartItem -> productMap.get(cartItem.getProductId()) != null)
-                .map(item -> productMap.
-                        get(item.getProductId()).getPrice().
-                        multiply(new BigDecimal(item.getQuantity())))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+                //peek 的语义是“检查/观察”：它的设计初衷是在不改变流中元素的情况下，对元素进行某种动作
+                        //换句话说，这里只是在做防御性校验，数据本身不会在这里被转换
+                peek(cartItem -> {
+                    if (cartItem.getProductId()==null||cartItem.getQuantity()==null){
+                        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"计价失败：购物车明细数据不完整");
+                    }
+                })
+                .map(item -> {
+                    Product product = productMap.get(item.getProductId());
+                    if (product==null){
+                        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "计价失败：商品信息不存在或已下架");
+                    }
+                    if (product.getPrice()==null){
+                        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "计价失败：系统检测到异常商品价格，请联系客服");
+                    }
+                    return product.getPrice().multiply(BigDecimal.valueOf(item.getQuantity()));
+                }).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 }

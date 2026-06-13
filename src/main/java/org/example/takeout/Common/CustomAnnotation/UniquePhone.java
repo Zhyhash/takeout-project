@@ -14,4 +14,6 @@ public @interface UniquePhone {
     String message()default "手机号已经被绑定";
     Class<?>[] groups() default {};
     Class<? extends Payload>[] payload() default {};
+
+    String targetTable() default "user";
 }

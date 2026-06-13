@@ -9,6 +9,7 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
+import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.CategoryVO;
 import org.example.takeout.Merchant.VO.MerchantDetailVO;
@@ -17,7 +18,6 @@ import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.Product.VO.ProductVO;
-import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
@@ -37,22 +37,11 @@ public class MerchantQueryService {
     private ProductMapper productMapper;
     @Autowired
     private CategoryMapper categoryMapper;
+    @Autowired
+    private MerchantConverter merchantConverter;
     //NOTE:抽取方法，将Merchant->MerchantListVO
     public PageInfo<MerchantListVO> toMerchantListVO(List<Merchant> merchants){
-
-        List<MerchantListVO> list = merchants.stream().map(merchant -> {
-            MerchantListVO merchantListVO = new MerchantListVO();
-            BeanUtils.copyProperties(merchant, merchantListVO);
-            return merchantListVO;
-        }).toList();
-
-        //NOTE:第二次提醒，这里不能直接赋值list喵，list已经不是PageInfo对象了喵，要使用下面的方法转换
-        PageInfo<Merchant> originPageInfo = new PageInfo<>(merchants);
-        PageInfo<MerchantListVO> resultPageInfo = new PageInfo<>();
-        BeanUtils.copyProperties(originPageInfo, resultPageInfo);
-        resultPageInfo.setList(list);
-
-        return resultPageInfo;
+        return merchantConverter.toPageInfoVO(new PageInfo<>(merchants));
     }
     //NOTE:用户查询店铺（限制页面/翻页限制）
     public PageInfo<MerchantListVO> listMerchants(Integer pageNum, Integer pageSize,String merchantName,Integer status){
@@ -72,8 +61,7 @@ public class MerchantQueryService {
             return null;
         }
 
-        MerchantDetailVO merchantDetailVO = new MerchantDetailVO();
-        BeanUtils.copyProperties(merchant, merchantDetailVO);
+        MerchantDetailVO merchantDetailVO = merchantConverter.toMerchantDetailVO(merchant);
 
         // 1. 抽取转换逻辑，将 Map 转为 List<CategoryVO>
         List<CategoryVO> categoryVOs = convertToCategoryVOList(categoryProductMap);
@@ -119,11 +107,7 @@ public class MerchantQueryService {
 
                     // 核心提取逻辑保持不变
                     List<ProductVO> productVOs = products.stream()
-                            .map(product -> {
-                                ProductVO pVo = new ProductVO();
-                                BeanUtils.copyProperties(product, pVo);
-                                return pVo;
-                            })
+                            .map(product -> merchantConverter.toProductVO(product))
                             .collect(Collectors.toList());
 
                     categoryVO.setProducts(productVOs);

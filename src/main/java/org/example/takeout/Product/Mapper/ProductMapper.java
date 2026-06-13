@@ -3,6 +3,7 @@ package org.example.takeout.Product.Mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.VO.MerchantProductVO;
 
@@ -19,4 +20,7 @@ public interface ProductMapper extends BaseMapper<Product> {
 
     Integer restoreDeletedProduct(@Param("id") Long id,
                               @Param("merchantId") Long merchantId);
+
+    @Update("UPDATE product SET stock = stock + #{quantity} WHERE id = #{productId}")
+    int increaseStock(@Param("productId") Long productId, @Param("quantity") Integer quantity);
 }

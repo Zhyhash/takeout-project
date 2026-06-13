@@ -25,40 +25,46 @@ public class JwtInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
-        if (AuthPathMatcher.isPublicPath(request)) {
-            return true;
-        }
-
-        String authorization = request.getHeader("Authorization");
-        if (authorization == null || !authorization.startsWith("Bearer ")) {
-            throw new AuthException("token不存在或无效，请登录");
-        }
-        if (authorization.length() == 7) {
-            throw new AuthException("token不能为空");
-        }
-
-        String token = authorization.substring(7);
-        Claims claims;
         try {
-            claims = jwtUtils.parseToken(token);
-        } catch (JwtException | IllegalArgumentException ex) {
-            throw new AuthException("token不存在或无效，请登录");
+            if (AuthPathMatcher.isPublicPath(request)) {
+                return true;
+            }
+
+            String authorization = request.getHeader("Authorization");
+            if (authorization == null || !authorization.startsWith("Bearer ")) {
+                throw new AuthException("token不存在或无效，请登录");
+            }
+            if (authorization.length() == 7) {
+                throw new AuthException("token不能为空");
+            }
+
+            String token = authorization.substring(7);
+            Claims claims;
+            try {
+                claims = jwtUtils.parseToken(token);
+            } catch (JwtException | IllegalArgumentException ex) {
+                throw new AuthException("token不存在或无效，请登录");
+            }
+
+            String role = claims.get("role", String.class);
+            Long id = extractId(claims.get("id"));
+            String path = AuthPathMatcher.normalizePath(request);
+
+            assertRoleAllowed(path, role);
+
+            if (AuthRole.MERCHANT.equals(role)) {
+                MerchantContextHolder.setMerchantId(id);
+            } else if (AuthRole.USER.equals(role)) {
+                UserContextHolder.setUserId(id);
+            } else {
+                throw new AuthException("token角色无效");
+            }
+            return true;
+        } catch (RuntimeException e) {
+            UserContextHolder.clear();
+            MerchantContextHolder.clear();
+            throw e;
         }
-
-        String role = claims.get("role", String.class);
-        Long id = extractId(claims.get("id"));
-        String path = AuthPathMatcher.normalizePath(request);
-
-        assertRoleAllowed(path, role);
-
-        if (AuthRole.MERCHANT.equals(role)) {
-            MerchantContextHolder.setMerchantId(id);
-        } else if (AuthRole.USER.equals(role)) {
-            UserContextHolder.setUserId(id);
-        } else {
-            throw new AuthException("token角色无效");
-        }
-        return true;
     }
 
     private static void assertRoleAllowed(String path, String role) {
@@ -80,7 +86,7 @@ public class JwtInterceptor implements HandlerInterceptor {
         if (idObj instanceof String str && !str.isBlank()) {
             return Long.parseLong(str);
         }
-        throw new AuthException("token载荷无效");
+        throw new AuthException("token过期或无效");
     }
 
     @Override

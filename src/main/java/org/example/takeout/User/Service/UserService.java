@@ -1,7 +1,6 @@
 package org.example.takeout.User.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import org.example.takeout.Common.CustomAnnotation.PasswordMatches;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
@@ -20,7 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 import static org.example.takeout.Common.Utils.Tool.Random.random;
 
 @Service
-@PasswordMatches//检验密码是否正确
 public class UserService {
     @Autowired
     private UserMapper userMapper;

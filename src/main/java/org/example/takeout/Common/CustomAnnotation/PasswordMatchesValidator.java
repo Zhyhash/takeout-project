@@ -6,17 +6,16 @@ import org.example.takeout.User.DTO.RegisterDTO;
 import org.springframework.stereotype.Component;
 
 @Component
-public class PasswordMatchesValidator implements ConstraintValidator<PasswordMatches, RegisterDTO> {
-
+public class PasswordMatchesValidator implements ConstraintValidator<PasswordMatches, PasswordMatchable> {
 
     @Override
-    public boolean isValid(RegisterDTO registerDTO, ConstraintValidatorContext constraintValidatorContext) {
-        if (registerDTO==null) {
+    public boolean isValid(PasswordMatchable dto, ConstraintValidatorContext context) {
+        if (dto == null) {
             return true;
         }
-        if (registerDTO.getPassword()==null||registerDTO.getPassword().isEmpty()) {
-            return true;
+        if (dto.getPassword() == null || dto.getConfirmPassword() == null) {
+            return false;
         }
-        return registerDTO.getPassword().equals(registerDTO.getConfirmPassword());
+        return dto.getPassword().equals(dto.getConfirmPassword());
     }
 }

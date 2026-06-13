@@ -18,6 +18,9 @@ public class CartVO {
 
     private BigDecimal subtotal;//临时计算字段
 
+    private Boolean available = true;        // 默认 true，兼容旧逻辑
+    private String disableReason;            // 不可用原因："商家打烊"、"商品已下架"等
+
 
 
 }

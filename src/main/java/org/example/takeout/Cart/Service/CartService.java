@@ -1,6 +1,7 @@
 package org.example.takeout.Cart.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Cart.DTO.DeleteDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Cart.Entity.CartItem;
@@ -13,23 +14,31 @@ import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.Merchant.Entity.Merchant;
+import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
+import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 public class CartService {
     @Autowired
     private CartMapper cartMapper;
     @Autowired
     private ProductMapper productMapper;
-
+    @Autowired
+    private MerchantMapper merchantMapper;
+    @Autowired
+    private cartDomainService cartDomainService;
     //添加
     public CartVO add(AddCartDTO addCartDTO) {
         // 1. 校验商品是否存在
@@ -113,83 +122,142 @@ public class CartService {
         cartVO.setQuantity(cartItem.getQuantity());
 
         // 计算小计：单价 * 数量 (假设价格类型为 BigDecimal)
-        if (cartItem.getPrice() != null) {
-            cartVO.setSubtotal(cartItem.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity())));
+        if (cartItem.getPrice() == null || cartItem.getQuantity() == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"价格或数量为空");
         }
+        cartVO.setSubtotal(cartItem.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity())));
         return cartVO;
     }
 
 
     //修改某一个商品的数量
+    @Transactional(rollbackFor = Exception.class)
     public CartVO update(UpdateCartDTO updateCartDTO) {
-        //查看DTO传入数据是否合法
-        if (updateCartDTO.getQuantityChange()!=1 && updateCartDTO.getQuantityChange()!=-1)
+        // 1. 参数校验：只允许 +1 或 -1
+        if (updateCartDTO.getQuantityChange() != 1 && updateCartDTO.getQuantityChange() != -1) {
             throw new AuthException("参数不合法");
-        //查询数据库的购物车记录
-        CartItem cartItem = cartMapper.selectOne(Wrappers.<CartItem>lambdaQuery().
-                eq(CartItem::getId, updateCartDTO.getCartItemId()).
-                eq(CartItem::getUserId,UserContextHolder.getUserId()));
+        }
+
+        // 2. 查询购物车记录（带用户ID，防止越权）
+        CartItem cartItem = cartMapper.selectOne(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getId, updateCartDTO.getCartItemId())
+                .eq(CartItem::getUserId, UserContextHolder.getUserId()));
         if (cartItem == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"这个要修改的项目不存在");
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车商品不存在");
         }
-        Integer quantity = cartItem.getQuantity();
-        //如果存量<=1且修改量为-1，直接物理删除
-        if (quantity <= 1&&updateCartDTO.getQuantityChange()==-1) {
+
+        // 3. 校验商家状态（打烊则不可修改）
+        Merchant merchant = merchantMapper.selectById(cartItem.getMerchantId());
+        if (merchant == null || Objects.equals(merchant.getStatus(), MerchantStatusEnum.BUSINESS_CLOSED.getCode())) {
+            // 注意：这里不删除购物车记录，只抛异常。前端收到这个错误码后应主动刷新购物车列表
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "该商家已打烊，无法修改");
+        }
+
+        // 4. 校验商品状态
+        Product product = productMapper.selectById(cartItem.getProductId());
+        if (product == null || !Objects.equals(product.getStatus(), ProductStatusEnum.ON_SALE.getCode())) {
+            // 同样不删除，只抛异常。前端刷新列表时会自动清理这条失效记录
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品已下架或不存在");
+        }
+
+        // 5. 计算新数量
+        int oldQuantity = cartItem.getQuantity();
+        int change = updateCartDTO.getQuantityChange();
+        int newQuantity = oldQuantity + change;
+
+        // 6. 如果新数量 <= 0，物理删除（此时所有前置校验已通过，事务安全）
+        if (newQuantity <= 0) {
             cartMapper.deleteById(cartItem.getId());
-            // 组装一个数量为 0 的 VO 给前端，方便前端直接做行删除的动画
-            CartVO cartVO = getCartVO(cartItem);
-            cartVO.setQuantity(0);
-            cartVO.setSubtotal(BigDecimal.ZERO);
-            return cartVO;
-        }else  {
-            Product product = productMapper.selectById(cartItem.getProductId());
-            if (product == null) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在或已下架");
-            }
-            // 注意：购物车数量 +1 后的总量不能超过库存
-            if (quantity + 1 > product.getStock()) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存不足，当前库存：" + product.getStock());
-            }
-            cartItem.setQuantity(updateCartDTO.getQuantityChange()+quantity);
-            cartMapper.updateById(cartItem);
+            // 返回一个数量为0的VO，让前端做删除动画
+            CartVO emptyVO = getCartVO(cartItem);
+            emptyVO.setQuantity(0);
+            emptyVO.setSubtotal(BigDecimal.ZERO);
+            return emptyVO;
         }
+
+        // 7. 如果是在增加数量，需要校验库存上限
+        if (change == 1 && newQuantity > product.getStock()) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "库存不足，当前库存：" + product.getStock());
+        }
+
+        // 8. 执行更新
+        cartItem.setQuantity(newQuantity);
+        cartMapper.updateById(cartItem);
+
+        // 9. 返回更新后的VO
         return getCartVO(cartItem);
     }
 
+
     public CartListVO list() {
-        // 1. 直接查询出 CartItem 列表
+        Long userId = UserContextHolder.getUserId();
+
         List<CartItem> cartItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
-                .eq(CartItem::getUserId, UserContextHolder.getUserId()));
-
-        // 2. 判空处理
+                .eq(CartItem::getUserId, userId));
         if (cartItems == null || cartItems.isEmpty()) {
-
-            CartListVO cartListVO = new CartListVO();
-            cartListVO.setItems(new ArrayList<>());
-            cartListVO.setTotalAmount(BigDecimal.ZERO);
-
-            return cartListVO;
+            return emptyCartListVO();
         }
 
-        List<CartVO> list = new ArrayList<>();
+        // 批量查询商品和商家
+        List<Long> productIds = cartItems.stream().map(CartItem::getProductId).distinct().toList();
+        List<Long> merchantIds = cartItems.stream().map(CartItem::getMerchantId).distinct().toList();
+
+        Map<Long, Product> productMap = productMapper.selectList(Wrappers.<Product>lambdaQuery()
+                        .in(Product::getId, productIds))
+                .stream().collect(Collectors.toMap(Product::getId, p -> p));
+        Map<Long, Merchant> merchantMap = merchantMapper.selectList(Wrappers.<Merchant>lambdaQuery()
+                        .in(Merchant::getId, merchantIds))
+                .stream().collect(Collectors.toMap(Merchant::getId, m -> m));
+
+        // 分类收集
+        List<CartVO> allItems = new ArrayList<>();
         BigDecimal totalAmount = BigDecimal.ZERO;
+        List<Long> toDeleteIds = new ArrayList<>();
 
-        // 将两个循环合并为一个，一边转换，一边计算总价
-        for (CartItem cartItem : cartItems) {
-            CartVO cartVO = getCartVO(cartItem);
-            list.add(cartVO);
+        for (CartItem item : cartItems) {
+            Product product = productMap.get(item.getProductId());
+            Merchant merchant = merchantMap.get(item.getMerchantId());
 
-            if (cartVO.getSubtotal() != null) {
-                totalAmount = totalAmount.add(cartVO.getSubtotal());
+            boolean productValid = (product != null && ProductStatusEnum.ON_SALE.getCode().equals(product.getStatus()));
+            boolean merchantOpen = (merchant != null && !MerchantStatusEnum.BUSINESS_CLOSED.getCode().equals(merchant.getStatus()));
+
+            // 商品无效 → 删除（不加入列表）
+            if (!productValid) {
+                toDeleteIds.add(item.getId());
+                continue;
             }
+
+            CartVO vo = getCartVO(item);
+            // 商品有效但商家打烊 → 标记为不可用
+            if (!merchantOpen) {
+                vo.setAvailable(false);
+                vo.setDisableReason("商家已打烊");
+            } else {
+                vo.setAvailable(true);
+                // 只有可用商品才计入总价
+                totalAmount = totalAmount.add(vo.getSubtotal());
+            }
+            allItems.add(vo);
         }
 
-        // 4. 组装返回对象
-        CartListVO cartListVO = new CartListVO();
-        cartListVO.setItems(list);
-        cartListVO.setTotalAmount(totalAmount);
+        // 删除无效商品记录
+        if (!toDeleteIds.isEmpty()) {
+            cartMapper.deleteBatchIds(toDeleteIds);
+        }
 
-        return cartListVO;
+        CartListVO result = new CartListVO();
+        result.setItems(allItems);
+        result.setTotalAmount(totalAmount);
+        return result;
+    }
+
+    // 辅助方法：返回空购物车
+    private CartListVO emptyCartListVO() {
+        CartListVO empty = new CartListVO();
+        empty.setItems(Collections.emptyList());
+        empty.setTotalAmount(BigDecimal.ZERO);
+        return empty;
     }
     public void delete(DeleteDTO deleteDTO) {
         if (deleteDTO.getCartItemIds() == null || deleteDTO.getCartItemIds().isEmpty()) {

@@ -38,8 +38,11 @@
           AND p1.is_deleted != 0
       AND NOT EXISTS (
           SELECT 1
-          FROM (SELECT product_name, merchant_id FROM product WHERE is_deleted = 0) p2
-          WHERE p2.name = p1.name
+          FROM FROM (SELECT product_name, merchant_id
+      FROM product
+      WHERE is_deleted = 0
+        AND merchant_id = #{merchantId}) p2
+          WHERE p2.product_name = p1.product_name
             AND p2.merchant_id = p1.merchant_id
       )
     </update>

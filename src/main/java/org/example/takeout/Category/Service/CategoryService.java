@@ -96,7 +96,8 @@ public class CategoryService {
     public CreateCategoryVO createCategory(String categoryName){
         Category oldCategory = categoryMapper.selectOne(Wrappers.<Category>lambdaQuery().
                 eq(Category::getMerchantId, MerchantContextHolder.getMerchantId()).
-                eq(Category::getCategoryName, categoryName));
+                eq(Category::getCategoryName, categoryName).
+                eq(Category::getStatus,CategoryStatusEnum.ACTIVE));
         if (oldCategory != null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"已经有重复分类，无法创建");
         }

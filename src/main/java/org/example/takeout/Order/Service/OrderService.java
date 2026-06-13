@@ -2,10 +2,12 @@ package org.example.takeout.Order.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.conditions.update.LambdaUpdateChainWrapper;
+import com.baomidou.mybatisplus.extension.toolkit.Db;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.Cart.Service.cartDomainService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
@@ -30,10 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -54,6 +53,8 @@ public class OrderService {
     private MerchantMapper merchantMapper;
     @Autowired
     private OrderConvertor orderConvertor;
+    @Autowired
+    private cartDomainService cartDomainService;
     //NOTE:这里的数据很多，我在这里额外提醒
     //购物车 cartItems 是什么？->这是：“用户想买什么”,这是“用户的购买意图”
     //比如productId = 1，quantity = 2，但是并不可信，数据随时会变
@@ -73,50 +74,75 @@ public class OrderService {
 
 
     @Transactional(rollbackFor = Exception.class)
-    public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO){
+    public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO) {
         Long userId = UserContextHolder.getUserId();
-        List<CartItem> cartItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
-                .eq(CartItem::getUserId, userId));
-        if (cartItems == null || cartItems.isEmpty()){
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车为空，五创建订单");
+
+        // 1. 获取可用购物车（内部已校验商品/商家状态）
+        List<CartItem> availableCartItems = cartDomainService.getAvailableCartItems(userId);
+        if (availableCartItems == null || availableCartItems.isEmpty()) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车为空，无法创建订单");
         }
-        Long merchantId = cartItems.get(0).getMerchantId();
+
+        // 2. 防脏数据：过滤多商家情况
+        Set<Long> merchantIds = availableCartItems.stream()
+                .map(CartItem::getMerchantId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (merchantIds.size() != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车包含多个商家的商品，请清空后重试");
+        }
+        Long merchantId = merchantIds.iterator().next();
+
+        // 3. 既然 getAvailableCartItems 已经校验过商家，直接通过 MP 查出商家名称用于赋值
         Merchant merchant = merchantMapper.selectById(merchantId);
         if (merchant == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家不存在");
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商家不存在");
         }
-        //拿到map快速查询
-        Map<Long, Product> productMap = orderDomainService.getAndCheckProducts(cartItems);
-        //计算金额
-        BigDecimal totalAmount = orderDomainService.calculateTotalAmount(cartItems, productMap);
 
+        // 4. 批量查询商品信息（用于计算价格和组装订单项）
+        List<Long> productIds = availableCartItems.stream().map(CartItem::getProductId).toList();
+        Map<Long, Product> productMap = productMapper.selectBatchIds(productIds).stream()
+                .collect(Collectors.toMap(Product::getId, p -> p));
+
+        // 5. 计算金额
+        BigDecimal totalAmount = orderDomainService.calculateTotalAmount(availableCartItems, productMap);
+
+        // 6. 组装并保存订单主表
         Order order = new Order();
-        //order赋值
-
         order.setUserId(userId);
         order.setOrderNo(orderDomainService.createOrderNo());
         order.setMerchantId(merchantId);
         order.setMerchantName(merchant.getMerchantName());
         order.setTotalAmount(totalAmount);
-        //TODO:为了扩展性，这里需要修改的，不能让他直接一个0在这里，shit，怎么感觉又要修数据库了
-        order.setDiscountAmount(BigDecimal.ZERO);
-
+        order.setOriginalAmount(totalAmount);
+        order.setDiscountAmount(BigDecimal.ZERO); // TODO: 留作后续扩展
 
         orderConvertor.toOrder(createOrderDTO, order);
+        order.setStatus(OrderStatusEnum.WAIT_PAY.getCode());
 
-        order.setStatus(OrderStatusEnum.WAIT_PAY.getCode());//未支付
+        // 使用 MP 插入订单
         orderMapper.insert(order);
 
-        List<OrderItem> orderItems = cartItems.stream().map(cartItem -> {
+        // 7. 循环处理商品：逻辑校验、内存更新、组装详情
+        List<OrderItem> orderItems = new ArrayList<>();
+        List<Product> productsToUpdate = new ArrayList<>();
+
+        for (CartItem cartItem : availableCartItems) {
             Product product = productMap.get(cartItem.getProductId());
-            // 顺便在这里拦截下库存
-            //TODO:记得并发问题
-            if (product.getStock() < cartItem.getQuantity())
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存不足");
+            if (product == null) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
+            }
 
-            //扣库存
+            // 基础业务逻辑校验
+            if (product.getStock() < cartItem.getQuantity()) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品 [" + product.getProductName() + "] 库存不足");
+            }
+
+            // 纯业务逻辑修改：更新内存中的库存对象
             product.setStock(product.getStock() - cartItem.getQuantity());
+            productsToUpdate.add(product);
 
+            // 组装订单详情从表
             OrderItem item = new OrderItem();
             item.setOrderId(order.getId());
             item.setProductId(product.getId());
@@ -124,18 +150,18 @@ public class OrderService {
             item.setProductPrice(product.getPrice());
             item.setQuantity(cartItem.getQuantity());
             item.setSubtotal(product.getPrice().multiply(new BigDecimal(cartItem.getQuantity())));
-            return item;
-        }).toList();
-        //插入数据
-        orderItems.forEach(orderItemMapper::insert);
+            orderItems.add(item);
+        }
 
-        //删除购物车
-        cartMapper.deleteBatchIds(cartItems.stream().map(CartItem::getId).toList());
+        // 8. 统一使用 MP 的 Db 静态工具类进行批量数据库持久化
+        // 批量更新商品库存
+        Db.updateBatchById(productsToUpdate);
+        // 批量插入订单详情
+        Db.saveBatch(orderItems);
 
-        order.setOriginalAmount(totalAmount);
-        order.setDiscountAmount(BigDecimal.ZERO);
+        // 9. 清理购物车
+        cartMapper.deleteBatchIds(availableCartItems.stream().map(CartItem::getId).toList());
 
-        //返回值
         return orderVOBuilder.toCreateOrderVO(order);
     }
 
@@ -235,12 +261,9 @@ public class OrderService {
             // 【核心修改点 4】防御高并发冲突！
             // 绝对不能在 Java 中计算 product.setStock(stock + quantity) 再 updateById！
             // 必须使用 MyBatis-Plus 的 LambdaUpdateChainWrapper 或者是手写 SQL 实现原子自增：
-            boolean updateSuccess = new LambdaUpdateChainWrapper<>(productMapper)
-                    .eq(Product::getId, item.getProductId())
-                    .setSql("stock = stock + {0}" + item.getQuantity()) // SQL 层面的原子操作，自带行锁
-                    .update();
 
-            if (!updateSuccess) {
+            int i = productMapper.increaseStock(item.getProductId(), item.getQuantity());
+            if (i!=1) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"归还库存失败，商品可能处于异常状态");
             }
         }

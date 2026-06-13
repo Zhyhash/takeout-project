@@ -2,6 +2,7 @@ package org.example.takeout.Order.Enums;
 
 import lombok.Getter;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 
 @Getter
 public enum OrderStatusEnum {
@@ -27,7 +28,7 @@ public enum OrderStatusEnum {
                 return status;
             }
         }
-        throw new BusinessException("订单状态非法");
+        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单状态非法");
     }
 
     public boolean canCancel() {

@@ -3,6 +3,7 @@ package org.example.takeout.Merchant.Controller;
 import jakarta.validation.Valid;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
+import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Service.MerchantService;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
@@ -20,6 +21,11 @@ public class MerchantControllerSold {
     
     @Autowired
     private MerchantService merchantService;
+    @PostMapping("/register")
+    public Result<?> register(@Valid  @RequestBody MerchantRegisterDTO dto){
+        merchantService.register(dto);
+        return Result.success("success");
+    }
 
     /**
      * 商家登录

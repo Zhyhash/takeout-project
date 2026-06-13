@@ -141,7 +141,7 @@ public class ProductService {
         //如果完全没有影响数据库
         //TODO：事实上我们没有解决重名问题：如果删除的商品里面有和已有的商品重名，数据库会报出主键唯一异常
         if (rows == 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在或不属于商家");
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在、无权限或存在名称冲突");
         }
     }
 }

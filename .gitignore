@@ -13,7 +13,3 @@ logs/
 .DS_Store
 Thumbs.db
 
-# 临时文件（你这次用到的）
-project_code.txt
-src/test/
-*.md
