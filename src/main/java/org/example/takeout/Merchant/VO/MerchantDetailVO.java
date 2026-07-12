@@ -14,5 +14,5 @@ public class MerchantDetailVO {
     private LocalTime openingTime;
     private LocalTime closingTime;
     private Integer status;
-    private List<CategoryVO> categories;
+    private List<MerchantDetailCategoryVO> categories;
 }

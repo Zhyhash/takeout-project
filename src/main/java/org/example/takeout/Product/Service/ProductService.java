@@ -6,6 +6,7 @@ import com.github.pagehelper.PageInfo;
 import jakarta.validation.constraints.NotNull;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
+import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
@@ -45,7 +46,8 @@ public class ProductService {
     public MerchantProductVO createProduct(@NonNull CreateProductDTO createProductDTO) {
         Category category = categoryMapper.selectOne(Wrappers.<Category>lambdaQuery().
                 eq(Category::getId, createProductDTO.getCategoryId()).
-                        eq(Category::getMerchantId, MerchantContextHolder.getMerchantId()));
+                eq(Category::getMerchantId, MerchantContextHolder.getMerchantId()).
+                eq(Category::getStatus, CategoryStatusEnum.ACTIVE.getCode()));
         if (category == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"种类不存在");
         }
@@ -55,10 +57,14 @@ public class ProductService {
     }
 
     //NOTE:上架商品
+    @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO onShelf(Long productId){
         //查询商品
         Product product = getProduct(productId);
         // 不存在则抛 BusinessException
+        if (product == null){
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"不存在该商品");
+        }
         Category category = getCategory(product.getCategoryId());
         // 2. 幂等处理：已经是上架状态，直接转换成 VO 返回
         //    不能抛异常
@@ -91,8 +97,12 @@ public class ProductService {
     }
 
     //NOTE:下架商品
+    @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO offShelf(Long productId){
         Product product = getProduct(productId);
+        if (product == null){
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在");
+        }
         Category category = getCategory(product.getCategoryId());
         //幂等性
         if (product.getStatus().equals(ProductStatusEnum.OFF_SALE.getCode())) {
@@ -125,7 +135,6 @@ public class ProductService {
         PageHelper.startPage(pageNum, pageSize);
 
         // 2. 调用在 XML 中配置好的动态 SQL 方法
-        // 这里的 UserContextHolder.getUserId() 作为 merchantId 传入
         List<MerchantProductVO> merchantProductVOS = productMapper.listMerchantProducts(
                 MerchantContextHolder.getMerchantId(),
                 status,

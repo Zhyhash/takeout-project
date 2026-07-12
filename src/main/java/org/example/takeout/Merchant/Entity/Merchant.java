@@ -24,6 +24,7 @@ public class Merchant {
     @TableField(value = "picture")
     private String pictureURL;
 
+    @TableField("merchant_description")
     private String description;
 
     private Integer status;

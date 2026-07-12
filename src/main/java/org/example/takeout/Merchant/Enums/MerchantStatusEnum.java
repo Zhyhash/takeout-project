@@ -21,7 +21,7 @@ public enum MerchantStatusEnum {
         this.code = code;
         this.msg = msg;
     }
-    public static Integer calculateActualStatus(Integer manualStatus, LocalTime opening,LocalTime closing) {
+    public static Integer calculateActualStatus(LocalTime opening,LocalTime closing) {
         if (opening == null || closing ==null) {
             log.warn("传入营业时间或打烊时间为空");
             return BUSINESS_CLOSED.getCode();
@@ -31,13 +31,7 @@ public enum MerchantStatusEnum {
             log.warn("商家/用户传入了相同的营业与打烊时间");
             return BUSINESS_CLOSED.getCode();
         }
-        //手动打烊/营业判断,最高优先级
-        if (manualStatus!=null && Objects.equals(manualStatus, BUSINESS_CLOSED.getCode())){
-            return BUSINESS_CLOSED.getCode();
-        }
-        if (manualStatus!=null && Objects.equals(manualStatus, BUSINESS_OPEN.getCode())){
-            return BUSINESS_OPEN.getCode();
-        }
+
 
         LocalTime now = LocalTime.now();
         //对于不跨天

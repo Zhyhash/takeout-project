@@ -32,6 +32,9 @@ public final class AuthPathMatcher {
         if (PATH_MATCHER.match("/merchant/login", path) && HttpMethod.POST.matches(method)) {
             return true;
         }
+        if(PATH_MATCHER.match("/merchant/register", path) && HttpMethod.POST.matches(method)) {
+            return true;
+        }
         if (PATH_MATCHER.match("/api/customer/shops", path)
                 || PATH_MATCHER.match("/api/customer/shops/**", path)) {
             return true;

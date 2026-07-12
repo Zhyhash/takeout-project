@@ -189,16 +189,12 @@ public class OrderService {
         PageHelper.startPage(pageNum, pageSize);
         List<Order> orders = orderMapper.selectList(Wrappers.<Order>lambdaQuery().
                 eq(Order::getUserId, userId).orderByDesc(Order::getCreateTime));
+
         if (orders==null||orders.isEmpty())
             return new PageInfo<>(Collections.emptyList());
+
         List<Long> orderIds=orders.stream().map(Order::getId).toList();
-        //NOTE:这一步是需要注意的捏，实际上orders已经不是List了哦
-        // 数据库查出来的 orders 实际上长这样：
-//        orders = [
-//            data: [Order1, Order2, ..., Order10], // 当前页的10条数据
-//            total: 100,                           // 默默记录的总条数是 100！
-//            pages: 10                             // 总页数是 10！
-//        ]
+
         List<OrderItem> allItems = orderItemMapper.selectList(
                 Wrappers.<OrderItem>lambdaQuery()
                         .in(OrderItem::getOrderId, orderIds)   // 使用 in，不是 eq
@@ -208,19 +204,10 @@ public class OrderService {
                 collect(Collectors.groupingBy(OrderItem::getOrderId));
 
         PageInfo<Order> pageInfo = new PageInfo<>(orders);
-        // 原位置改成：
-        List<OrderVO> orderVOs = orders.stream()
-                .map(order -> orderVOBuilder.toOrderVO(order, itemsMap))
-                .toList();
-        return PageInfo.of(orderVOs, pageInfo.getNavigatePages());
-//        /// 逻辑为：先从pageInfo里面拿到总数据（个数等），然后用orderVOs替换
-//        PageInfo<OrderVO> voPageInfo = new PageInfo<>();
-//        // 使用 Spring 的工具类，把 total, pageNum, pages 等分页参数全部拷过去
-//        // 将带有完整分页元数据（total, pages等）的 orderPageInfo 拷贝给 voPageInfo
-//        BeanUtils.copyProperties(pageInfo, voPageInfo);
-//        // 因为上面拷贝时 list 里的数据类型不对（还是 Order），所以要用转换好的 VO 列表把它覆盖掉
-//        voPageInfo.setList(orderVOs);
-//        return voPageInfo;
+
+
+        return pageInfo.convert(order -> orderVOBuilder.toOrderVO(order, itemsMap));
+
     }
     //NOTE:取消订单，统一返回result
     @Transactional(rollbackFor = Exception.class)
@@ -231,7 +218,10 @@ public class OrderService {
 
         //修改状态，需要二次使用数据库，似乎简化不了
         order.setStatus(OrderStatusEnum.CANCELLED.getCode());
-        orderMapper.updateById(order);
+        int updateCount = orderMapper.updateById(order);
+        if (updateCount != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "取消订单失败，请刷新后重试");
+        }
 
         //取消了之后需要将库存还回去
         List<OrderItem> orderItems = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery().
@@ -255,12 +245,6 @@ public class OrderService {
             if (!productMap.containsKey(item.getProductId())) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在或已被物理删除");
             }
-
-
-            //TODO：这里是AI写的，v2并发回来看一下
-            // 【核心修改点 4】防御高并发冲突！
-            // 绝对不能在 Java 中计算 product.setStock(stock + quantity) 再 updateById！
-            // 必须使用 MyBatis-Plus 的 LambdaUpdateChainWrapper 或者是手写 SQL 实现原子自增：
 
             int i = productMapper.increaseStock(item.getProductId(), item.getQuantity());
             if (i!=1) {
@@ -286,6 +270,7 @@ public class OrderService {
     }
 
     //NOTE:用户点击确认查收
+    @Transactional(rollbackFor = Exception.class)
     public void CheckedOrder(Long orderId){
         Long userId = UserContextHolder.getUserId();
         Order order = orderDomainService.getAndCheckOrder(orderId, userId, OrderStatusEnum.PAID.getCode());

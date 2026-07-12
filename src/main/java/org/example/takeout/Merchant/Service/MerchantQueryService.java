@@ -11,7 +11,7 @@ import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
-import org.example.takeout.Merchant.VO.CategoryVO;
+import org.example.takeout.Merchant.VO.MerchantDetailCategoryVO;
 import org.example.takeout.Merchant.VO.MerchantDetailVO;
 import org.example.takeout.Merchant.VO.MerchantListVO;
 import org.example.takeout.Product.Entity.Product;
@@ -45,6 +45,13 @@ public class MerchantQueryService {
     }
     //NOTE:用户查询店铺（限制页面/翻页限制）
     public PageInfo<MerchantListVO> listMerchants(Integer pageNum, Integer pageSize,String merchantName,Integer status){
+        if (merchantName == null || merchantName.isEmpty()){
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家名字不能为空");
+        }
+        if (status == null){
+            //TODO:这里如果这样写的话，可能需要与前端的交互，提示用户输入为空，默认为开启营业的商家
+            status = MerchantStatusEnum.BUSINESS_OPEN.getCode();
+        }
         PageHelper.startPage(pageNum,pageSize);
         List<Merchant> merchants = merchantMapper.selectList(Wrappers.<Merchant>lambdaQuery().
                 like(Merchant::getMerchantName, merchantName).
@@ -64,7 +71,7 @@ public class MerchantQueryService {
         MerchantDetailVO merchantDetailVO = merchantConverter.toMerchantDetailVO(merchant);
 
         // 1. 抽取转换逻辑，将 Map 转为 List<CategoryVO>
-        List<CategoryVO> categoryVOs = convertToCategoryVOList(categoryProductMap);
+        List<MerchantDetailCategoryVO> categoryVOs = convertToCategoryVOList(categoryProductMap);
 
         merchantDetailVO.setCategories(categoryVOs);
 
@@ -74,7 +81,7 @@ public class MerchantQueryService {
     /**
      * 提取出来的私有辅助方法：专门处理商品分类数据的映射
      */
-    private List<CategoryVO> convertToCategoryVOList(Map<Long, List<Product>> categoryProductMap) {
+    private List<MerchantDetailCategoryVO> convertToCategoryVOList(Map<Long, List<Product>> categoryProductMap) {
         if (CollectionUtils.isEmpty(categoryProductMap)) {
             return Collections.emptyList();
         }
@@ -95,14 +102,14 @@ public class MerchantQueryService {
 
         return categoryProductMap.entrySet().stream()
                 .map(entry -> {
-                    Long categoryCode = entry.getKey();
+                    Long categoryId = entry.getKey();
                     List<Product> products = entry.getValue();
 
-                    CategoryVO categoryVO = new CategoryVO();
-                    categoryVO.setCategoryCode(categoryCode);
+                    MerchantDetailCategoryVO categoryVO = new MerchantDetailCategoryVO();
+                    categoryVO.setCategoryId(categoryId);
 
-                    // 3. 【核心修改】从内存 Map 中根据当前的 categoryCode 获取精准的名称
-                    String currentCategoryName = finalCategoryNameMap.get(categoryCode);
+                    // 3. 【核心修改】从内存 Map 中根据当前的 categoryId 获取精准的名称
+                    String currentCategoryName = finalCategoryNameMap.get(categoryId);
                     categoryVO.setCategoryName(currentCategoryName != null ? currentCategoryName : "未知分类");
 
                     // 核心提取逻辑保持不变

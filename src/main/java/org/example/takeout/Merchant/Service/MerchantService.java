@@ -15,6 +15,7 @@ import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Entity.Merchant;
+import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
@@ -23,6 +24,8 @@ import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalTime;
 
 /**
  * 商家服务类
@@ -46,7 +49,7 @@ public class MerchantService {
     public loginVO login(@NonNull MerchantLoginDTO dto) {
         // 1. 根据用户名查询商家
         Merchant merchant = merchantMapper.selectOne(Wrappers.<Merchant>lambdaQuery()
-                .eq(Merchant::getUsername, dto.getMerchantName()));
+                .eq(Merchant::getUsername, dto.getUserName()));
         
         if (merchant == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
@@ -84,7 +87,6 @@ public class MerchantService {
         defaultCategory.setCategoryName("默认分类");
         defaultCategory.setIsDefault(CategoryDefaultEnum.DEFAULT.getCode()); // = 1
         defaultCategory.setStatus(CategoryStatusEnum.ACTIVE.getCode());
-        defaultCategory.setSort(0);
         categoryMapper.insert(defaultCategory);
     }
 
@@ -100,8 +102,17 @@ public class MerchantService {
         Merchant merchant = merchantConverter.toMerchant(merchantUpdateDTO, oldMerchant);
         merchantMapper.updateById(merchant);
 
-        MerchantUpdateVO merchantUpdateVO = new MerchantUpdateVO();
-        merchantConverter.AfterMapper(merchant, merchantUpdateVO);
-        return merchantUpdateVO;
+        return merchantConverter.toMerchantUpdateVO(merchant);
+    }
+
+    //NOTE：手动更新营业状态
+    public void updateStatus(Integer manualStatus) {
+        if (manualStatus == null) {
+            return;
+        }
+        Merchant merchant = merchantMapper.
+                selectById(MerchantContextHolder.getMerchantId());
+        merchant.setStatus(manualStatus);
+        merchantMapper.updateById(merchant);
     }
 }

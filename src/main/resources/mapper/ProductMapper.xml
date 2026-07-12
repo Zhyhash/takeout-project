@@ -13,7 +13,7 @@
     p.status,
     p.description,
     p.image_url AS imageUrl,
-    c.name AS categoryName
+    c.category_name AS categoryName
     FROM product p
     LEFT JOIN category c ON p.category_id = c.id
     <where>
@@ -38,7 +38,7 @@
           AND p1.is_deleted != 0
       AND NOT EXISTS (
           SELECT 1
-          FROM FROM (SELECT product_name, merchant_id
+          FROM (SELECT product_name, merchant_id
       FROM product
       WHERE is_deleted = 0
         AND merchant_id = #{merchantId}) p2

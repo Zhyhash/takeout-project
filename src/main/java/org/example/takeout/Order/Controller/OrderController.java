@@ -2,6 +2,7 @@ package org.example.takeout.Order.Controller;
 
 import com.github.pagehelper.PageInfo;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Service.OrderService;
@@ -9,6 +10,7 @@ import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -32,9 +34,10 @@ public class OrderController {
      * @param pageSize 每页数量
      * */
     @GetMapping
+    @Validated
     public Result<?> list(
-            @RequestParam(defaultValue = "1") Integer pageNum,
-            @RequestParam(defaultValue = "10") Integer pageSize){
+            @RequestParam(defaultValue = "1")@Max(100) Integer pageNum,
+            @RequestParam(defaultValue = "10") @Max(100) Integer pageSize){
         PageInfo<OrderVO> orderPageInfo = orderService.listOrders(pageNum, pageSize);
         return Result.success(orderPageInfo);
     }

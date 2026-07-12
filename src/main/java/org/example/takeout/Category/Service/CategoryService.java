@@ -88,6 +88,7 @@ public class CategoryService {
                 Wrappers.<Product>lambdaUpdate()
                         .set(Product::getCategoryId, defaultCategory.getId())
                         .eq(Product::getCategoryId, categoryId)
+                        .eq(Product::getMerchantId, MerchantContextHolder.getMerchantId())
         );
         categoryMapper.deleteById(categoryId);
     }
@@ -97,7 +98,7 @@ public class CategoryService {
         Category oldCategory = categoryMapper.selectOne(Wrappers.<Category>lambdaQuery().
                 eq(Category::getMerchantId, MerchantContextHolder.getMerchantId()).
                 eq(Category::getCategoryName, categoryName).
-                eq(Category::getStatus,CategoryStatusEnum.ACTIVE));
+                eq(Category::getStatus,CategoryStatusEnum.ACTIVE.getCode()));
         if (oldCategory != null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"已经有重复分类，无法创建");
         }

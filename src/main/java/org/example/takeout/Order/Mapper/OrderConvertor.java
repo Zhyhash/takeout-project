@@ -27,6 +27,4 @@ public interface OrderConvertor {
     @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
     OrderVO toOrderVO(Order order);
 
-
-
 }

@@ -40,6 +40,7 @@ public class CartService {
     @Autowired
     private cartDomainService cartDomainService;
     //添加
+    @Transactional(rollbackFor = Exception.class)
     public CartVO add(AddCartDTO addCartDTO) {
         // 1. 校验商品是否存在
         Product product = productMapper.selectOne(Wrappers.<Product>lambdaQuery().
@@ -49,6 +50,15 @@ public class CartService {
         if (product == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在");
         }
+
+        //判断商家状态是否营业
+        Long merchantId = product.getMerchantId();
+        Merchant merchant = merchantMapper.selectById(merchantId);
+        if (merchant == null ||
+                Objects.equals(merchant.getStatus(), MerchantStatusEnum.BUSINESS_CLOSED.getCode())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家不存在或者商家已打烊");
+        }
+
         if (product.getStock() == null || product.getStock() <= 0){
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"没有库存了，无法添加");
         }
@@ -259,6 +269,7 @@ public class CartService {
         empty.setTotalAmount(BigDecimal.ZERO);
         return empty;
     }
+    @Transactional(rollbackFor = Exception.class)
     public void delete(DeleteDTO deleteDTO) {
         if (deleteDTO.getCartItemIds() == null || deleteDTO.getCartItemIds().isEmpty()) {
             return;
@@ -267,6 +278,7 @@ public class CartService {
                 in(CartItem::getId, deleteDTO.getCartItemIds()).
                 eq(CartItem::getUserId, UserContextHolder.getUserId()));
     }
+    @Transactional(rollbackFor = Exception.class)
     public void clear(){
         //通过从 ThreadLocal 获取当前请求上下文里的 userId
         cartMapper.delete(Wrappers.<CartItem>lambdaQuery().

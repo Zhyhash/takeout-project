@@ -10,7 +10,6 @@ import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 
 @Data
 @PasswordMatches
-
 public class MerchantRegisterDTO implements PasswordMatchable {
     @NotNull(message = "用户名不能为空")
     private String username;
@@ -21,7 +20,7 @@ public class MerchantRegisterDTO implements PasswordMatchable {
     @NotNull
     private String merchantName;
 
-    private String merchantAddress;
+    private String address;
     @NotNull
     @UniquePhone(targetTable = "merchant", message = "该商家手机号已被注册")
     @Pattern(regexp = "^(?:(?:\\+|00)86)?1[3-9]\\d{9}$",message ="手机格式不正确，请重新输入" )

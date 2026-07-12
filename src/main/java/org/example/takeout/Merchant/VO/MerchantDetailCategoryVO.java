@@ -6,8 +6,8 @@ import org.example.takeout.Product.VO.ProductVO;
 import java.util.List;
 
 @Data
-public class CategoryVO {
-    private Long categoryCode;
+public class MerchantDetailCategoryVO {
+    private Long categoryId;
     private String categoryName;
     private List<ProductVO> products;
 }

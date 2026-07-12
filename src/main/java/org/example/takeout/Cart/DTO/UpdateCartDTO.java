@@ -11,5 +11,6 @@ public class UpdateCartDTO {
         private Long cartItemId; // 明确指出要修改购物车里的哪一行记录
         @Max(value = 1)
         @Min(value = -1)
+        @NotNull(message = "修改的数量不能为空")
         private Integer quantityChange; //修改的变量，只能为1/-1
 }
