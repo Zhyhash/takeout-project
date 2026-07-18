@@ -1,5 +1,7 @@
 package org.example.takeout.Order.Service;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.conditions.update.LambdaUpdateChainWrapper;
 import com.baomidou.mybatisplus.extension.toolkit.Db;
@@ -25,6 +27,7 @@ import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductService;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -55,6 +58,10 @@ public class OrderService {
     private OrderConvertor orderConvertor;
     @Autowired
     private cartDomainService cartDomainService;
+    @Autowired
+    private ProductService productService;
+    @Autowired
+    private OrderItemService orderItemService;
     //NOTE:这里的数据很多，我在这里额外提醒
     //购物车 cartItems 是什么？->这是：“用户想买什么”,这是“用户的购买意图”
     //比如productId = 1，quantity = 2，但是并不可信，数据随时会变
@@ -124,46 +131,18 @@ public class OrderService {
         orderMapper.insert(order);
 
         // 7. 循环处理商品：逻辑校验、内存更新、组装详情
-        List<OrderItem> orderItems = new ArrayList<>();
-        List<Product> productsToUpdate = new ArrayList<>();
-
-        for (CartItem cartItem : availableCartItems) {
-            Product product = productMap.get(cartItem.getProductId());
-            if (product == null) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
-            }
-
-            // 基础业务逻辑校验
-            if (product.getStock() < cartItem.getQuantity()) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品 [" + product.getProductName() + "] 库存不足");
-            }
-
-            // 纯业务逻辑修改：更新内存中的库存对象
-            product.setStock(product.getStock() - cartItem.getQuantity());
-            productsToUpdate.add(product);
-
-            // 组装订单详情从表
-            OrderItem item = new OrderItem();
-            item.setOrderId(order.getId());
-            item.setProductId(product.getId());
-            item.setProductName(product.getProductName());
-            item.setProductPrice(product.getPrice());
-            item.setQuantity(cartItem.getQuantity());
-            item.setSubtotal(product.getPrice().multiply(new BigDecimal(cartItem.getQuantity())));
-            orderItems.add(item);
-        }
-
-        // 8. 统一使用 MP 的 Db 静态工具类进行批量数据库持久化
-        // 批量更新商品库存
-        Db.updateBatchById(productsToUpdate);
-        // 批量插入订单详情
-        Db.saveBatch(orderItems);
+        List<OrderItem> orderItems = orderItemService.buildOrderItems(order, availableCartItems, productMap);
+        orderItemService.saveBatch(orderItems);
 
         // 9. 清理购物车
-        cartMapper.deleteBatchIds(availableCartItems.stream().map(CartItem::getId).toList());
+        int i = cartMapper.deleteByIds(availableCartItems.stream().map(CartItem::getId).toList());
+        if (i != availableCartItems.size()) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车删除失败");
+        }
 
         return orderVOBuilder.toCreateOrderVO(order);
     }
+
 
     //NOTE:查询单个id订单
     /**
@@ -263,9 +242,13 @@ public class OrderService {
         //订单已经支付
         if (paying()){
             order.setStatus(OrderStatusEnum.PAID.getCode());
+            // TODO V2：已支付订单取消需进入退款流程，不应直接修改为 CANCELLED
             order.setUpdateTime(LocalDateTime.now());
             order.setPayTime(LocalDateTime.now());
-            orderMapper.updateById(order);
+            int i = orderMapper.updateById(order);
+            if (i != 1) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单支付失败");
+            }
         }
     }
 
@@ -278,7 +261,10 @@ public class OrderService {
         order.setStatus(OrderStatusEnum.FINISHED.getCode());
         order.setUpdateTime(LocalDateTime.now());
         order.setFinishTime(LocalDateTime.now());
-        orderMapper.updateById(order);
+        int i = orderMapper.updateById(order);
+        if (i != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单确认失败");
+        }
     }
 }
 

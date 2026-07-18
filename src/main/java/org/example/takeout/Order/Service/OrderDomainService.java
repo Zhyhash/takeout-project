@@ -95,7 +95,7 @@ public class OrderDomainService {
                 //peek 的语义是“检查/观察”：它的设计初衷是在不改变流中元素的情况下，对元素进行某种动作
                         //换句话说，这里只是在做防御性校验，数据本身不会在这里被转换
                 peek(cartItem -> {
-                    if (cartItem.getProductId()==null||cartItem.getQuantity()==null){
+                    if (cartItem.getProductId()==null||cartItem.getQuantity()==null||cartItem.getQuantity()<=0){
                         throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"计价失败：购物车明细数据不完整");
                     }
                 })

@@ -1,5 +1,6 @@
 package org.example.takeout.Product.Service;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
@@ -32,14 +33,33 @@ public class ProductService {
     private ProductMapper productMapper;
     @Autowired
     private ProductConverter productConverter;
+
     //NOTE:抽取方法，转换VO
     public MerchantProductVO toMerchantProductVO(Product product, @NonNull Category category) {
         // 从 product 实体中拷贝基础属性（此时 product 已经被回填了 id）
         return productConverter.toMerchantProductVO(product,category);
     }
+
     //NOTE:抽取方法，转换Product
     public Product toProduct(CreateProductDTO createProductDTO){
         return productConverter.toProduct(createProductDTO);
+    }
+    //NOTE:抽取方法，扣减库存，目前只用于orderService
+    public void decreaseStock(Product product, Integer quantity){
+        if (product == null || product.getId() == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品信息不能为空");
+        }
+
+        if (quantity == null || quantity <= 0) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "扣减数量必须大于0");
+        }
+        UpdateWrapper<Product> wrapper = new UpdateWrapper<>();
+        wrapper.eq("id", product.getId()).
+                ge("stock", quantity).
+                setSql("stock = stock - {0}" , quantity);
+        int row= productMapper.update(null,wrapper);
+        if (row != 1)
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"创建订单失败");
     }
     //NOTE:创建商品
     @Transactional(rollbackFor = Exception.class)
@@ -91,7 +111,9 @@ public class ProductService {
         }
         // 6. 更新状态
         product.setStatus(ProductStatusEnum.ON_SALE.getCode());
-        productMapper.updateById(product); // 或者只 update status 字段
+        int i = productMapper.updateById(product);// 或者只 update status 字段
+        if (i!=1)
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品上架失败");
         // 7. 返回 VO
         return toMerchantProductVO(product,category);
     }
@@ -110,7 +132,9 @@ public class ProductService {
         }
         //上架和售罄的本来就可以下架，不进行额外校检
         product.setStatus(ProductStatusEnum.OFF_SALE.getCode());
-        productMapper.updateById(product);
+        int i = productMapper.updateById(product);
+        if (i!=1)
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品下架失败");
         return toMerchantProductVO(product,category);
     }
     private Category getCategory(Long categoryId){
@@ -148,9 +172,10 @@ public class ProductService {
         Long merchantId = MerchantContextHolder.getMerchantId();
         Integer rows = productMapper.restoreDeletedProduct(productId, merchantId);
         //如果完全没有影响数据库
-        //TODO：事实上我们没有解决重名问题：如果删除的商品里面有和已有的商品重名，数据库会报出主键唯一异常
+        //TODO:恢复商品可能触发唯一约束异常，需要统一异常处理，将数据库异常转换为业务提示。
         if (rows == 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在、无权限或存在名称冲突");
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "商品不存在、无权限");
         }
     }
 }

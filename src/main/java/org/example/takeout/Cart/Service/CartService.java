@@ -114,7 +114,10 @@ public class CartService {
             cartItem.setQuantity(cartItem.getQuantity() + 1);
 
             // 更新数据库
-            cartMapper.updateById(cartItem);
+            int i = cartMapper.updateById(cartItem);
+            if (i != 1) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车商品增加失败");
+            }
         }
 
         // 4. 统一组装返回给前端的 CartVO
@@ -193,7 +196,11 @@ public class CartService {
 
         // 8. 执行更新
         cartItem.setQuantity(newQuantity);
-        cartMapper.updateById(cartItem);
+        int i = cartMapper.updateById(cartItem);
+        if (i != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车更新失败");
+        }
+
 
         // 9. 返回更新后的VO
         return getCartVO(cartItem);
@@ -274,9 +281,16 @@ public class CartService {
         if (deleteDTO.getCartItemIds() == null || deleteDTO.getCartItemIds().isEmpty()) {
             return;
         }
-        cartMapper.delete(Wrappers.<CartItem>lambdaQuery().
+        int deletedRows = cartMapper.delete(Wrappers.<CartItem>lambdaQuery().
                 in(CartItem::getId, deleteDTO.getCartItemIds()).
                 eq(CartItem::getUserId, UserContextHolder.getUserId()));
+
+
+        if(deletedRows != deleteDTO.getCartItemIds().size()) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,"购物车清理失败"
+            );
+        }
     }
     @Transactional(rollbackFor = Exception.class)
     public void clear(){

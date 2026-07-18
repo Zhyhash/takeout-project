@@ -3,6 +3,7 @@ package org.example.takeout.Product.Entity;
 import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableLogic;
+import com.baomidou.mybatisplus.annotation.Version;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -25,8 +26,10 @@ public class Product {
     private Integer stock;
 
     private Long merchantId;
+
     @TableLogic
     private Integer isDeleted;
+
     private Integer status;
     private String description;
 
@@ -35,4 +38,7 @@ public class Product {
 
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime; // 新增：更新时间
+
+    @Version
+    private Integer version;
 }

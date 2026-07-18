@@ -771,7 +771,8 @@ class MysqlApiIntegrationTest {
                     create_time datetime not null default current_timestamp,
                     update_time datetime not null default current_timestamp on update current_timestamp,
                     key idx_product_merchant (merchant_id),
-                    key idx_product_category (category_id)
+                    key idx_product_category (category_id),
+                    version int not null default 0
                 )
                 """);
 

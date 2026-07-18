@@ -100,7 +100,10 @@ public class MerchantService {
         }
         //NOTE:维持原判。商家的名字不做去重处理
         Merchant merchant = merchantConverter.toMerchant(merchantUpdateDTO, oldMerchant);
-        merchantMapper.updateById(merchant);
+        int i = merchantMapper.updateById(merchant);
+        if (i != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家信息更新失败");
+        }
 
         return merchantConverter.toMerchantUpdateVO(merchant);
     }
@@ -113,6 +116,9 @@ public class MerchantService {
         Merchant merchant = merchantMapper.
                 selectById(MerchantContextHolder.getMerchantId());
         merchant.setStatus(manualStatus);
-        merchantMapper.updateById(merchant);
+        int i = merchantMapper.updateById(merchant);
+        if (i != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家营业状态更新失败");
+        }
     }
 }
