@@ -2,7 +2,6 @@ package org.example.takeout.Common.CustomAnnotation;
 
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
-import org.example.takeout.User.DTO.RegisterDTO;
 import org.springframework.stereotype.Component;
 
 @Component

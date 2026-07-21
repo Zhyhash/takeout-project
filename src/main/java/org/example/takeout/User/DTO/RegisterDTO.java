@@ -9,7 +9,7 @@ import org.example.takeout.Common.CustomAnnotation.PasswordMatches;
 import org.example.takeout.Common.CustomAnnotation.UniquePhone;
 
 @Data
-@PasswordMatches//检验密码是否正确
+@PasswordMatches
 public class RegisterDTO implements PasswordMatchable {
     @NotBlank(message = "用户名不能为空")
     @Size(min = 1,max = 50,message = "用户名长度不能低于1/超过50")

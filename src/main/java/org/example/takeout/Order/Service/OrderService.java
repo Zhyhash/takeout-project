@@ -1,10 +1,6 @@
 package org.example.takeout.Order.Service;
 
-import com.baomidou.mybatisplus.core.conditions.Wrapper;
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.baomidou.mybatisplus.extension.conditions.update.LambdaUpdateChainWrapper;
-import com.baomidou.mybatisplus.extension.toolkit.Db;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Cart.Entity.CartItem;
@@ -59,38 +55,20 @@ public class OrderService {
     @Autowired
     private cartDomainService cartDomainService;
     @Autowired
-    private ProductService productService;
-    @Autowired
     private OrderItemService orderItemService;
-    //NOTE:这里的数据很多，我在这里额外提醒
-    //购物车 cartItems 是什么？->这是：“用户想买什么”,这是“用户的购买意图”
-    //比如productId = 1，quantity = 2，但是并不可信，数据随时会变
-
-    //Product 是什么？->这是：“系统当前真实商品信息”
-    //比如：price = 18.5，stock = 10，status = ENABLE
-    //最终交易：必须以 Product 为准。
-
-    //为什么需要 productMap？->Map 只是：“为了快速查商品”。
-    //因为：你后面会遍历 cartItems
-    //而：每个 cartItem：都有productId
-    //所以：你需要通过 productId快速找到 Product
-    //所以：Map<Long, Product>本质只是：商品字典。
-
-
-
 
 
     @Transactional(rollbackFor = Exception.class)
     public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO) {
         Long userId = UserContextHolder.getUserId();
 
-        // 1. 获取可用购物车（内部已校验商品/商家状态）
+        // 获取可用购物车（内部已校验商品/商家状态）
         List<CartItem> availableCartItems = cartDomainService.getAvailableCartItems(userId);
         if (availableCartItems == null || availableCartItems.isEmpty()) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车为空，无法创建订单");
         }
 
-        // 2. 防脏数据：过滤多商家情况
+        // 防脏数据：过滤多商家情况
         Set<Long> merchantIds = availableCartItems.stream()
                 .map(CartItem::getMerchantId)
                 .filter(Objects::nonNull)
@@ -100,21 +78,20 @@ public class OrderService {
         }
         Long merchantId = merchantIds.iterator().next();
 
-        // 3. 既然 getAvailableCartItems 已经校验过商家，直接通过 MP 查出商家名称用于赋值
         Merchant merchant = merchantMapper.selectById(merchantId);
         if (merchant == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商家不存在");
         }
 
-        // 4. 批量查询商品信息（用于计算价格和组装订单项）
+
         List<Long> productIds = availableCartItems.stream().map(CartItem::getProductId).toList();
         Map<Long, Product> productMap = productMapper.selectBatchIds(productIds).stream()
                 .collect(Collectors.toMap(Product::getId, p -> p));
 
-        // 5. 计算金额
+
         BigDecimal totalAmount = orderDomainService.calculateTotalAmount(availableCartItems, productMap);
 
-        // 6. 组装并保存订单主表
+
         Order order = new Order();
         order.setUserId(userId);
         order.setOrderNo(orderDomainService.createOrderNo());
@@ -122,19 +99,19 @@ public class OrderService {
         order.setMerchantName(merchant.getMerchantName());
         order.setTotalAmount(totalAmount);
         order.setOriginalAmount(totalAmount);
-        order.setDiscountAmount(BigDecimal.ZERO); // TODO: 留作后续扩展
+        order.setDiscountAmount(BigDecimal.ZERO); // NOTE: 留作后续扩展
 
         orderConvertor.toOrder(createOrderDTO, order);
         order.setStatus(OrderStatusEnum.WAIT_PAY.getCode());
 
-        // 使用 MP 插入订单
+
         orderMapper.insert(order);
 
-        // 7. 循环处理商品：逻辑校验、内存更新、组装详情
+
         List<OrderItem> orderItems = orderItemService.buildOrderItems(order, availableCartItems, productMap);
         orderItemService.saveBatch(orderItems);
 
-        // 9. 清理购物车
+
         int i = cartMapper.deleteByIds(availableCartItems.stream().map(CartItem::getId).toList());
         if (i != availableCartItems.size()) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车删除失败");
@@ -214,13 +191,11 @@ public class OrderService {
                 .toList();
 
         List<Product> products = productMapper.selectBatchIds(productIds);
-        // 【修改点 2】将查出来的商品转为 Map，用于后续的存在性校验（消灭 NPE）
+
         Map<Long, Product> productMap = products == null ? Collections.emptyMap() :
                 products.stream().collect(Collectors.toMap(Product::getId, p -> p, (k1, k2) -> k1));
 
-        // 【修改点 3】循环进行合法性校验与原子库存回滚
         for (OrderItem item : orderItems) {
-            // 校验：利用 Map 判断商品在数据库中是否还存在
             if (!productMap.containsKey(item.getProductId())) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在或已被物理删除");
             }
@@ -242,7 +217,7 @@ public class OrderService {
         //订单已经支付
         if (paying()){
             order.setStatus(OrderStatusEnum.PAID.getCode());
-            // TODO V2：已支付订单取消需进入退款流程，不应直接修改为 CANCELLED
+            // NOTE V2：已支付订单取消需进入退款流程，不应直接修改为 CANCELLED
             order.setUpdateTime(LocalDateTime.now());
             order.setPayTime(LocalDateTime.now());
             int i = orderMapper.updateById(order);

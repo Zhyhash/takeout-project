@@ -1,15 +1,16 @@
 package org.example.takeout.User.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
-import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
 import org.example.takeout.User.Entity.User;
 import org.example.takeout.User.Mapper.UserMapper;
+import org.example.takeout.User.StatusEnum.UserStatusEnum;
 import org.example.takeout.User.VO.LoginVO;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,7 +45,7 @@ public class UserService {
         user.setUsername(dto.getUsername());
         user.setPassword(BCrypt.encode(dto.getPassword()));
         user.setPhone(dto.getPhone());
-        user.setStatus(1);
+        user.setStatus(UserStatusEnum.NORMAL.getCode());
         user.setNickname("用户_" + random.nextInt(10000));
         userMapper.insert(user);
     }

@@ -1,11 +1,9 @@
 package org.example.takeout.Order.Entity;
 
+import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
 import java.math.BigDecimal;
-
-import com.baomidou.mybatisplus.annotation.*;
-
 import java.time.LocalDateTime;
 
 @Data

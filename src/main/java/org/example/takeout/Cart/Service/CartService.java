@@ -2,10 +2,10 @@ package org.example.takeout.Cart.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.extern.slf4j.Slf4j;
+import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.DeleteDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Cart.Entity.CartItem;
-import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.VO.CartListVO;
 import org.example.takeout.Cart.VO.CartVO;
@@ -37,8 +37,6 @@ public class CartService {
     private ProductMapper productMapper;
     @Autowired
     private MerchantMapper merchantMapper;
-    @Autowired
-    private cartDomainService cartDomainService;
     //添加
     @Transactional(rollbackFor = Exception.class)
     public CartVO add(AddCartDTO addCartDTO) {
@@ -59,19 +57,15 @@ public class CartService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家不存在或者商家已打烊");
         }
 
+        //提升用户体验，提前拦截明显不可购买商品。
         if (product.getStock() == null || product.getStock() <= 0){
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"没有库存了，无法添加");
         }
-        // 2. 获取当前用户 ID
+
         Long userId = UserContextHolder.getUserId();
 
-        // 3. 查询该用户的购物车中是否已存在该商品
+        // 查询该用户的购物车中是否已存在该商品
         // 这里不允许不同商家的order在一个购物车里面
-
-        // TODO: v2.0 优化 - 当前采用“先查后判”存在并发漏洞和性能开销。
-        // 未来计划：方案A-引入购物车主表建立user_id唯一索引；方案B-改用Redis存储商家绑定关系。
-        // 1. 顺着正常人思维：直接查当前用户购物车里【第一条】已有的商品
-
         // 让数据库只数一下：有多少条记录的商家，和当前商品的商家不一样
         Long customConflictCount = cartMapper.selectCount(
                 Wrappers.<CartItem>lambdaQuery()
@@ -81,7 +75,7 @@ public class CartService {
 
         // 只要有一个不一样的，直接拦截
         if (customConflictCount > 0) {
-            //TODO：这里先抛出异常，到时候换成pay接口
+            //NOTE：这里先抛出异常，到时候换成pay接口
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "只能加入同一家店的商品");
         }
 
@@ -90,7 +84,7 @@ public class CartService {
                 .eq(CartItem::getProductId, addCartDTO.getProductId()));
 
         if (cartItem == null) {
-            // 情况 A：商品不存在于购物车 -> 创建新记录
+            // 1. 如果不存在，创建新对象并完整赋值
             cartItem = new CartItem();
             cartItem.setUserId(userId);
             cartItem.setProductId(product.getId());
@@ -98,29 +92,19 @@ public class CartService {
             cartItem.setProductImage(product.getImageUrl());
             cartItem.setPrice(product.getPrice());
             cartItem.setMerchantId(product.getMerchantId());
-            cartItem.setQuantity(1); // 初始数量为 1
-
-            // 插入数据库（MyBatis-Plus 会自动将自增 ID 回填到 cartItem 对象中）
-            cartMapper.insert(cartItem);
-        } else {
-            if(cartItem.getQuantity()==null){
-                cartItem.setQuantity(0);
-            }
-            // 情况 B：商品已存在于购物车 -> 数量 +1 并更新
-            if (cartItem.getQuantity()+1>product.getStock()) {
-                //数量已经超过，不能继续增加
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"已经超过库存上限了，无法继续添加");
-            }
-            cartItem.setQuantity(cartItem.getQuantity() + 1);
-
-            // 更新数据库
-            int i = cartMapper.updateById(cartItem);
-            if (i != 1) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车商品增加失败");
-            }
+            cartItem.setQuantity(1);
         }
-
-        // 4. 统一组装返回给前端的 CartVO
+        int i = cartMapper.addOrIncrease(cartItem);
+        // MySQL INSERT ... ON DUPLICATE KEY UPDATE:
+        // 1: 新增成功
+        // 2: 更新成功
+        // 0: 未产生变化
+        if (i <= 0) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车数量增加失败");
+        }
+        //返回值也要更新
+        if (i==2)
+            cartItem.setQuantity(cartItem.getQuantity() + 1);
 
         return getCartVO(cartItem);
     }

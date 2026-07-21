@@ -4,13 +4,15 @@ import com.github.pagehelper.PageInfo;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Entity.Merchant;
-
 import org.example.takeout.Merchant.VO.MerchantDetailVO;
 import org.example.takeout.Merchant.VO.MerchantListVO;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.VO.ProductVO;
-import org.mapstruct.*;
+import org.mapstruct.BeanMapping;
+import org.mapstruct.Mapper;
+import org.mapstruct.MappingTarget;
+import org.mapstruct.NullValuePropertyMappingStrategy;
 
 @Mapper(componentModel = "spring")
 public interface MerchantConverter {

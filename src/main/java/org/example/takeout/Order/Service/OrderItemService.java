@@ -16,7 +16,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-//TODO：嗯，目前来说，这个方法发挥了0个作用，一开始是为了测试orderItem的事务
 @Service
 public class OrderItemService {
     @Autowired
@@ -33,7 +32,7 @@ public class OrderItemService {
 
             productService.decreaseStock(product,cartItem.getQuantity());
 
-            // 组装订单详情从表
+
             OrderItem item = new OrderItem();
             item.setOrderId(order.getId());
             item.setProductId(product.getId());

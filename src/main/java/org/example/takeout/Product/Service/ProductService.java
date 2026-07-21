@@ -8,6 +8,7 @@ import jakarta.validation.constraints.NotNull;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
+import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
@@ -42,7 +43,7 @@ public class ProductService {
 
     //NOTE:抽取方法，转换Product
     public Product toProduct(CreateProductDTO createProductDTO){
-        return productConverter.toProduct(createProductDTO);
+        return productConverter.toProduct(createProductDTO,MerchantContextHolder.getMerchantId());
     }
     //NOTE:抽取方法，扣减库存，目前只用于orderService
     public void decreaseStock(Product product, Integer quantity){
@@ -149,7 +150,7 @@ public class ProductService {
     private Product getProduct(Long productId) {
         return productMapper.selectOne(Wrappers.<Product>lambdaQuery().
                 eq(Product::getId, productId).
-                eq(Product::getIsDeleted, 0).
+                eq(Product::getIsDeleted, DeleteConstant.NOT_DELETED).
                 eq(Product::getMerchantId, MerchantContextHolder.getMerchantId()));
     }
 
@@ -172,7 +173,7 @@ public class ProductService {
         Long merchantId = MerchantContextHolder.getMerchantId();
         Integer rows = productMapper.restoreDeletedProduct(productId, merchantId);
         //如果完全没有影响数据库
-        //TODO:恢复商品可能触发唯一约束异常，需要统一异常处理，将数据库异常转换为业务提示。
+        //NOTE:恢复商品可能触发唯一约束异常，需要统一异常处理，将数据库异常转换为业务提示。
         if (rows == 0) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "商品不存在、无权限");

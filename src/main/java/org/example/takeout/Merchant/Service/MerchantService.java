@@ -5,17 +5,16 @@ import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
+import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
-import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Entity.Merchant;
-import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
@@ -24,8 +23,6 @@ import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.time.LocalTime;
 
 /**
  * 商家服务类
@@ -85,7 +82,7 @@ public class MerchantService {
         Category defaultCategory = new Category();
         defaultCategory.setMerchantId(merchantId);
         defaultCategory.setCategoryName("默认分类");
-        defaultCategory.setIsDefault(CategoryDefaultEnum.DEFAULT.getCode()); // = 1
+        defaultCategory.setIsDefault(CategoryDefaultEnum.DEFAULT.getCode());
         defaultCategory.setStatus(CategoryStatusEnum.ACTIVE.getCode());
         categoryMapper.insert(defaultCategory);
     }

@@ -1,11 +1,8 @@
 package org.example.takeout.Common.CustomAnnotation;
 
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
 import lombok.Data;
-import org.example.takeout.User.Entity.User;
-import org.example.takeout.User.Mapper.UserMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;

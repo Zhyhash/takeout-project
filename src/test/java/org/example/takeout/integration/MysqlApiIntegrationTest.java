@@ -28,11 +28,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -786,6 +782,7 @@ class MysqlApiIntegrationTest {
                     product_name varchar(255) not null,
                     product_image varchar(255) not null default '',
                     price decimal(10,2) not null,
+                    version int not null default 0,
                     create_time datetime not null default current_timestamp,
                     update_time datetime not null default current_timestamp on update current_timestamp,
                     unique key uk_cart_user_product (user_id, product_id)

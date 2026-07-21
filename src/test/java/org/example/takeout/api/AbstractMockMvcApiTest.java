@@ -38,9 +38,7 @@ import org.springframework.web.context.WebApplicationContext;
 import java.math.BigDecimal;
 import java.util.Collections;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.reset;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;

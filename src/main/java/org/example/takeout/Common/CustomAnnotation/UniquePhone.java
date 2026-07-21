@@ -2,7 +2,6 @@ package org.example.takeout.Common.CustomAnnotation;
 
 import jakarta.validation.Constraint;
 import jakarta.validation.Payload;
-import org.hibernate.validator.internal.constraintvalidators.hv.UniqueElementsValidator;
 
 import java.lang.annotation.*;
 

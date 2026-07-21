@@ -49,7 +49,7 @@ public class MerchantQueryService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家名字不能为空");
         }
         if (status == null){
-            //TODO:这里如果这样写的话，可能需要与前端的交互，提示用户输入为空，默认为开启营业的商家
+            //NOTE:这里如果这样写的话，可能需要与前端的交互，提示用户输入为空，默认为开启营业的商家
             status = MerchantStatusEnum.BUSINESS_OPEN.getCode();
         }
         PageHelper.startPage(pageNum,pageSize);
