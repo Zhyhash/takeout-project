@@ -11,4 +11,8 @@ public class CartListVO {
     private List<CartVO> items;
 
     private BigDecimal totalAmount;
+
+    private Boolean canBuy;
+
+    private String invalidReason;
 }

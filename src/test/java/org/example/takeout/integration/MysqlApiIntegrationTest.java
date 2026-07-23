@@ -707,127 +707,150 @@ class MysqlApiIntegrationTest {
         jdbcTemplate.execute("drop table if exists `user`");
 
         jdbcTemplate.execute("""
-                create table `user` (
-                    id bigint unsigned not null auto_increment primary key,
-                    phone varchar(20) not null,
-                    password varchar(255) not null,
-                    nickname varchar(50) not null default '',
-                    email varchar(100) null,
-                    status tinyint not null default 1,
-                    create_time datetime not null default current_timestamp,
-                    update_time datetime not null default current_timestamp on update current_timestamp,
-                    username varchar(50) not null,
-                    unique key uk_user_phone (phone),
-                    unique key uk_user_username (username)
-                )
+                CREATE TABLE `user` (
+                    `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT,
+                    `phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `password` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `nickname` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '',
+                    `email` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+                    `status` tinyint NOT NULL DEFAULT 1,
+                    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    PRIMARY KEY (`id`) USING BTREE,
+                    UNIQUE INDEX `uk_user_phone` (`phone` ASC) USING BTREE,
+                    UNIQUE INDEX `uk_user_username` (`username` ASC) USING BTREE
+                ) ENGINE = InnoDB AUTO_INCREMENT = 21 CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
                 """);
 
         jdbcTemplate.execute("""
-                create table merchant (
-                    id bigint not null auto_increment primary key,
-                    username varchar(100) not null,
-                    phone varchar(20) not null,
-                    password varchar(100) not null,
-                    address varchar(255) not null default '',
-                    status tinyint not null default 0,
-                    create_time datetime not null default current_timestamp,
-                    merchant_name varchar(255) not null,
-                    picture varchar(255) null,
-                    merchant_description varchar(255) null,
-                    opening_time time not null default '08:00:00',
-                    closing_time time not null default '22:00:00',
-                    unique key uk_merchant_phone (phone),
-                    unique key uk_merchant_username (username)
-                )
+                CREATE TABLE `merchant` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `username` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `password` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '',
+                    `status` tinyint NOT NULL DEFAULT 0,
+                    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `picture` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+                    `merchant_description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+                    `opening_time` time NOT NULL DEFAULT '08:00:00',
+                    `closing_time` time NOT NULL DEFAULT '22:00:00',
+                    PRIMARY KEY (`id`) USING BTREE,
+                    UNIQUE INDEX `uk_merchant_phone` (`phone` ASC) USING BTREE,
+                    UNIQUE INDEX `uk_merchant_username` (`username` ASC) USING BTREE
+                ) ENGINE = InnoDB AUTO_INCREMENT = 6 CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
                 """);
 
         jdbcTemplate.execute("""
-                create table category (
-                    id bigint not null auto_increment primary key,
-                    merchant_id bigint not null,
-                    category_name varchar(255) not null,
-                    status tinyint not null default 0,
-                    is_default tinyint not null default 0,
-                    key idx_category_merchant (merchant_id)
-                )
+                CREATE TABLE `category` (
+                    `id` bigint NOT NULL AUTO_INCREMENT COMMENT '分类ID',
+                    `merchant_id` bigint NOT NULL COMMENT '所属商家ID',
+                    `category_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '分类名称',
+                    `status` tinyint NOT NULL DEFAULT 0 COMMENT '状态: 0-正常使用, 1-非法分类 (对应 CategoryStatusEnum)',
+                    `is_default` tinyint NOT NULL DEFAULT 0 COMMENT '类型: 0-默认分类, 1-商家自主分类 (对应 CategoryDefaultEnum)',
+                    PRIMARY KEY (`id`) USING BTREE,
+                    INDEX `idx_merchant_id` (`merchant_id` ASC) USING BTREE
+                ) ENGINE = InnoDB AUTO_INCREMENT = 19 CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci COMMENT = '商品分类表' ROW_FORMAT = Dynamic
                 """);
 
         jdbcTemplate.execute("""
-                create table product (
-                    id bigint not null auto_increment primary key,
-                    category_id bigint null,
-                    product_name varchar(100) not null,
-                    image_url varchar(255) null,
-                    price decimal(10,2) not null,
-                    stock int not null default 0,
-                    merchant_id bigint not null,
-                    is_deleted tinyint not null default 0,
-                    status tinyint not null,
-                    description varchar(500) null,
-                    create_time datetime not null default current_timestamp,
-                    update_time datetime not null default current_timestamp on update current_timestamp,
-                    key idx_product_merchant (merchant_id),
-                    key idx_product_category (category_id),
-                    version int not null default 0
-                )
+                CREATE TABLE `product` (
+                    `id` bigint NOT NULL AUTO_INCREMENT COMMENT '商品ID',
+                    `category_id` bigint NOT NULL COMMENT '分类ID',
+                    `product_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '商品名称',
+                    `image_url` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品图片URL',
+                    `price` decimal(10, 2) NOT NULL COMMENT '商品价格',
+                    `stock` int NOT NULL COMMENT '库存数量',
+                    `merchant_id` bigint NOT NULL COMMENT '所属商家ID',
+                    `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除: 0-未删除, 1-已删除',
+                    `status` tinyint NOT NULL DEFAULT 0 COMMENT '商品状态',
+                    `description` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品描述',
+                    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                    `version` int NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+                    PRIMARY KEY (`id`) USING BTREE,
+                    INDEX `idx_category_id` (`category_id` ASC) USING BTREE,
+                    INDEX `idx_merchant_id` (`merchant_id` ASC) USING BTREE,
+                    -- 添加联合唯一索引
+                    UNIQUE INDEX `uk_merchant_product` (`merchant_id`, `product_name`) USING BTREE,
+                    -- 添加外键约束
+                    CONSTRAINT `fk_product_category`
+                    FOREIGN KEY (`category_id`) REFERENCES `category` (`id`)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT
+                ) ENGINE = InnoDB CHARACTER SET = utf8mb4
+                COLLATE = utf8mb4_0900_ai_ci COMMENT = '商品表' ROW_FORMAT = Dynamic;
+""");
+
+        jdbcTemplate.execute("""
+                CREATE TABLE `cart` (
+                    `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '购物车id',
+                    `user_id` bigint UNSIGNED NOT NULL COMMENT '用户id',
+                    `product_id` bigint UNSIGNED NOT NULL COMMENT '商品id',
+                    `product_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `quantity` int NOT NULL DEFAULT 1 COMMENT '商品数量',
+                    `price` decimal(10, 2) NOT NULL COMMENT '加入购物车时的商品价格',
+                    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '修改时间',
+                    `merchant_id` bigint NOT NULL,
+                    `product_image` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `version` int NOT NULL DEFAULT 0,
+                    PRIMARY KEY (`id`) USING BTREE,
+                    UNIQUE INDEX `uk_user_product` (`user_id` ASC, `product_id` ASC) USING BTREE
+                        COMMENT '一个用户对同一个商品只能有一条购物车记录',
+                    INDEX `idx_user_id` (`user_id` ASC) USING BTREE,
+                    INDEX `idx_product_id` (`product_id` ASC) USING BTREE
+                ) ENGINE = InnoDB AUTO_INCREMENT = 41 CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci COMMENT = '购物车表' ROW_FORMAT = Dynamic
                 """);
 
         jdbcTemplate.execute("""
-                create table cart (
-                    id bigint unsigned not null auto_increment primary key,
-                    user_id bigint unsigned not null,
-                    product_id bigint unsigned not null,
-                    merchant_id bigint not null,
-                    quantity int not null default 1,
-                    product_name varchar(255) not null,
-                    product_image varchar(255) not null default '',
-                    price decimal(10,2) not null,
-                    version int not null default 0,
-                    create_time datetime not null default current_timestamp,
-                    update_time datetime not null default current_timestamp on update current_timestamp,
-                    unique key uk_cart_user_product (user_id, product_id)
-                )
+                CREATE TABLE `orders` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `order_no` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `user_id` bigint NOT NULL,
+                    `merchant_id` bigint NOT NULL,
+                    `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `total_amount` decimal(10, 2) NOT NULL,
+                    `status` tinyint NOT NULL DEFAULT 0,
+                    `receiver_name` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `receiver_phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `receiver_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `remark` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+                    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    `finish_time` datetime NULL DEFAULT NULL,
+                    `original_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
+                    `discount_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
+                    `pay_time` datetime NULL DEFAULT NULL,
+                    `version` int NOT NULL DEFAULT 0,
+                    PRIMARY KEY (`id`) USING BTREE,
+                    UNIQUE INDEX `uk_order_no` (`order_no` ASC) USING BTREE,
+                    INDEX `idx_order_user` (`user_id` ASC) USING BTREE,
+                    INDEX `idx_order_merchant` (`merchant_id` ASC) USING BTREE
+                ) ENGINE = InnoDB AUTO_INCREMENT = 16 CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
                 """);
 
         jdbcTemplate.execute("""
-                create table orders (
-                    id bigint not null auto_increment primary key,
-                    order_no varchar(32) not null,
-                    user_id bigint not null,
-                    merchant_id bigint not null,
-                    merchant_name varchar(255) not null,
-                    total_amount decimal(10,2) not null,
-                    status tinyint not null default 0,
-                    receiver_name varchar(20) not null,
-                    receiver_phone varchar(20) not null,
-                    receiver_address varchar(255) not null,
-                    remark varchar(255) null,
-                    create_time datetime not null default current_timestamp,
-                    update_time datetime not null default current_timestamp on update current_timestamp,
-                    finish_time datetime null,
-                    original_amount decimal(10,2) not null default 0.00,
-                    discount_amount decimal(10,2) not null default 0.00,
-                    pay_time datetime null,
-                    version int not null default 0,
-                    unique key uk_order_no (order_no),
-                    key idx_order_user (user_id),
-                    key idx_order_merchant (merchant_id)
-                )
-                """);
-
-        jdbcTemplate.execute("""
-                create table order_item (
-                    id bigint not null auto_increment primary key,
-                    order_id bigint not null,
-                    product_id bigint not null,
-                    product_name varchar(100) not null,
-                    product_price decimal(10,2) not null,
-                    quantity int not null default 1,
-                    subtotal decimal(10,2) not null,
-                    product_picture varchar(255) null,
-                    key idx_order_item_order (order_id),
-                    key idx_order_item_product (product_id)
-                )
+                CREATE TABLE `order_item` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `order_id` bigint NOT NULL,
+                    `product_id` bigint NOT NULL,
+                    `product_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `product_price` decimal(10, 2) NOT NULL,
+                    `quantity` int NOT NULL DEFAULT 1,
+                    `subtotal` decimal(10, 2) NOT NULL,
+                    `product_picture` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+                    PRIMARY KEY (`id`) USING BTREE,
+                    INDEX `idx_order_item_order` (`order_id` ASC) USING BTREE,
+                    INDEX `idx_order_item_product` (`product_id` ASC) USING BTREE
+                ) ENGINE = InnoDB CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
                 """);
     }
 

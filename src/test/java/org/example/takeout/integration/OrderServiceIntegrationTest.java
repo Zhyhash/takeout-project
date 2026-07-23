@@ -24,6 +24,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -125,7 +126,7 @@ class OrderServiceIntegrationTest {
 
         assertEquals(10, productMapper.selectById(product.getId()).getStock());
         assertEquals(1L, countTestUserCartItems());
-        assertNull(findTestUserOrder());
+        assertTrue(findTestUserOrder().isEmpty());
     }
 
     @Test
@@ -139,7 +140,7 @@ class OrderServiceIntegrationTest {
                 () -> orderService.createOrder(TestDataFactory.createOrderDTO())
         );
 
-        assertNull(findTestUserOrder());
+        assertTrue(findTestUserOrder().isEmpty());
     }
 
     @Test
@@ -160,7 +161,7 @@ class OrderServiceIntegrationTest {
         assertEquals(10, productMapper.selectById(cup.getId()).getStock());
         assertEquals(10, productMapper.selectById(milk.getId()).getStock());
         assertEquals(2L, countTestUserCartItems());
-        assertNull(findTestUserOrder());
+        assertTrue(findTestUserOrder().isEmpty());
     }
 
 
@@ -169,17 +170,66 @@ class OrderServiceIntegrationTest {
         //准备数据
         insertMerchant();
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
-        CartItem cartItem = insertCartItem(product, 5);
+        insertCartItem(product, 5);
 
         orderService.createOrder(TestDataFactory.createOrderDTO());
 
-        Order order = findTestUserOrder();
+        List<Order> order = findTestUserOrder();
 
         assertNotNull(order);
         assertEquals(
                 OrderStatusEnum.WAIT_PAY.getCode(),
-                order.getStatus()
+                order.get(0).getStatus()
         );
+    }
+
+    @Test
+    void createOrder_shouldCreateOnceSuccessfullyWhenCurrentCreate() throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        insertCartItem(product,5);
+        Thread t1 = new Thread(() -> {
+            try {
+                UserContextHolder.setUserId(TEST_USER_ID);
+                latch.await();
+                orderService.createOrder(TestDataFactory.createOrderDTO());
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+        Thread t2 = new Thread(() -> {
+            try {
+                UserContextHolder.setUserId(TEST_USER_ID);
+                latch.await();
+                orderService.createOrder(TestDataFactory.createOrderDTO());
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        t1.start();
+        t2.start();
+
+        latch.countDown();
+
+        t1.join();
+        t2.join();
+
+        List<Order> orders = findTestUserOrder();
+        List<OrderItem> orderItem = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery().
+                eq(OrderItem::getProductId, product.getId()));
+        List<CartItem> cartItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery().
+                eq(CartItem::getUserId, TEST_USER_ID));
+
+        assertEquals(1, orders.size());
+        assertEquals(1,orderItem.size());
+        assertEquals(5, orderItem.get(0).getQuantity());
+        assertTrue(cartItems.isEmpty(), "购物车应该为空");
     }
 
     private Product insertProduct(Long id, String name, int stock) {
@@ -211,8 +261,8 @@ class OrderServiceIntegrationTest {
                 .eq(CartItem::getUserId, TEST_USER_ID));
     }
 
-    private Order findTestUserOrder() {
-        return orderMapper.selectOne(Wrappers.<Order>lambdaQuery()
+    private List<Order> findTestUserOrder() {
+        return orderMapper.selectList(Wrappers.<Order>lambdaQuery()
                 .eq(Order::getUserId, TEST_USER_ID));
     }
 

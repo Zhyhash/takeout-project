@@ -190,9 +190,11 @@ public class CartService {
         return getCartVO(cartItem);
     }
 
-
     public CartListVO list() {
         Long userId = UserContextHolder.getUserId();
+
+        boolean canBuy = true;
+        String invalidReason = "";
 
         List<CartItem> cartItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
                 .eq(CartItem::getUserId, userId));
@@ -200,10 +202,15 @@ public class CartService {
             return emptyCartListVO();
         }
 
+
         // 批量查询商品和商家
         List<Long> productIds = cartItems.stream().map(CartItem::getProductId).distinct().toList();
         List<Long> merchantIds = cartItems.stream().map(CartItem::getMerchantId).distinct().toList();
 
+        if (merchantIds.size() > 1) {
+            canBuy = false;
+            invalidReason+="用户购物车有多商家\n";
+        }
         Map<Long, Product> productMap = productMapper.selectList(Wrappers.<Product>lambdaQuery()
                         .in(Product::getId, productIds))
                 .stream().collect(Collectors.toMap(Product::getId, p -> p));
@@ -214,7 +221,6 @@ public class CartService {
         // 分类收集
         List<CartVO> allItems = new ArrayList<>();
         BigDecimal totalAmount = BigDecimal.ZERO;
-        List<Long> toDeleteIds = new ArrayList<>();
 
         for (CartItem item : cartItems) {
             Product product = productMap.get(item.getProductId());
@@ -223,10 +229,11 @@ public class CartService {
             boolean productValid = (product != null && ProductStatusEnum.ON_SALE.getCode().equals(product.getStatus()));
             boolean merchantOpen = (merchant != null && !MerchantStatusEnum.BUSINESS_CLOSED.getCode().equals(merchant.getStatus()));
 
-            // 商品无效 → 删除（不加入列表）
+            // 商品无效
             if (!productValid) {
-                toDeleteIds.add(item.getId());
-                continue;
+                canBuy = false;
+                if (!invalidReason.contains("商品不存在或状态无效\n"))
+                    invalidReason += "商品不存在或状态无效\n";
             }
 
             CartVO vo = getCartVO(item);
@@ -234,6 +241,10 @@ public class CartService {
             if (!merchantOpen) {
                 vo.setAvailable(false);
                 vo.setDisableReason("商家已打烊");
+
+                canBuy = false;
+                if (!invalidReason.contains("商家已打烊\n"))
+                    invalidReason += "商家已打烊\n";
             } else {
                 vo.setAvailable(true);
                 // 只有可用商品才计入总价
@@ -242,14 +253,14 @@ public class CartService {
             allItems.add(vo);
         }
 
-        // 删除无效商品记录
-        if (!toDeleteIds.isEmpty()) {
-            cartMapper.deleteBatchIds(toDeleteIds);
-        }
+
 
         CartListVO result = new CartListVO();
         result.setItems(allItems);
         result.setTotalAmount(totalAmount);
+        result.setCanBuy(canBuy);
+        result.setInvalidReason(invalidReason);
+
         return result;
     }
 

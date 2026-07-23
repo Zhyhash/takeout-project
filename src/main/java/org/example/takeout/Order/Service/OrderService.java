@@ -68,6 +68,11 @@ public class OrderService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车为空，无法创建订单");
         }
 
+        int i = cartMapper.deleteByIds(availableCartItems.stream().map(CartItem::getId).toList());
+        if (i != availableCartItems.size()) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车删除失败");
+        }
+
         // 防脏数据：过滤多商家情况
         Set<Long> merchantIds = availableCartItems.stream()
                 .map(CartItem::getMerchantId)
@@ -112,10 +117,7 @@ public class OrderService {
         orderItemService.saveBatch(orderItems);
 
 
-        int i = cartMapper.deleteByIds(availableCartItems.stream().map(CartItem::getId).toList());
-        if (i != availableCartItems.size()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车删除失败");
-        }
+
 
         return orderVOBuilder.toCreateOrderVO(order);
     }

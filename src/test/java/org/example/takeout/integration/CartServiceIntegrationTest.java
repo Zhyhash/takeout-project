@@ -6,6 +6,11 @@ import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.Service.CartService;
+import org.example.takeout.Cart.VO.CartListVO;
+import org.example.takeout.Category.Entity.Category;
+import org.example.takeout.Category.Mapper.CategoryMapper;
+import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
+import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
@@ -27,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
@@ -40,6 +46,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class CartServiceIntegrationTest {
     public static final Long MERCHANT_A_ID = 1001L;  // 商家A
     public static final Long MERCHANT_B_ID = 1002L;  // 商家B
+    public static final Long CATEGORY_A_ID = 4001L;
+    public static final Long CATEGORY_B_ID = 4002L;
 
     // ==================== 商品常量 ====================
     public static final Long PRODUCT_A1_ID = 2001L;  // 商家A的商品1
@@ -70,6 +78,9 @@ public class CartServiceIntegrationTest {
     ProductMapper  productMapper;
     @Autowired
     private MerchantMapper merchantMapper;
+
+    @Autowired
+    private CategoryMapper categoryMapper;
 
     @Autowired
     private OrderMapper orderMapper;
@@ -104,6 +115,8 @@ public class CartServiceIntegrationTest {
         // Product 使用逻辑删除；测试清理必须物理删除，才能安全复用固定主键。
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", MERCHANT_A_ID);
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", MERCHANT_B_ID);
+        categoryMapper.deleteById(CATEGORY_A_ID);
+        categoryMapper.deleteById(CATEGORY_B_ID);
         merchantMapper.deleteById(MERCHANT_A_ID);
         merchantMapper.deleteById(MERCHANT_B_ID);
     }
@@ -184,10 +197,14 @@ public class CartServiceIntegrationTest {
         );
         assertEquals(1, cartItems.size());
         assertEquals(2, cartItems.get(0).getQuantity());  // 数量应该是 2，不是 1
+
+        CartListVO list = cartService.list();
+        assertEquals(true, list.getCanBuy());
+        assertEquals("", list.getInvalidReason());
     }
 
     @Test
-    public void shouldRejectConcurrentAddsFromDifferentMerchants() throws InterruptedException {
+    public void list_shouldDetectMultipleMerchantAfterConcurrentAdd() throws InterruptedException {
         CartTestData cartTestData = createProductsAndDifferentMerchants();
         AddCartDTO iphoneDTO = cartTestData.iphoneDTO();
         AddCartDTO macbookDTO = cartTestData.macbookDTO();
@@ -236,6 +253,10 @@ public class CartServiceIntegrationTest {
         assertEquals(2, cartItems.size());
         assertEquals(1, cartItems.get(0).getQuantity());
         assertEquals(1, cartItems.get(1).getQuantity());
+
+        CartListVO list = cartService.list();
+        assertEquals(false, list.getCanBuy());
+        assertTrue(list.getInvalidReason().contains("用户购物车有多商家"));
     }
 
     @Test
@@ -284,18 +305,20 @@ public class CartServiceIntegrationTest {
                 new QueryWrapper<CartItem>()
                         .eq("user_id", USER_1_ID)
         );
-        assertEquals(11, cartItems.getQuantity());
+        assertEquals(12, cartItems.getQuantity());
     }
 
     private CartTestData createProductsAndSameMerchant() {
         Product iphone = TestDataFactory.createProduct(PRODUCT_A1_ID, PRODUCT_A1_NAME, 100, MERCHANT_A_ID);
         Product macbook = TestDataFactory.createProduct(PRODUCT_A2_ID, PRODUCT_A2_NAME, 100, MERCHANT_A_ID);
         Merchant merchant = TestDataFactory.createOpenMerchant(MERCHANT_A_ID);
-
-        productMapper.insert(iphone);
-        productMapper.insert(macbook);
+        iphone.setCategoryId(CATEGORY_A_ID);
+        macbook.setCategoryId(CATEGORY_A_ID);
 
         merchantMapper.insert(merchant);
+        categoryMapper.insert(createCategory(CATEGORY_A_ID, MERCHANT_A_ID));
+        productMapper.insert(iphone);
+        productMapper.insert(macbook);
 
         return new CartTestData(
                 createAddCartDto(PRODUCT_A1_ID),
@@ -308,12 +331,15 @@ public class CartServiceIntegrationTest {
         Product macbook = TestDataFactory.createProduct(PRODUCT_B1_ID, PRODUCT_B1_NAME, 100, MERCHANT_B_ID);
         Merchant merchant1 = TestDataFactory.createOpenMerchant(MERCHANT_A_ID);
         Merchant merchant2 = TestDataFactory.createOpenMerchant(MERCHANT_B_ID);
-
-        productMapper.insert(iphone);
-        productMapper.insert(macbook);
+        iphone.setCategoryId(CATEGORY_A_ID);
+        macbook.setCategoryId(CATEGORY_B_ID);
 
         merchantMapper.insert(merchant1);
         merchantMapper.insert(merchant2);
+        categoryMapper.insert(createCategory(CATEGORY_A_ID, MERCHANT_A_ID));
+        categoryMapper.insert(createCategory(CATEGORY_B_ID, MERCHANT_B_ID));
+        productMapper.insert(iphone);
+        productMapper.insert(macbook);
 
         return new CartTestData(
                 createAddCartDto(PRODUCT_A1_ID),
@@ -331,9 +357,21 @@ public class CartServiceIntegrationTest {
         Product iphone = TestDataFactory.createProduct(PRODUCT_A1_ID, PRODUCT_A1_NAME, 100, MERCHANT_A_ID);
         CartItem cartItem = TestDataFactory.createCartItem(CART_ITEM_1_ID, USER_1_ID, iphone, 10);
         Merchant openMerchant = TestDataFactory.createOpenMerchant(MERCHANT_A_ID);
+        iphone.setCategoryId(CATEGORY_A_ID);
+        merchantMapper.insert(openMerchant);
+        categoryMapper.insert(createCategory(CATEGORY_A_ID, MERCHANT_A_ID));
         productMapper.insert(iphone);
         cartMapper.insert(cartItem);
-        merchantMapper.insert(openMerchant);
+    }
+
+    private Category createCategory(Long id, Long merchantId) {
+        Category category = new Category();
+        category.setId(id);
+        category.setMerchantId(merchantId);
+        category.setCategoryName("购物车集成测试分类");
+        category.setStatus(CategoryStatusEnum.ACTIVE.getCode());
+        category.setIsDefault(CategoryDefaultEnum.DEFAULT.getCode());
+        return category;
     }
 
     private record CartTestData(AddCartDTO iphoneDTO, AddCartDTO macbookDTO) {
