@@ -8,7 +8,9 @@ import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
+import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Product.DTO.CreateProductDTO;
+import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
 import org.junit.jupiter.api.BeforeEach;
@@ -129,7 +131,7 @@ class MysqlApiIntegrationTest {
         assertThat(row.get("category_id")).isEqualTo(categoryId);
         assertThat(row.get("price").toString()).isEqualTo("18.80");
         assertThat(row.get("stock")).isEqualTo(20);
-        assertThat(row.get("status")).isEqualTo(1);
+        assertThat(row.get("status")).isEqualTo(ProductStatusEnum.OFF_SALE.getCode());
         assertThat(row.get("is_deleted")).isEqualTo(0);
     }
 
@@ -191,7 +193,7 @@ class MysqlApiIntegrationTest {
         Map<String, Object> row = jdbcTemplate.queryForMap(
                 "select status, pay_time from orders where id = ?",
                 seed.orderId());
-        assertThat(row.get("status")).isEqualTo(1);
+        assertThat(row.get("status")).isEqualTo(OrderStatusEnum.PAID.getCode());
         assertThat(row.get("pay_time")).isNotNull();
     }
 
@@ -211,7 +213,7 @@ class MysqlApiIntegrationTest {
                 "select stock from product where id = ?",
                 Integer.class,
                 seed.productId());
-        assertThat(row.get("status")).isEqualTo(3);
+        assertThat(row.get("status")).isEqualTo(OrderStatusEnum.CANCELLED.getCode());
         assertThat(stock).isEqualTo(10);
     }
 
@@ -387,7 +389,7 @@ class MysqlApiIntegrationTest {
         Map<String, Object> row = jdbcTemplate.queryForMap(
                 "select status, finish_time from orders where id = ?",
                 seed.orderId());
-        assertThat(row.get("status")).isEqualTo(2);
+        assertThat(row.get("status")).isEqualTo(OrderStatusEnum.FINISHED.getCode());
         assertThat(row.get("finish_time")).isNotNull();
     }
 
@@ -827,7 +829,6 @@ class MysqlApiIntegrationTest {
                     `original_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
                     `discount_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
                     `pay_time` datetime NULL DEFAULT NULL,
-                    `version` int NOT NULL DEFAULT 0,
                     PRIMARY KEY (`id`) USING BTREE,
                     UNIQUE INDEX `uk_order_no` (`order_no` ASC) USING BTREE,
                     INDEX `idx_order_user` (`user_id` ASC) USING BTREE,

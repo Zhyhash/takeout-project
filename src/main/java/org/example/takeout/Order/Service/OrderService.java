@@ -3,6 +3,7 @@ package org.example.takeout.Order.Service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
+import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.Service.cartDomainService;
@@ -23,7 +24,6 @@ import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
-import org.example.takeout.Product.Service.ProductService;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -49,8 +49,6 @@ public class OrderService {
     @Autowired
     private OrderVOBuilder orderVOBuilder;
     @Autowired
-    private MerchantMapper merchantMapper;
-    @Autowired
     private OrderConvertor orderConvertor;
     @Autowired
     private cartDomainService cartDomainService;
@@ -63,7 +61,9 @@ public class OrderService {
         Long userId = UserContextHolder.getUserId();
 
         // 获取可用购物车（内部已校验商品/商家状态）
-        List<CartItem> availableCartItems = cartDomainService.getAvailableCartItems(userId);
+        CartAvailableResult result = cartDomainService.getAvailableCartItems(userId);
+
+        List<CartItem> availableCartItems = result.getAvailableItems();
         if (availableCartItems == null || availableCartItems.isEmpty()) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车为空，无法创建订单");
         }
@@ -74,6 +74,7 @@ public class OrderService {
         }
 
         // 防脏数据：过滤多商家情况
+        Map<Long, Merchant> merchantMap = result.getMerchantMap();
         Set<Long> merchantIds = availableCartItems.stream()
                 .map(CartItem::getMerchantId)
                 .filter(Objects::nonNull)
@@ -83,15 +84,12 @@ public class OrderService {
         }
         Long merchantId = merchantIds.iterator().next();
 
-        Merchant merchant = merchantMapper.selectById(merchantId);
+        Merchant merchant = merchantMap.get(merchantId);
         if (merchant == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商家不存在");
         }
 
-
-        List<Long> productIds = availableCartItems.stream().map(CartItem::getProductId).toList();
-        Map<Long, Product> productMap = productMapper.selectBatchIds(productIds).stream()
-                .collect(Collectors.toMap(Product::getId, p -> p));
+        Map<Long, Product> productMap = result.getProductMap();
 
 
         BigDecimal totalAmount = orderDomainService.calculateTotalAmount(availableCartItems, productMap);
@@ -112,11 +110,8 @@ public class OrderService {
 
         orderMapper.insert(order);
 
-
         List<OrderItem> orderItems = orderItemService.buildOrderItems(order, availableCartItems, productMap);
         orderItemService.saveBatch(orderItems);
-
-
 
 
         return orderVOBuilder.toCreateOrderVO(order);
@@ -130,7 +125,7 @@ public class OrderService {
     public OrderDetailVO searchOrderDetailById(@NonNull Long orderId){
         Long userId = UserContextHolder.getUserId();
         //只查询订单，不需要状态机
-        Order order = orderDomainService.getAndCheckOrder(orderId, userId, null);
+        Order order = orderDomainService.getOrder(orderId, userId);
 
         //查询item
         List<OrderItem> orderItems = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
@@ -171,15 +166,15 @@ public class OrderService {
     @Transactional(rollbackFor = Exception.class)
     public void cancelOrder(Long orderId){
         Long userId = UserContextHolder.getUserId();
-        //检查订单id是否存在
-        Order order = orderDomainService.getAndCheckOrder(orderId, userId, OrderStatusEnum.WAIT_PAY.getCode());
-
-        //修改状态，需要二次使用数据库，似乎简化不了
-        order.setStatus(OrderStatusEnum.CANCELLED.getCode());
-        int updateCount = orderMapper.updateById(order);
-        if (updateCount != 1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "取消订单失败，请刷新后重试");
+        //检查订单id是否存在并直接关系
+        ArrayList<Integer> canCancelList =new ArrayList<>(
+                List.of(OrderStatusEnum.WAIT_PAY.getCode())
+        );
+        int rows = orderMapper.UpdateOrderStatusToCancel(orderId, userId, canCancelList, OrderStatusEnum.CANCELLED.getCode());
+        if (rows != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或当前状态不可取消");
         }
+
 
         //取消了之后需要将库存还回去
         List<OrderItem> orderItems = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery().
@@ -215,32 +210,34 @@ public class OrderService {
     @Transactional(rollbackFor = Exception.class)
     public void payOrder(Long orderId){
         Long userId = UserContextHolder.getUserId();
-        Order order = orderDomainService.getAndCheckOrder(orderId, userId, OrderStatusEnum.WAIT_PAY.getCode());
-        //订单已经支付
+        int i = orderMapper.updateOrderStatusToPaying(orderId, userId,
+                OrderStatusEnum.WAIT_PAY.getCode(), OrderStatusEnum.PAYING.getCode());
+        if (i!=1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单不存在或当前状态不可支付");
+        }
         if (paying()){
-            order.setStatus(OrderStatusEnum.PAID.getCode());
-            // NOTE V2：已支付订单取消需进入退款流程，不应直接修改为 CANCELLED
-            order.setUpdateTime(LocalDateTime.now());
-            order.setPayTime(LocalDateTime.now());
-            int i = orderMapper.updateById(order);
-            if (i != 1) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单支付失败");
+            int row = orderMapper.updateOrderStatusToPaid(orderId, userId,
+                    OrderStatusEnum.PAYING.getCode(),
+                    OrderStatusEnum.PAID.getCode(),LocalDateTime.now());
+            if (row!=1) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
             }
+        }else {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
         }
     }
 
     //NOTE:用户点击确认查收
     @Transactional(rollbackFor = Exception.class)
-    public void CheckedOrder(Long orderId){
+    public void checkedOrder(Long orderId){
         Long userId = UserContextHolder.getUserId();
-        Order order = orderDomainService.getAndCheckOrder(orderId, userId, OrderStatusEnum.PAID.getCode());
 
-        order.setStatus(OrderStatusEnum.FINISHED.getCode());
-        order.setUpdateTime(LocalDateTime.now());
-        order.setFinishTime(LocalDateTime.now());
-        int i = orderMapper.updateById(order);
+        int i = orderMapper.updateOrderStatusToFinished(orderId,userId,
+                OrderStatusEnum.PAID.getCode(),
+                OrderStatusEnum.FINISHED.getCode(),LocalDateTime.now());
         if (i != 1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单确认失败");
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或当前状态不可确认");
         }
     }
 }

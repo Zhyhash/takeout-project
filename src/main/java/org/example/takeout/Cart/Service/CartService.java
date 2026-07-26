@@ -269,6 +269,8 @@ public class CartService {
         CartListVO empty = new CartListVO();
         empty.setItems(Collections.emptyList());
         empty.setTotalAmount(BigDecimal.ZERO);
+        empty.setCanBuy(false);
+        empty.setInvalidReason("购物车为空");
         return empty;
     }
     @Transactional(rollbackFor = Exception.class)

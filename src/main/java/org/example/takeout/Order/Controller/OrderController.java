@@ -78,7 +78,7 @@ public class OrderController {
      * */
     @PatchMapping("{id}/confirm")
     public Result<?> confirm(@PathVariable Long id){
-        orderService.CheckedOrder(id);
+        orderService.checkedOrder(id);
         return Result.success("确认收货成功");
     }
 }

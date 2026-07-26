@@ -1,8 +1,10 @@
 package org.example.takeout.Cart.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
@@ -30,18 +32,26 @@ public class cartDomainService {
     private CartMapper cartMapper;
     @Autowired
     private ProductMapper productMapper;
-    public List<CartItem> getAvailableCartItems(Long userId) {
+    public CartAvailableResult getAvailableCartItems(Long userId) {
         List<CartItem> allItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
                 .eq(CartItem::getUserId, userId));
-        if (allItems.isEmpty()) return Collections.emptyList();
+        if (allItems.isEmpty()) return new CartAvailableResult();
 
         // 批量查询商品和商家（性能优化）
-        List<Long> productIds = allItems.stream().map(CartItem::getProductId).collect(Collectors.toList());
+        List<Long> productIds = allItems.stream().map(CartItem::getProductId).toList();
         List<Long> merchantIds = allItems.stream().map(CartItem::getMerchantId).collect(Collectors.toList());
 
-        Map<Long, Product> productMap = productMapper.selectBatchIds(productIds).stream()
+        Map<Long, Product> productMap = productMapper.selectList(Wrappers.<Product>lambdaQuery().in(Product::getId, productIds)
+                .eq(Product::getStatus, ProductStatusEnum.ON_SALE.getCode())
+                .eq(Product::getIsDeleted, DeleteConstant.NOT_DELETED))
+                .stream()
                 .collect(Collectors.toMap(Product::getId, p -> p));
-        Map<Long, Merchant> merchantMap = merchantMapper.selectBatchIds(merchantIds).stream()
+
+        Map<Long, Merchant> merchantMap = merchantMapper.selectList(
+                        Wrappers.<Merchant>lambdaQuery()
+                                .in(Merchant::getId, merchantIds)
+                                .ne(Merchant::getStatus, MerchantStatusEnum.BUSINESS_CLOSED.getCode()))
+                .stream()
                 .collect(Collectors.toMap(Merchant::getId, m -> m));
 
         List<CartItem> available = new ArrayList<>();
@@ -53,6 +63,10 @@ public class cartDomainService {
                 available.add(item);
             }
         }
-        return available;
+        CartAvailableResult cartAvailableResult = new CartAvailableResult();
+        cartAvailableResult.setAvailableItems(available);
+        cartAvailableResult.setProductMap(productMap);
+        cartAvailableResult.setMerchantMap(merchantMap);
+        return cartAvailableResult;
     }
 }

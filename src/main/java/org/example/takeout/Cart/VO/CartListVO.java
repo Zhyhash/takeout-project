@@ -12,7 +12,7 @@ public class CartListVO {
 
     private BigDecimal totalAmount;
 
-    private Boolean canBuy;
+    private Boolean canBuy = true;
 
-    private String invalidReason;
+    private String invalidReason = "";
 }

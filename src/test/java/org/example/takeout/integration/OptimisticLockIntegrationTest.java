@@ -40,6 +40,7 @@ public class OptimisticLockIntegrationTest {
     private static final Long TEST_PRODUCT_ID = 9_003_001L;
     private static final Long TEST_CART_ID_CUP = 9_004_001L;
     private static final Long TEST_CART_ID_MILK = 9_004_002L;
+    private static final Long TEST_CATEGORY_ID = 9_005_001L;
 
     @Autowired
     private OrderService orderService;
@@ -90,7 +91,9 @@ public class OptimisticLockIntegrationTest {
                         10,
                         TEST_MERCHANT_ID
                 );
+        product.setCategoryId(TEST_CATEGORY_ID);
 
+        insertCategory();
         productMapper.insert(product);
 
 
@@ -140,7 +143,15 @@ public class OptimisticLockIntegrationTest {
                 .eq(CartItem::getUserId, TEST_USER_ID));
         // Product 使用逻辑删除；测试清理必须物理删除，才能安全复用固定主键。
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", TEST_MERCHANT_ID);
+        jdbcTemplate.update("DELETE FROM category WHERE merchant_id = ?", TEST_MERCHANT_ID);
         merchantMapper.deleteById(TEST_MERCHANT_ID);
+    }
+
+    private void insertCategory() {
+        jdbcTemplate.update("""
+                INSERT IGNORE INTO category (id, merchant_id, category_name, status, is_default)
+                VALUES (?, ?, 'optimistic_lock_test_category', 0, 0)
+                """, TEST_CATEGORY_ID, TEST_MERCHANT_ID);
     }
 }
 

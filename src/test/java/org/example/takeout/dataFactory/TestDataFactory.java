@@ -94,7 +94,6 @@ public final class TestDataFactory {
         order.setReceiverAddress("测试地址");
         order.setCreateTime(now);
         order.setUpdateTime(now);
-        order.setVersion(0);
         return order;
     }
 

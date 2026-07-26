@@ -1,6 +1,10 @@
 package org.example.takeout.Order.Entity;
 
-import com.baomidou.mybatisplus.annotation.*;
+import com.baomidou.mybatisplus.annotation.FieldFill;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -93,6 +97,4 @@ public class Order {
 
     private LocalDateTime payTime;
 
-    @Version
-    private Integer version;
 }

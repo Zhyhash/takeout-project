@@ -7,9 +7,10 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 @Getter
 public enum OrderStatusEnum {
     WAIT_PAY(0, "待支付"),
-    PAID(1, "已支付"),
-    FINISHED(2,"已完成"),
-    CANCELLED(3, "已取消");
+    PAYING(1,"正在支付"),
+    PAID(2, "已支付"),
+    FINISHED(3,"已完成"),
+    CANCELLED(4, "已取消");
 
     // getter 方法
     private final Integer code;   // 数据库存这个数字

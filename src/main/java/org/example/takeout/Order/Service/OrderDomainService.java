@@ -27,11 +27,10 @@ public class OrderDomainService {
     private OrderMapper orderMapper;
     @Autowired
     private ProductMapper productMapper;
-    public Order getAndCheckOrder(Long orderId, Long userId, Integer expectedStatus) {
+    public Order getOrder(Long orderId, Long userId) {
         Order order = orderMapper.selectOne(Wrappers.<Order>lambdaQuery()
                 .eq(Order::getId, orderId)
-                .eq(Order::getUserId, userId)
-                .eq(expectedStatus != null, Order::getStatus, expectedStatus));
+                .eq(Order::getUserId, userId));
         if (order == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或状态不符");
         }
@@ -53,42 +52,7 @@ public class OrderDomainService {
         return "ORD" + System.currentTimeMillis() +
                 UUID.randomUUID().toString().substring(0, 4);
     }
-    //NOTE:直接抽取判断购物车是否合法方法出来
-    /**
-     * 用户的购物车项目
-     */
-    Map<Long, Product> getAndCheckProducts(List<CartItem> cartItems){
-        if (cartItems == null || cartItems.isEmpty()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车是空的");
-        }
 
-        List<Long> productIds = cartItems.stream().map(CartItem::getProductId).filter(Objects::nonNull).toList();
-        List<Product> products = productMapper.selectBatchIds(productIds);
-        List<Product> safeProducts = products == null ? Collections.emptyList() : products;
-
-        // 💡 修正 1：过滤出真正【合法且在售】的商品 ID 集合
-        Set<Long> validIds = safeProducts.stream()
-                // 必须用 getStatus() 去比对在售状态码！
-                .filter(product -> product.getStatus() != null && product.getStatus().equals(ProductStatusEnum.ON_SALE.getCode()))
-                .map(Product::getId)
-                .collect(Collectors.toSet());
-
-        // 💡 修正 2：找出用户购物车里那些【不存在、已下架、或被物理删除】的坏数据 ID
-        List<Long> invalidIds = productIds.stream()
-                .filter(id -> !validIds.contains(id))
-                .toList();
-
-        if (!invalidIds.isEmpty()) {
-            throw new CartItemInvalidException("部分商品已下架或失效，请刷新购物车", invalidIds);
-        }
-
-        return safeProducts.stream()
-                .collect(Collectors.toMap(
-                        Product::getId,
-                        product -> product,
-                        (existing, replacement) -> existing // 吹爆你写的这个合并函数，非常优雅！
-                ));
-    }
     //NOTE:计算金额方法
     BigDecimal calculateTotalAmount(@NonNull List<CartItem> cartItems, Map<Long, Product> productMap) {
         return cartItems.stream().

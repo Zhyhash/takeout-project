@@ -106,7 +106,9 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data.items[0].id").value(401))
-                .andExpect(jsonPath("$.data.totalAmount").value(25.00));
+                .andExpect(jsonPath("$.data.totalAmount").value(25.00))
+                .andExpect(jsonPath("$.data.canBuy").value(true))
+                .andExpect(jsonPath("$.data.invalidReason").value(""));
     }
 
     @Test
@@ -322,7 +324,7 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
 
     @Test
     void confirmOrderRejectsRepeatedSubmit() throws Exception {
-        doThrow(businessError("status mismatch")).when(orderService).CheckedOrder(501L);
+        doThrow(businessError("status mismatch")).when(orderService).checkedOrder(501L);
 
         mockMvc.perform(patch("/order/501/confirm")
                         .header("Authorization", userBearer()))

@@ -25,6 +25,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -45,6 +47,7 @@ class OrderServiceIntegrationTest {
     private static final Long TEST_PRODUCT_ID_MILK = 9_003_002L;
     private static final Long TEST_CART_ID_CUP = 9_004_001L;
     private static final Long TEST_CART_ID_MILK = 9_004_002L;
+    private static final Long TEST_CATEGORY_ID = 9_005_001L;
 
     @Autowired
     private OrderService orderService;
@@ -104,12 +107,80 @@ class OrderServiceIntegrationTest {
     @Test
     void cancelOrder_shouldFailWhenOrderAlreadyCancelled() {
         insertMerchant();
-
+        // 不插入 OrderItem / Product。
+        // 如果错误地继续执行归还库存，这里应该会因为缺少关联数据而失败。
+        // 测试通过说明状态校验后已直接返回，没有进入库存归还流程。
         Order order = insertOrder(OrderStatusEnum.CANCELLED.getCode());
 
         assertThrows(BusinessException.class, () -> orderService.cancelOrder(order.getId()));
 
         assertEquals(OrderStatusEnum.CANCELLED.getCode(), orderMapper.selectById(order.getId()).getStatus());
+
+    }
+
+    @Test
+    void cancelOrder_ConcurrentOrder() throws InterruptedException {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        Order order = insertOrder(OrderStatusEnum.WAIT_PAY.getCode());
+        OrderItem item = TestDataFactory.createOrderItem(order.getId(), product, 1);
+        orderItemMapper.insert(item);
+        int stockBeforeCancellation = productMapper.selectById(product.getId()).getStock();
+
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger fail = new AtomicInteger();
+        AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Thread t1= new Thread(() -> {
+            UserContextHolder.setUserId(TEST_USER_ID);
+            try {
+                latch.await();
+                orderService.cancelOrder(order.getId());
+                success.incrementAndGet();
+            } catch (Throwable e) {
+                firstFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        Thread t2= new Thread(() -> {
+            UserContextHolder.setUserId(TEST_USER_ID);
+            try {
+                latch.await();
+                orderService.cancelOrder(order.getId());
+                success.incrementAndGet();
+            } catch (Throwable e) {
+                secondFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        t1.start();
+        t2.start();
+
+        latch.countDown();
+
+        t1.join();
+        t2.join();
+
+        Order cancledOrder = orderMapper.selectById(order.getId());
+        //最终一致性
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(), cancledOrder.getStatus());
+        //库存一致
+        assertEquals(stockBeforeCancellation + item.getQuantity(),
+                productMapper.selectById(product.getId()).getStock());
+        //并发应该一次成功一次失败
+        assertEquals(1, success.get());
+        assertEquals(1, fail.get());
+        assertExpectedConcurrentCancelFailure(firstFailure.get(), secondFailure.get());
+        //第n次取消应该会有异常（第二次也有，就是不知道怎么抓）
+        assertThrows(BusinessException.class, () -> orderService.cancelOrder(cancledOrder.getId()));
+
     }
 
     @Test
@@ -186,6 +257,8 @@ class OrderServiceIntegrationTest {
     @Test
     void createOrder_shouldCreateOnceSuccessfullyWhenCurrentCreate() throws InterruptedException {
         CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure = new AtomicReference<>();
         insertMerchant();
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
         insertCartItem(product,5);
@@ -194,8 +267,8 @@ class OrderServiceIntegrationTest {
                 UserContextHolder.setUserId(TEST_USER_ID);
                 latch.await();
                 orderService.createOrder(TestDataFactory.createOrderDTO());
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+            } catch (Throwable e) {
+                firstFailure.set(e);
             }finally {
                 UserContextHolder.clear();
             }
@@ -205,8 +278,8 @@ class OrderServiceIntegrationTest {
                 UserContextHolder.setUserId(TEST_USER_ID);
                 latch.await();
                 orderService.createOrder(TestDataFactory.createOrderDTO());
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+            } catch (Throwable e) {
+                secondFailure.set(e);
             }finally {
                 UserContextHolder.clear();
             }
@@ -220,6 +293,9 @@ class OrderServiceIntegrationTest {
         t1.join();
         t2.join();
 
+        assertExpectedConcurrentCreateFailure(firstFailure.get());
+        assertExpectedConcurrentCreateFailure(secondFailure.get());
+
         List<Order> orders = findTestUserOrder();
         List<OrderItem> orderItem = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery().
                 eq(OrderItem::getProductId, product.getId()));
@@ -232,8 +308,145 @@ class OrderServiceIntegrationTest {
         assertTrue(cartItems.isEmpty(), "购物车应该为空");
     }
 
+    @Test
+    void payOrder_ConcurrentOrder() throws InterruptedException {
+        insertMerchant();
+        Order order = insertOrder(OrderStatusEnum.WAIT_PAY.getCode());
+
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger fail = new AtomicInteger();
+        AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Thread t1= new Thread(() -> {
+            UserContextHolder.setUserId(TEST_USER_ID);
+            try {
+                latch.await();
+                orderService.payOrder(order.getId());
+                success.incrementAndGet();
+            } catch (Throwable e) {
+                firstFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        Thread t2= new Thread(() -> {
+            UserContextHolder.setUserId(TEST_USER_ID);
+            try {
+                latch.await();
+                orderService.payOrder(order.getId());
+                success.incrementAndGet();
+            } catch (Throwable e) {
+                secondFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        t1.start();
+        t2.start();
+
+        latch.countDown();
+
+        t1.join();
+        t2.join();
+
+        assertEquals(1, success.get());
+        assertEquals(1, fail.get());
+        assertExpectedConcurrentPayFailure(firstFailure.get(), secondFailure.get());
+
+        Order paidOrder = orderMapper.selectById(order.getId());
+        assertEquals(OrderStatusEnum.PAID.getCode(), paidOrder.getStatus());
+        assertNotNull(paidOrder.getPayTime());
+        assertEquals(1, orderMapper.selectCount(Wrappers.<Order>lambdaQuery()
+                .eq(Order::getUserId, TEST_USER_ID)
+                .isNotNull(Order::getPayTime)));
+    }
+
+    @Test
+    void checkOrder_ConcurrentOrder() throws InterruptedException {
+        insertMerchant();
+        Order order = insertOrder(OrderStatusEnum.PAID.getCode());
+
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger fail = new AtomicInteger();
+
+        AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Thread t1= new Thread(() -> {
+            UserContextHolder.setUserId(TEST_USER_ID);
+            try {
+                latch.await();
+                orderService.checkedOrder(order.getId());
+                success.incrementAndGet();
+            } catch (Throwable e) {
+                firstFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+
+        });
+
+        Thread t2= new Thread(() -> {
+            UserContextHolder.setUserId(TEST_USER_ID);
+            try {
+                latch.await();
+                orderService.checkedOrder(order.getId());
+                success.incrementAndGet();
+            } catch (Throwable e) {
+                secondFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        t1.start();
+        t2.start();
+        latch.countDown();
+        t1.join();
+        t2.join();
+
+        assertEquals(1, success.get());
+        assertEquals(1, fail.get());
+
+        Order finishOrder = orderMapper.selectById(order.getId());
+        assertEquals(OrderStatusEnum.FINISHED.getCode(), finishOrder.getStatus());
+        assertNotNull(finishOrder.getFinishTime());
+        assertEquals(1, orderMapper.selectCount(Wrappers.<Order>lambdaQuery()
+                .eq(Order::getUserId, TEST_USER_ID)
+                .isNotNull(Order::getFinishTime)));
+
+        Throwable failure = firstFailure.get() == null ? secondFailure.get() : firstFailure.get();
+        assertInstanceOf(BusinessException.class, failure);
+
+    }
+
+    private void assertExpectedConcurrentCreateFailure(Throwable failure) {
+        if (failure != null) {
+            assertInstanceOf(BusinessException.class, failure);
+        }
+    }
+
+    private void assertExpectedConcurrentCancelFailure(Throwable firstFailure, Throwable secondFailure) {
+        Throwable failure = firstFailure == null ? secondFailure : firstFailure;
+        assertInstanceOf(BusinessException.class, failure);
+    }
+
+    private void assertExpectedConcurrentPayFailure(Throwable firstFailure, Throwable secondFailure) {
+        Throwable failure = firstFailure == null ? secondFailure : firstFailure;
+        assertInstanceOf(BusinessException.class, failure);
+    }
+
     private Product insertProduct(Long id, String name, int stock) {
         Product product = TestDataFactory.createProduct(id, name, stock, TEST_MERCHANT_ID);
+        product.setCategoryId(TEST_CATEGORY_ID);
+        insertCategory();
         productMapper.insert(product);
         return product;
     }
@@ -254,6 +467,13 @@ class OrderServiceIntegrationTest {
         Merchant openMerchant = TestDataFactory.createOpenMerchant(TEST_MERCHANT_ID);
         merchantMapper.insert(openMerchant);
         return openMerchant;
+    }
+
+    private void insertCategory() {
+        jdbcTemplate.update("""
+                INSERT IGNORE INTO category (id, merchant_id, category_name, status, is_default)
+                VALUES (?, ?, 'order_service_test_category', 0, 0)
+                """, TEST_CATEGORY_ID, TEST_MERCHANT_ID);
     }
 
     private long countTestUserCartItems() {
@@ -282,6 +502,7 @@ class OrderServiceIntegrationTest {
                 .eq(CartItem::getUserId, TEST_USER_ID));
         // Product 使用逻辑删除；测试清理必须物理删除，才能安全复用固定主键。
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", TEST_MERCHANT_ID);
+        jdbcTemplate.update("DELETE FROM category WHERE merchant_id = ?", TEST_MERCHANT_ID);
         merchantMapper.deleteById(TEST_MERCHANT_ID);
     }
 }

@@ -28,6 +28,7 @@ public interface CartMapper extends BaseMapper<CartItem> {
         ON DUPLICATE KEY UPDATE
             id = LAST_INSERT_ID(id),
             quantity = quantity + 1,
+            version = version+1,
             update_time = CURRENT_TIMESTAMP
         """)
     int addOrIncrease(CartItem cartItem);
