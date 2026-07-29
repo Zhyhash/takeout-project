@@ -7,12 +7,14 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
+import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderService;
+import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.dataFactory.TestDataFactory;
@@ -21,10 +23,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -42,6 +50,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class OrderServiceIntegrationTest {
 
     private static final Long TEST_USER_ID = 9_001_001L;
+    private static final Long TEST_OTHER_USER_ID = 9_001_002L;
     private static final Long TEST_MERCHANT_ID = 9_002_001L;
     private static final Long TEST_PRODUCT_ID_CUP = 9_003_001L;
     private static final Long TEST_PRODUCT_ID_MILK = 9_003_002L;
@@ -70,6 +79,9 @@ class OrderServiceIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private DataSource dataSource;
+
     @BeforeEach
     void setUp() {
         deleteTestData();
@@ -86,6 +98,7 @@ class OrderServiceIntegrationTest {
         }
     }
 
+    //NOTE：测试取消待支付订单时订单状态会变为已取消并恢复商品库存
     @Test
     void cancelOrder_shouldCancelOrderAndRestoreStock() {
         insertMerchant();
@@ -104,6 +117,7 @@ class OrderServiceIntegrationTest {
         );
     }
 
+    //NOTE：测试重复取消已取消订单时操作会失败且不会再次归还库存
     @Test
     void cancelOrder_shouldFailWhenOrderAlreadyCancelled() {
         insertMerchant();
@@ -118,6 +132,7 @@ class OrderServiceIntegrationTest {
 
     }
 
+    //NOTE：测试并发取消同一订单时仅一次成功且库存只恢复一次
     @Test
     void cancelOrder_ConcurrentOrder() throws InterruptedException {
         insertMerchant();
@@ -183,23 +198,35 @@ class OrderServiceIntegrationTest {
 
     }
 
+    //NOTE：测试库存不足时创建订单会失败且不修改库存、购物车和订单数据
+    //NOTE：7.29补充，测试在事务失败后使用同一 requestId 重试是否成功
     @Test
     void createOrder_shouldFailWhenStockInsufficient() {
         insertMerchant();
 
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "极简智能水杯", 10);
         cartMapper.insert(TestDataFactory.createCartItem(TEST_CART_ID_CUP, TEST_USER_ID, product, 15));
-
+        CreateOrderDTO orderDTO = TestDataFactory.createOrderDTO();
         assertThrows(
                 BusinessException.class,
-                () -> orderService.createOrder(TestDataFactory.createOrderDTO())
+                () -> orderService.createOrder(orderDTO)
         );
 
         assertEquals(10, productMapper.selectById(product.getId()).getStock());
         assertEquals(1L, countTestUserCartItems());
         assertTrue(findTestUserOrder().isEmpty());
+
+
+        product.setStock(100);
+        productMapper.updateById(product);
+        orderService.createOrder(orderDTO);
+        assertEquals(85, productMapper.selectById(product.getId()).getStock());
+        assertEquals(0L, countTestUserCartItems());
+        assertFalse(findTestUserOrder().isEmpty());
+
     }
 
+    //NOTE：测试购物车为空时创建订单会失败且不生成订单
     @Test
     void createOrder_shouldFailWhenCartEmpty() {
         insertMerchant();
@@ -214,6 +241,7 @@ class OrderServiceIntegrationTest {
         assertTrue(findTestUserOrder().isEmpty());
     }
 
+    //NOTE：测试第二件商品库存不足时创建订单相关操作会全部回滚
     @Test
     void createOrder_shouldRollbackAllWhenSecondProductStockInsufficient() {
         insertMerchant();
@@ -236,6 +264,8 @@ class OrderServiceIntegrationTest {
     }
 
 
+    //NOTE：测试订单能够成功创建且初始状态为待支付
+    //NOTE: 测试两次非并发的相同requestId请求都能够成功
     @Test
     void createOrder_shouldCreateSuccessfully(){
         //准备数据
@@ -243,32 +273,196 @@ class OrderServiceIntegrationTest {
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
         insertCartItem(product, 5);
 
-        orderService.createOrder(TestDataFactory.createOrderDTO());
+        CreateOrderDTO dto = TestDataFactory.createOrderDTO();
 
-        List<Order> order = findTestUserOrder();
+        CreateOrderVO first = orderService.createOrder(dto);
+        CreateOrderVO second = orderService.createOrder(dto);
 
-        assertNotNull(order);
+        assertEquals(first.getOrderId(), second.getOrderId());
+
+        List<Order> orders = findTestUserOrder();
+        assertEquals(1, orders.size());
         assertEquals(
                 OrderStatusEnum.WAIT_PAY.getCode(),
-                order.get(0).getStatus()
+                orders.get(0).getStatus()
+        );
+        assertEquals(dto.getRequestId(), orders.get(0).getRequestId());
+        assertEquals(5, productMapper.selectById(product.getId()).getStock());
+
+        List<OrderItem> orderItems = orderItemMapper.selectList(
+                Wrappers.<OrderItem>lambdaQuery()
+                        .eq(OrderItem::getOrderId, first.getOrderId())
+        );
+        assertEquals(1, orderItems.size());
+        assertEquals(5, orderItems.get(0).getQuantity());
+    }
+
+    /// 临时测试：检验数据库唯一键是否真的存在
+    @Test
+    void createOrderTemplate(){
+        Order order1 = TestDataFactory.createOrder(
+                TEST_USER_ID, TEST_MERCHANT_ID, OrderStatusEnum.WAIT_PAY.getCode());
+
+        order1.setRequestId("TEST_REQUEST");
+
+        orderMapper.insert(order1);
+
+
+        Order order2 = TestDataFactory.createOrder(
+                TEST_USER_ID, TEST_MERCHANT_ID, OrderStatusEnum.WAIT_PAY.getCode());
+        order2.setRequestId("TEST_REQUEST");
+
+        assertThrows(
+                DuplicateKeyException.class,
+                () -> orderMapper.insert(order2)
         );
     }
 
     @Test
-    void createOrder_shouldCreateOnceSuccessfullyWhenCurrentCreate() throws InterruptedException {
+    void sameRequestId_shouldAllowOrdersForDifferentUsers() {
+        String requestId = "SAME_REQUEST_DIFFERENT_USERS";
+        Order firstUserOrder = TestDataFactory.createOrder(
+                TEST_USER_ID, TEST_MERCHANT_ID, OrderStatusEnum.WAIT_PAY.getCode());
+        Order secondUserOrder = TestDataFactory.createOrder(
+                TEST_OTHER_USER_ID, TEST_MERCHANT_ID, OrderStatusEnum.WAIT_PAY.getCode());
+        firstUserOrder.setRequestId(requestId);
+        secondUserOrder.setRequestId(requestId);
+
+        assertEquals(1, orderMapper.insert(firstUserOrder));
+        assertEquals(1, orderMapper.insert(secondUserOrder));
+
+        assertEquals(1L, orderMapper.selectCount(Wrappers.<Order>lambdaQuery()
+                .eq(Order::getUserId, TEST_USER_ID)
+                .eq(Order::getRequestId, requestId)));
+        assertEquals(1L, orderMapper.selectCount(Wrappers.<Order>lambdaQuery()
+                .eq(Order::getUserId, TEST_OTHER_USER_ID)
+                .eq(Order::getRequestId, requestId)));
+    }
+
+    @Test
+    void sameUniqueKey_secondInsertShouldFailAfterFirstTransactionCommits() throws Exception {
+        String requestId = "LOW_LEVEL_COMMIT_REQUEST";
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<Integer> secondInsert = null;
+
+        try (Connection firstConnection = dataSource.getConnection()) {
+            firstConnection.setAutoCommit(false);
+            boolean firstTransactionFinished = false;
+            try {
+                assertEquals(1, insertOrder(firstConnection, "LOW_LEVEL_COMMIT_FIRST", requestId));
+
+                CountDownLatch secondInsertStarted = new CountDownLatch(1);
+                secondInsert = submitOrderInsert(
+                        executor,
+                        secondInsertStarted,
+                        "LOW_LEVEL_COMMIT_SECOND",
+                        requestId
+                );
+
+                assertTrue(secondInsertStarted.await(5, TimeUnit.SECONDS));
+                assertSecondInsertIsBlocked(secondInsert);
+
+                firstConnection.commit();
+                firstTransactionFinished = true;
+
+                Future<Integer> completedSecondInsert = secondInsert;
+                ExecutionException exception = assertThrows(
+                        ExecutionException.class,
+                        () -> completedSecondInsert.get(5, TimeUnit.SECONDS)
+                );
+                assertInstanceOf(SQLIntegrityConstraintViolationException.class, exception.getCause());
+                SQLException duplicateKey = (SQLException) exception.getCause();
+                assertEquals("23000", duplicateKey.getSQLState());
+                assertEquals(1062, duplicateKey.getErrorCode());
+                assertEquals(1L, countOrdersByRequestId(requestId));
+            } finally {
+                if (!firstTransactionFinished) {
+                    firstConnection.rollback();
+                }
+            }
+        } finally {
+            stopExecutor(executor, secondInsert);
+        }
+    }
+
+    @Test
+    void sameUniqueKey_secondInsertShouldSucceedAfterFirstTransactionRollsBack() throws Exception {
+        String requestId = "LOW_LEVEL_ROLLBACK_REQUEST";
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<Integer> secondInsert = null;
+
+        try (Connection firstConnection = dataSource.getConnection()) {
+            firstConnection.setAutoCommit(false);
+            boolean firstTransactionFinished = false;
+            try {
+                assertEquals(1, insertOrder(firstConnection, "LOW_LEVEL_ROLLBACK_FIRST", requestId));
+
+                CountDownLatch secondInsertStarted = new CountDownLatch(1);
+                secondInsert = submitOrderInsert(
+                        executor,
+                        secondInsertStarted,
+                        "LOW_LEVEL_ROLLBACK_SECOND",
+                        requestId
+                );
+
+                assertTrue(secondInsertStarted.await(5, TimeUnit.SECONDS));
+                assertSecondInsertIsBlocked(secondInsert);
+
+                firstConnection.rollback();
+                firstTransactionFinished = true;
+
+                assertEquals(1, secondInsert.get(5, TimeUnit.SECONDS));
+                assertEquals(1L, countOrdersByRequestId(requestId));
+                assertEquals(
+                        "LOW_LEVEL_ROLLBACK_SECOND",
+                        jdbcTemplate.queryForObject(
+                                "SELECT order_no FROM orders WHERE user_id = ? AND request_id = ?",
+                                String.class,
+                                TEST_USER_ID,
+                                requestId
+                        )
+                );
+            } finally {
+                if (!firstTransactionFinished) {
+                    firstConnection.rollback();
+                }
+            }
+        } finally {
+            stopExecutor(executor, secondInsert);
+        }
+    }
+
+    //NOTE：测试并发创建订单时在相同的requestId仅生成一份订单和订单项并清空购物车
+    @Test
+    void createOrder_shouldCreateOnceForConcurrentSameRequestId() throws InterruptedException {
         CountDownLatch latch = new CountDownLatch(1);
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger fail = new AtomicInteger();
+
+
         AtomicReference<Throwable> firstFailure = new AtomicReference<>();
         AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+
+        AtomicReference<CreateOrderVO> firstResult =
+                new AtomicReference<>();
+        AtomicReference<CreateOrderVO> secondResult =
+                new AtomicReference<>();
+
+
         insertMerchant();
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
         insertCartItem(product,5);
+        CreateOrderDTO sameRequest = TestDataFactory.createOrderDTO();
         Thread t1 = new Thread(() -> {
             try {
                 UserContextHolder.setUserId(TEST_USER_ID);
                 latch.await();
-                orderService.createOrder(TestDataFactory.createOrderDTO());
+                CreateOrderVO orderVO = orderService.createOrder(sameRequest);
+                success.incrementAndGet();
+                firstResult.set(orderVO);
             } catch (Throwable e) {
                 firstFailure.set(e);
+                fail.incrementAndGet();
             }finally {
                 UserContextHolder.clear();
             }
@@ -277,9 +471,12 @@ class OrderServiceIntegrationTest {
             try {
                 UserContextHolder.setUserId(TEST_USER_ID);
                 latch.await();
-                orderService.createOrder(TestDataFactory.createOrderDTO());
+                CreateOrderVO orderVO = orderService.createOrder(sameRequest);
+                success.incrementAndGet();
+                secondResult.set(orderVO);
             } catch (Throwable e) {
                 secondFailure.set(e);
+                fail.incrementAndGet();
             }finally {
                 UserContextHolder.clear();
             }
@@ -293,8 +490,97 @@ class OrderServiceIntegrationTest {
         t1.join();
         t2.join();
 
-        assertExpectedConcurrentCreateFailure(firstFailure.get());
-        assertExpectedConcurrentCreateFailure(secondFailure.get());
+        assertEquals(2, success.get());
+        assertEquals(0, fail.get());
+
+        assertNull(firstFailure.get());
+        assertNull(secondFailure.get());
+
+        assertEquals(
+                firstResult.get().getOrderId(),
+                secondResult.get().getOrderId()
+        );
+
+        List<Order> orders = findTestUserOrder();
+        List<OrderItem> orderItem = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery().
+                eq(OrderItem::getProductId, product.getId()));
+        List<CartItem> cartItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery().
+                eq(CartItem::getUserId, TEST_USER_ID));
+
+        assertEquals(1, orders.size());
+        assertEquals(sameRequest.getRequestId(), orders.get(0).getRequestId());
+        assertEquals(1,orderItem.size());
+        assertEquals(5, orderItem.get(0).getQuantity());
+        assertTrue(cartItems.isEmpty(), "购物车应该为空");
+    }
+
+    //NOTE：测试并发创建订单时在不同requestId的情况下仅生成一份订单和订单项并清空购物车
+    @Test
+    void createOrder_shouldCreateOnceForConcurrentDifferentRequestId() throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger fail = new AtomicInteger();
+
+
+        AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+
+        AtomicReference<CreateOrderVO> firstResult =
+                new AtomicReference<>();
+        AtomicReference<CreateOrderVO> secondResult =
+                new AtomicReference<>();
+
+
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        insertCartItem(product,5);
+        CreateOrderDTO firstRequest = TestDataFactory.createOrderDTO();
+        CreateOrderDTO secondRequest = TestDataFactory.createOrderDTO();
+        Thread t1 = new Thread(() -> {
+            try {
+                UserContextHolder.setUserId(TEST_USER_ID);
+                latch.await();
+                CreateOrderVO orderVO = orderService.createOrder(firstRequest);
+                success.incrementAndGet();
+                firstResult.set(orderVO);
+            } catch (Throwable e) {
+                firstFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+        Thread t2 = new Thread(() -> {
+            try {
+                UserContextHolder.setUserId(TEST_USER_ID);
+                latch.await();
+                CreateOrderVO orderVO = orderService.createOrder(secondRequest);
+                success.incrementAndGet();
+                secondResult.set(orderVO);
+            } catch (Throwable e) {
+                secondFailure.set(e);
+                fail.incrementAndGet();
+            }finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        t1.start();
+        t2.start();
+
+        latch.countDown();
+
+        t1.join();
+        t2.join();
+
+        assertEquals(1, success.get());
+        assertEquals(1, fail.get());
+
+        Throwable exception = firstFailure.get() == null ? secondFailure.get() : firstFailure.get();
+        assertInstanceOf(BusinessException.class, exception);
+
+        assertNotEquals(firstResult.get(), secondResult.get());
+
 
         List<Order> orders = findTestUserOrder();
         List<OrderItem> orderItem = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery().
@@ -308,6 +594,7 @@ class OrderServiceIntegrationTest {
         assertTrue(cartItems.isEmpty(), "购物车应该为空");
     }
 
+    //NOTE：测试并发支付同一订单时仅一次成功并正确记录支付状态和时间
     @Test
     void payOrder_ConcurrentOrder() throws InterruptedException {
         insertMerchant();
@@ -366,6 +653,7 @@ class OrderServiceIntegrationTest {
                 .isNotNull(Order::getPayTime)));
     }
 
+    //NOTE：测试并发完成同一订单时仅一次成功并正确记录完成状态和时间
     @Test
     void checkOrder_ConcurrentOrder() throws InterruptedException {
         insertMerchant();
@@ -427,11 +715,7 @@ class OrderServiceIntegrationTest {
 
     }
 
-    private void assertExpectedConcurrentCreateFailure(Throwable failure) {
-        if (failure != null) {
-            assertInstanceOf(BusinessException.class, failure);
-        }
-    }
+
 
     private void assertExpectedConcurrentCancelFailure(Throwable firstFailure, Throwable secondFailure) {
         Throwable failure = firstFailure == null ? secondFailure : firstFailure;
@@ -441,6 +725,74 @@ class OrderServiceIntegrationTest {
     private void assertExpectedConcurrentPayFailure(Throwable firstFailure, Throwable secondFailure) {
         Throwable failure = firstFailure == null ? secondFailure : firstFailure;
         assertInstanceOf(BusinessException.class, failure);
+    }
+
+    private Future<Integer> submitOrderInsert(
+            ExecutorService executor,
+            CountDownLatch insertStarted,
+            String orderNo,
+            String requestId
+    ) {
+        return executor.submit(() -> {
+            insertStarted.countDown();
+            try (Connection connection = dataSource.getConnection()) {
+                connection.setAutoCommit(false);
+                try {
+                    int insertedRows = insertOrder(connection, orderNo, requestId);
+                    connection.commit();
+                    return insertedRows;
+                } catch (SQLException exception) {
+                    connection.rollback();
+                    throw exception;
+                }
+            }
+        });
+    }
+
+    private int insertOrder(Connection connection, String orderNo, String requestId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO orders (
+                    order_no, user_id, request_id, merchant_id, merchant_name,
+                    total_amount, status, receiver_name, receiver_phone, receiver_address,
+                    original_amount, discount_amount
+                )
+                VALUES (?, ?, ?, ?, 'low-level-test-merchant',
+                        1.00, ?, 'test-user', '13800000000', 'test-address',
+                        1.00, 0.00)
+                """)) {
+            statement.setString(1, orderNo);
+            statement.setLong(2, TEST_USER_ID);
+            statement.setString(3, requestId);
+            statement.setLong(4, TEST_MERCHANT_ID);
+            statement.setInt(5, OrderStatusEnum.WAIT_PAY.getCode());
+            return statement.executeUpdate();
+        }
+    }
+
+    private void assertSecondInsertIsBlocked(Future<Integer> secondInsert) {
+        assertThrows(
+                TimeoutException.class,
+                () -> secondInsert.get(500, TimeUnit.MILLISECONDS),
+                "第一笔事务结束前，第二笔相同唯一键 INSERT 应等待唯一键冲突判定"
+        );
+    }
+
+    private long countOrdersByRequestId(String requestId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM orders WHERE user_id = ? AND request_id = ?",
+                Long.class,
+                TEST_USER_ID,
+                requestId
+        );
+        return count == null ? 0L : count;
+    }
+
+    private void stopExecutor(ExecutorService executor, Future<Integer> insert) throws InterruptedException {
+        if (insert != null && !insert.isDone()) {
+            insert.cancel(true);
+        }
+        executor.shutdownNow();
+        assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
     }
 
     private Product insertProduct(Long id, String name, int stock) {
@@ -488,7 +840,7 @@ class OrderServiceIntegrationTest {
 
     private void deleteTestData() {
         List<Long> orderIds = orderMapper.selectList(Wrappers.<Order>lambdaQuery()
-                        .eq(Order::getUserId, TEST_USER_ID))
+                        .in(Order::getUserId, TEST_USER_ID, TEST_OTHER_USER_ID))
                 .stream()
                 .map(Order::getId)
                 .toList();
@@ -497,9 +849,9 @@ class OrderServiceIntegrationTest {
                     .in(OrderItem::getOrderId, orderIds));
         }
         orderMapper.delete(Wrappers.<Order>lambdaQuery()
-                .eq(Order::getUserId, TEST_USER_ID));
+                .in(Order::getUserId, TEST_USER_ID, TEST_OTHER_USER_ID));
         cartMapper.delete(Wrappers.<CartItem>lambdaQuery()
-                .eq(CartItem::getUserId, TEST_USER_ID));
+                .in(CartItem::getUserId, TEST_USER_ID, TEST_OTHER_USER_ID));
         // Product 使用逻辑删除；测试清理必须物理删除，才能安全复用固定主键。
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", TEST_MERCHANT_ID);
         jdbcTemplate.update("DELETE FROM category WHERE merchant_id = ?", TEST_MERCHANT_ID);

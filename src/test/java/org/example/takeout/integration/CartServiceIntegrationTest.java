@@ -130,6 +130,7 @@ public class CartServiceIntegrationTest {
         }
     }
 
+    //NOTE：测试重复添加同一商品时购物车仅保留一条记录并正确累加数量
     @Test
     public void shouldIncreaseQuantityWhenSameProductIsAddedTwice(){
         CartTestData cartTestData = createProductsAndSameMerchant();
@@ -148,6 +149,7 @@ public class CartServiceIntegrationTest {
         assert(cartItems.get(0).getQuantity().equals(2));
     }
 
+    //NOTE：测试并发添加同一商品时购物车数量能够正确累加且仍可购买
     @Test
     public void shouldHandleConcurrentAddsOfSameProduct() throws InterruptedException {
         CartTestData cartTestData = createProductsAndSameMerchant();
@@ -203,6 +205,7 @@ public class CartServiceIntegrationTest {
         assertEquals("", list.getInvalidReason());
     }
 
+    //NOTE：测试并发添加不同商家的商品后购物车能够识别多商家并禁止购买
     @Test
     public void list_shouldDetectMultipleMerchantAfterConcurrentAdd() throws InterruptedException {
         CartTestData cartTestData = createProductsAndDifferentMerchants();
@@ -259,6 +262,7 @@ public class CartServiceIntegrationTest {
         assertTrue(list.getInvalidReason().contains("用户购物车有多商家"));
     }
 
+    //NOTE：测试购物车已有商品时并发添加两次能够正确累加数量
     @Test
     public void shouldAddOnceConcurrentAddsOfSameProduct() throws InterruptedException {
         createCartAndProductFromSameMerchant();

@@ -71,6 +71,7 @@ public final class TestDataFactory {
 
     public static CreateOrderDTO createOrderDTO() {
         CreateOrderDTO dto = new CreateOrderDTO();
+        dto.setRequestId(UUID.randomUUID().toString());
         dto.setReceiverName("张三");
         dto.setReceiverPhone("13812345678");
         dto.setReceiverAddress("北京市朝阳区科技路 A 栋 3 楼");
@@ -83,6 +84,7 @@ public final class TestDataFactory {
         Order order = new Order();
         order.setOrderNo("ORD_TEST_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
         order.setUserId(userId);
+        order.setRequestId(UUID.randomUUID().toString());
         order.setMerchantId(merchantId);
         order.setMerchantName("测试商家");
         order.setTotalAmount(DEFAULT_PRODUCT_PRICE);

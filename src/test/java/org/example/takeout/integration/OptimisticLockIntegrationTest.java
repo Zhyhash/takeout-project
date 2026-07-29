@@ -81,6 +81,7 @@ public class OptimisticLockIntegrationTest {
 
 
 
+    //NOTE：测试使用过期版本更新商品时乐观锁会拒绝更新并保留最新数据
     @Test
     void update_shouldFailWhenVersionIsStale(){
 

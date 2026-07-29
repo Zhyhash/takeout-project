@@ -21,10 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
@@ -77,6 +74,7 @@ class CategoryProductServiceIntegrationTest {
 
 
 
+    //NOTE：测试连续一百次执行商品创建与分类删除的并发场景时不会产生孤儿商品
     @RepeatedTest(value = 100, name = "第 {currentRepetition} 次 / 共 {totalRepetitions} 次")
     void testMyMethod(RepetitionInfo repetitionInfo) {
         int current = repetitionInfo.getCurrentRepetition();
@@ -95,6 +93,7 @@ class CategoryProductServiceIntegrationTest {
         }
     }
 
+    //NOTE：测试商品创建与所属分类删除并发执行时不会产生孤儿商品
     @Test
     void shouldNotLeaveOrphanProductWhenCreatingProductAndDeletingCategoryConcurrently()
             throws InterruptedException {

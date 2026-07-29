@@ -534,6 +534,7 @@ class MysqlApiIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200));
 
         CreateOrderDTO orderDTO = new CreateOrderDTO();
+        orderDTO.setRequestId(UUID.randomUUID().toString());
         orderDTO.setReceiverName("Integration Tester");
         orderDTO.setReceiverPhone("13800138000");
         orderDTO.setReceiverAddress("Integration Road 1");
@@ -815,6 +816,7 @@ class MysqlApiIntegrationTest {
                     `id` bigint NOT NULL AUTO_INCREMENT,
                     `order_no` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `user_id` bigint NOT NULL,
+                    `request_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '客户端下单请求唯一标识',
                     `merchant_id` bigint NOT NULL,
                     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `total_amount` decimal(10, 2) NOT NULL,
@@ -831,6 +833,7 @@ class MysqlApiIntegrationTest {
                     `pay_time` datetime NULL DEFAULT NULL,
                     PRIMARY KEY (`id`) USING BTREE,
                     UNIQUE INDEX `uk_order_no` (`order_no` ASC) USING BTREE,
+                    UNIQUE INDEX `uk_orders_user_request_id` (`user_id` ASC, `request_id` ASC) USING BTREE,
                     INDEX `idx_order_user` (`user_id` ASC) USING BTREE,
                     INDEX `idx_order_merchant` (`merchant_id` ASC) USING BTREE
                 ) ENGINE = InnoDB AUTO_INCREMENT = 16 CHARACTER SET = utf8mb4

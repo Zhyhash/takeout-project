@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
-import org.apache.ibatis.annotations.Update;
 import org.example.takeout.Cart.Entity.CartItem;
 
 @Mapper

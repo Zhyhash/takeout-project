@@ -9,6 +9,10 @@ import lombok.Data;
 @Data
 public class CreateOrderDTO {
 
+    @NotBlank(message = "下单请求标识不能为空")
+    @Size(max = 64, message = "下单请求标识最大为64")
+    private String requestId;
+
     @NotBlank(message = "用户名不能为空")
     private String receiverName;
     @NotBlank(message = "手机号不能为空")

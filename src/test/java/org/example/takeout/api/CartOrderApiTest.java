@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 
 import java.util.List;
+import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
@@ -347,6 +348,7 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
 
     private CreateOrderDTO orderDTO() {
         CreateOrderDTO dto = new CreateOrderDTO();
+        dto.setRequestId(UUID.randomUUID().toString());
         dto.setReceiverName("Tester");
         dto.setReceiverPhone("13800138000");
         dto.setReceiverAddress("No.1 Test Road");

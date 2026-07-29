@@ -11,8 +11,8 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
-import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
+import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
@@ -26,6 +26,7 @@ import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,7 +40,7 @@ public class OrderService {
     @Autowired
     private OrderDomainService orderDomainService;
     @Autowired
-    private CartMapper cartMapper;
+    private OrderTransactionExecutor orderTransactionExecutor;
     @Autowired
     private ProductMapper productMapper;
     @Autowired
@@ -49,28 +50,38 @@ public class OrderService {
     @Autowired
     private OrderVOBuilder orderVOBuilder;
     @Autowired
-    private OrderConvertor orderConvertor;
-    @Autowired
     private cartDomainService cartDomainService;
-    @Autowired
-    private OrderItemService orderItemService;
 
 
-    @Transactional(rollbackFor = Exception.class)
+
     public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO) {
         Long userId = UserContextHolder.getUserId();
 
+        Order existing = orderMapper.selectOne(
+                Wrappers.<Order>lambdaQuery().
+                        eq(Order::getUserId, userId).
+                        eq(Order::getRequestId, createOrderDTO.getRequestId()));
+        if (existing != null) {
+            return orderVOBuilder.toCreateOrderVO(existing);
+        }
+
+
+        OrderDataContext orderDataContext = prepareOrderDataContext(createOrderDTO, userId);
+
+
+        /// 修改数据库层面
+        Order order = orderTransactionExecutor.executeOrderCreation(orderDataContext, createOrderDTO, userId);
+
+        return orderVOBuilder.toCreateOrderVO(order);
+    }
+
+    private OrderDataContext prepareOrderDataContext(CreateOrderDTO createOrderDTO, Long userId) {
         // 获取可用购物车（内部已校验商品/商家状态）
         CartAvailableResult result = cartDomainService.getAvailableCartItems(userId);
 
         List<CartItem> availableCartItems = result.getAvailableItems();
         if (availableCartItems == null || availableCartItems.isEmpty()) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车为空，无法创建订单");
-        }
-
-        int i = cartMapper.deleteByIds(availableCartItems.stream().map(CartItem::getId).toList());
-        if (i != availableCartItems.size()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车删除失败");
         }
 
         // 防脏数据：过滤多商家情况
@@ -94,28 +105,15 @@ public class OrderService {
 
         BigDecimal totalAmount = orderDomainService.calculateTotalAmount(availableCartItems, productMap);
 
-
-        Order order = new Order();
-        order.setUserId(userId);
-        order.setOrderNo(orderDomainService.createOrderNo());
-        order.setMerchantId(merchantId);
-        order.setMerchantName(merchant.getMerchantName());
-        order.setTotalAmount(totalAmount);
-        order.setOriginalAmount(totalAmount);
-        order.setDiscountAmount(BigDecimal.ZERO); // NOTE: 留作后续扩展
-
-        orderConvertor.toOrder(createOrderDTO, order);
-        order.setStatus(OrderStatusEnum.WAIT_PAY.getCode());
-
-
-        orderMapper.insert(order);
-
-        List<OrderItem> orderItems = orderItemService.buildOrderItems(order, availableCartItems, productMap);
-        orderItemService.saveBatch(orderItems);
-
-
-        return orderVOBuilder.toCreateOrderVO(order);
+        OrderDataContext orderDataContext = new OrderDataContext();
+        orderDataContext.setTotalAmount(totalAmount);
+        orderDataContext.setMerchant(merchant);
+        orderDataContext.setProductMap(productMap);
+        orderDataContext.setAvailableItems(availableCartItems);
+        return orderDataContext;
     }
+
+
 
 
     //NOTE:查询单个id订单
