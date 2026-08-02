@@ -1,5 +1,6 @@
 package org.example.takeout.Category.Service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryConverter;
@@ -62,11 +63,12 @@ public class CategoryService {
     //NOTE：用户删除分类
     @Transactional(rollbackFor = Exception.class)
     public void deleteById(Long categoryId){
-        //拿到种类
-        Category category = categoryMapper.
-                selectOne(Wrappers.<Category>lambdaQuery().
-                        eq(Category::getId, categoryId).
-                        eq(Category::getMerchantId, MerchantContextHolder.getMerchantId()));
+        Long merchantId = MerchantContextHolder.getMerchantId();
+        LambdaQueryWrapper<Category> categoryWrapper = new LambdaQueryWrapper<>();
+        categoryWrapper.eq(Category::getId, categoryId)
+                .eq(Category::getMerchantId, merchantId)
+                .last("FOR UPDATE");
+        Category category = categoryMapper.selectOne(categoryWrapper);
         if (category == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"分类种类不存在或不属于商家");
         }
@@ -77,7 +79,7 @@ public class CategoryService {
         Category defaultCategory =
                 categoryMapper.selectOne(
                         Wrappers.<Category>lambdaQuery()
-                                .eq(Category::getMerchantId, MerchantContextHolder.getMerchantId())
+                                .eq(Category::getMerchantId, merchantId)
                                 .eq(Category::getIsDefault, CategoryDefaultEnum.DEFAULT.getCode())
                 );
         if(defaultCategory == null){
@@ -88,7 +90,7 @@ public class CategoryService {
                 Wrappers.<Product>lambdaUpdate()
                         .set(Product::getCategoryId, defaultCategory.getId())
                         .eq(Product::getCategoryId, categoryId)
-                        .eq(Product::getMerchantId, MerchantContextHolder.getMerchantId())
+                        .eq(Product::getMerchantId, merchantId)
         );
         categoryMapper.deleteById(categoryId);
     }

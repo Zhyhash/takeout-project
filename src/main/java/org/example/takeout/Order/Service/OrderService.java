@@ -74,7 +74,6 @@ public class OrderService {
 
         return orderVOBuilder.toCreateOrderVO(order);
     }
-
     private OrderDataContext prepareOrderDataContext(CreateOrderDTO createOrderDTO, Long userId) {
         // 获取可用购物车（内部已校验商品/商家状态）
         CartAvailableResult result = cartDomainService.getAvailableCartItems(userId);
@@ -128,6 +127,11 @@ public class OrderService {
         //查询item
         List<OrderItem> orderItems = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
                 .eq(OrderItem::getOrderId, order.getId()));
+
+        if (orderItems == null || orderItems.isEmpty()) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单子项异常，查询失败");
+        }
 
         //返回组装好的详情对象
         return orderVOBuilder.toOrderDetailVO(order, orderItems);

@@ -164,7 +164,15 @@ public class CartService {
 
         // 6. 如果新数量 <= 0，物理删除（此时所有前置校验已通过，事务安全）
         if (newQuantity <= 0) {
-            cartMapper.deleteById(cartItem.getId());
+            int rows = cartMapper.delete(
+                    Wrappers.<CartItem>lambdaQuery()
+                            .eq(CartItem::getId,cartItem.getId())
+                            .eq(CartItem::getVersion,cartItem.getVersion())
+            );
+            if (rows != 1) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                        "购物车删除失败");
+            }
             // 返回一个数量为0的VO，让前端做删除动画
             CartVO emptyVO = getCartVO(cartItem);
             emptyVO.setQuantity(0);

@@ -226,6 +226,42 @@ class OrderServiceIntegrationTest {
 
     }
 
+    //NOTE：测试在重复请求返回当前最新状态而不是历史快照
+    @Test
+    void createOrder_IdempotentQueryReturnsLatestSnapshot(){
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        insertCartItem(product, 5);
+
+        CreateOrderDTO dto = TestDataFactory.createOrderDTO();
+
+        CreateOrderVO first = orderService.createOrder(dto);
+        CreateOrderVO second = orderService.createOrder(dto);
+
+        assertEquals(first.getOrderId(), second.getOrderId());
+
+        List<Order> orders = findTestUserOrder();
+        assertEquals(1, orders.size());
+        assertEquals(
+                OrderStatusEnum.WAIT_PAY.getCode(),
+                orders.get(0).getStatus()
+        );
+        assertEquals(dto.getRequestId(), orders.get(0).getRequestId());
+        assertEquals(5, productMapper.selectById(product.getId()).getStock());
+
+        List<OrderItem> orderItems = orderItemMapper.selectList(
+                Wrappers.<OrderItem>lambdaQuery()
+                        .eq(OrderItem::getOrderId, first.getOrderId())
+        );
+        assertEquals(1, orderItems.size());
+        assertEquals(5, orderItems.get(0).getQuantity());
+
+        orderService.payOrder(orders.get(0).getId());
+        List<Order> newOrders = findTestUserOrder();
+        assertEquals(1, newOrders.size());
+        assertEquals(OrderStatusEnum.PAID.getCode(), newOrders.get(0).getStatus());
+    }
+
     //NOTE：测试购物车为空时创建订单会失败且不生成订单
     @Test
     void createOrder_shouldFailWhenCartEmpty() {

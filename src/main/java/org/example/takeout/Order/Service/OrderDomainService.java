@@ -29,8 +29,7 @@ public class OrderDomainService {
     //NOTE:全局方法：数据库校验抽取
     @Autowired
     private OrderMapper orderMapper;
-    @Autowired
-    private ProductMapper productMapper;
+
     public Order getOrder(Long orderId, Long userId) {
         Order order = orderMapper.selectOne(Wrappers.<Order>lambdaQuery()
                 .eq(Order::getId, orderId)

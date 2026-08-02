@@ -39,6 +39,7 @@ public final class TestDataFactory {
         merchant.setOpeningTime(LocalTime.of(8, 0));
         merchant.setClosingTime(LocalTime.of(22, 0));
         merchant.setCreateTime(LocalDateTime.now());
+        merchant.setVersion(0);
         return merchant;
     }
 

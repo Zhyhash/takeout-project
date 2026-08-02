@@ -243,7 +243,7 @@ class MysqlApiIntegrationTest {
                 .andExpect(jsonPath("$.data.phone").value(updatedPhone));
 
         Map<String, Object> row = jdbcTemplate.queryForMap(
-                "select merchant_name, address, phone, merchant_description, picture, opening_time, closing_time " +
+                "select merchant_name, address, phone, merchant_description, picture, opening_time, closing_time, version " +
                         "from merchant where id = ?",
                 merchant.id());
         assertThat(row.get("merchant_name")).isEqualTo(dto.getMerchantName());
@@ -253,6 +253,7 @@ class MysqlApiIntegrationTest {
         assertThat(row.get("picture")).isEqualTo(dto.getPictureURL());
         assertThat(row.get("opening_time").toString()).startsWith("09:30");
         assertThat(row.get("closing_time").toString()).startsWith("21:45");
+        assertThat(row.get("version")).isEqualTo(1);
     }
 
     @Test
@@ -741,6 +742,7 @@ class MysqlApiIntegrationTest {
                     `merchant_description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
                     `opening_time` time NOT NULL DEFAULT '08:00:00',
                     `closing_time` time NOT NULL DEFAULT '22:00:00',
+                    `version` int NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
                     PRIMARY KEY (`id`) USING BTREE,
                     UNIQUE INDEX `uk_merchant_phone` (`phone` ASC) USING BTREE,
                     UNIQUE INDEX `uk_merchant_username` (`username` ASC) USING BTREE
@@ -756,6 +758,7 @@ class MysqlApiIntegrationTest {
                     `status` tinyint NOT NULL DEFAULT 0 COMMENT '状态: 0-正常使用, 1-非法分类 (对应 CategoryStatusEnum)',
                     `is_default` tinyint NOT NULL DEFAULT 0 COMMENT '类型: 0-默认分类, 1-商家自主分类 (对应 CategoryDefaultEnum)',
                     PRIMARY KEY (`id`) USING BTREE,
+                    UNIQUE INDEX `uk_merchant_category` (`merchant_id` ASC, `category_name` ASC) USING BTREE,
                     INDEX `idx_merchant_id` (`merchant_id` ASC) USING BTREE
                 ) ENGINE = InnoDB AUTO_INCREMENT = 19 CHARACTER SET = utf8mb4
                   COLLATE = utf8mb4_0900_ai_ci COMMENT = '商品分类表' ROW_FORMAT = Dynamic

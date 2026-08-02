@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
@@ -126,6 +127,24 @@ public class OptimisticLockIntegrationTest {
 
         assertEquals(20,result.getStock());
         assertEquals(1,result.getVersion());
+    }
+
+    @Test
+    void merchantUpdate_shouldFailWhenVersionIsStale() {
+        merchantMapper.insert(TestDataFactory.createOpenMerchant(TEST_MERCHANT_ID));
+
+        Merchant first = merchantMapper.selectById(TEST_MERCHANT_ID);
+        Merchant second = merchantMapper.selectById(TEST_MERCHANT_ID);
+
+        first.setAddress("first concurrent update");
+        assertEquals(1, merchantMapper.updateById(first));
+
+        second.setAddress("stale concurrent update");
+        assertEquals(0, merchantMapper.updateById(second));
+
+        Merchant result = merchantMapper.selectById(TEST_MERCHANT_ID);
+        assertEquals("first concurrent update", result.getAddress());
+        assertEquals(1, result.getVersion());
     }
 
     private void deleteTestData() {

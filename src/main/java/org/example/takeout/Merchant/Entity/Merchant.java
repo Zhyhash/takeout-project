@@ -1,6 +1,7 @@
 package org.example.takeout.Merchant.Entity;
 
 import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -33,4 +34,7 @@ public class Merchant {
     private LocalTime closingTime;
 
     private LocalDateTime createTime;
+
+    @Version
+    private Integer version;
 }

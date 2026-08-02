@@ -1,30 +1,33 @@
-# Getting Started
+# 开发快速入口
 
-### Reference Documentation
+项目当前使用 Java 17、Spring Boot 4.0.6、MyBatis-Plus、MySQL 8 和 Spring Data Redis。项目概览、并发方案与完整测试要求已统一维护在 [README.md](README.md)。
 
-For further reference, please consider the following sections:
+## 文档导航
 
-* [Official Apache Maven documentation](https://maven.apache.org/guides/index.html)
-* [Spring Boot Maven Plugin Reference Guide](https://docs.spring.io/spring-boot/4.0.6/maven-plugin)
-* [Create an OCI image](https://docs.spring.io/spring-boot/4.0.6/maven-plugin/build-image.html)
-* [MyBatis Framework](https://mybatis.org/spring-boot-starter/mybatis-spring-boot-autoconfigure/)
-* [Spring Web](https://docs.spring.io/spring-boot/4.0.6/reference/web/servlet.html)
+- [README.md](README.md)：项目结构、已解决竞态、订单最终方案、Redis 实验边界和测试命令；
+- [IdempotencyDesign.md](IdempotencyDesign.md)：逐类接口的幂等判断与当前结论；
+- [数据库结构.md](数据库结构.md)：测试 DDL 的当前字段、索引和外键；
+- [数据库设计检查报告.md](数据库设计检查报告.md)：当前仍需处理的数据库结构问题。
 
-### Guides
+## 常用命令
 
-The following guides illustrate how to use some features concretely:
+```powershell
+# Windows：完整测试
+.\mvnw.cmd test
 
-* [MyBatis Quick Start](https://github.com/mybatis/spring-boot-starter/wiki/Quick-Start)
-* [Accessing data with MySQL](https://spring.io/guides/gs/accessing-data-mysql/)
-* [Building a RESTful Web Service](https://spring.io/guides/gs/rest-service/)
-* [Serving Web Content with Spring MVC](https://spring.io/guides/gs/serving-web-content/)
-* [Building REST services with Spring](https://spring.io/guides/tutorials/rest/)
+# Wrapper 在当前 PowerShell 环境无法启动时
+mvn test
 
-### Maven Parent overrides
+# Windows：启动应用
+.\mvnw.cmd spring-boot:run
+```
 
-Due to Maven's design, elements are inherited from the parent POM to the project POM.
-While most of the inheritance is fine, it also inherits unwanted elements like `<license>` and `<developers>` from the
-parent.
-To prevent this, the project POM contains empty overrides for these elements.
-If you manually switch to a different parent and actually want the inheritance, you need to remove those overrides.
+完整测试需要本机 MySQL 与 Redis。执行前请阅读 README 中的测试数据库重建提示。
 
+## 官方资料
+
+- [Apache Maven](https://maven.apache.org/guides/index.html)
+- [Spring Boot Maven Plugin 4.0.6](https://docs.spring.io/spring-boot/4.0.6/maven-plugin)
+- [Spring Web MVC](https://docs.spring.io/spring-boot/4.0.6/reference/web/servlet.html)
+- [Spring Data Redis](https://docs.spring.io/spring-data/redis/reference/)
+- [MyBatis-Plus](https://baomidou.com/)

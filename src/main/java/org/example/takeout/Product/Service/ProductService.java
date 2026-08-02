@@ -1,5 +1,7 @@
 package org.example.takeout.Product.Service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
@@ -55,9 +57,9 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "扣减数量必须大于0");
         }
         UpdateWrapper<Product> wrapper = new UpdateWrapper<>();
-        wrapper.eq("id", product.getId()).
-                ge("stock", quantity).
-                setSql("stock = stock - {0}" , quantity);
+        wrapper.eq("id", product.getId())
+                .ge("stock", quantity)
+                .setSql("stock = stock - " + quantity);
         int row= productMapper.update(null,wrapper);
         if (row != 1)
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"创建订单失败");
@@ -65,10 +67,12 @@ public class ProductService {
     //NOTE:创建商品
     @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO createProduct(@NonNull CreateProductDTO createProductDTO) {
-        Category category = categoryMapper.selectOne(Wrappers.<Category>lambdaQuery().
-                eq(Category::getId, createProductDTO.getCategoryId()).
-                eq(Category::getMerchantId, MerchantContextHolder.getMerchantId()).
-                eq(Category::getStatus, CategoryStatusEnum.ACTIVE.getCode()));
+        LambdaQueryWrapper<Category> categoryWrapper = new LambdaQueryWrapper<>();
+        categoryWrapper.eq(Category::getId, createProductDTO.getCategoryId())
+                .eq(Category::getMerchantId, MerchantContextHolder.getMerchantId())
+                .eq(Category::getStatus, CategoryStatusEnum.ACTIVE.getCode())
+                .last("FOR UPDATE");
+        Category category = categoryMapper.selectOne(categoryWrapper);
         if (category == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"种类不存在");
         }
@@ -110,9 +114,15 @@ public class ProductService {
         if (product.getProductName() == null || product.getProductName().isBlank()) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品名称为空，无法上架");
         }
-        // 6. 更新状态
-        product.setStatus(ProductStatusEnum.ON_SALE.getCode());
-        int i = productMapper.updateById(product);// 或者只 update status 字段
+
+        LambdaUpdateWrapper<Product> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(Product::getId, productId)
+                .eq(Product::getVersion, product.getVersion());
+        Product updateEntity = new Product();
+        updateEntity.setVersion(product.getVersion()+1);
+        updateEntity.setStatus(ProductStatusEnum.ON_SALE.getCode());
+
+        int i = productMapper.update(updateEntity,wrapper);
         if (i!=1)
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品上架失败");
         // 7. 返回 VO
@@ -132,8 +142,14 @@ public class ProductService {
             return toMerchantProductVO(product,category);
         }
         //上架和售罄的本来就可以下架，不进行额外校检
-        product.setStatus(ProductStatusEnum.OFF_SALE.getCode());
-        int i = productMapper.updateById(product);
+        LambdaUpdateWrapper<Product> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(Product::getId, productId)
+                .eq(Product::getVersion, product.getVersion());
+        Product updateEntity = new Product();
+        updateEntity.setVersion(product.getVersion()+1);
+        updateEntity.setStatus(ProductStatusEnum.ON_SALE.getCode());
+
+        int i = productMapper.update(updateEntity,wrapper);
         if (i!=1)
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品下架失败");
         return toMerchantProductVO(product,category);
@@ -156,10 +172,9 @@ public class ProductService {
 
     //NOTE：分页查询商品
     public PageInfo<MerchantProductVO> listProducts(int pageNum, int pageSize, Integer status, Long categoryId) {
-        // 1. 开启分页（PageHelper 会自动拦截紧随其后的第一条 SQL 并加上 LIMIT）
         PageHelper.startPage(pageNum, pageSize);
 
-        // 2. 调用在 XML 中配置好的动态 SQL 方法
+
         List<MerchantProductVO> merchantProductVOS = productMapper.listMerchantProducts(
                 MerchantContextHolder.getMerchantId(),
                 status,

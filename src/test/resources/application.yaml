@@ -8,3 +8,10 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password:
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      connect-timeout: 2s
+      timeout: 2s
