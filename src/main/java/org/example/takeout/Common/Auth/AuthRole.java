@@ -7,6 +7,7 @@ public final class AuthRole {
 
     public static final String USER = "user";
     public static final String MERCHANT = "merchant";
+    public static final String RIDER = "rider";
 
     private AuthRole() {
     }

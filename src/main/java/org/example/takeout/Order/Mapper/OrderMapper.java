@@ -69,5 +69,48 @@ public interface OrderMapper extends BaseMapper<Order> {
                                 @Param("oldStatus") Integer oldStatus,
                                 @Param("newStatus") Integer newStatus,
                                 @Param("finishTime") LocalDateTime finishTime);
-}
 
+    @Update("""
+        UPDATE orders
+        SET status = #{newStatus}
+        WHERE id = #{orderId}
+        AND merchant_id = #{merchantId}
+        AND status =#{oldStatus}
+    """)
+    int updateOrderStatusToPreparing(@Param("orderId") Long orderId,
+                                    @Param("merchantId") Long merchantId,
+                                    @Param("oldStatus") Integer oldStatus,
+                                    @Param("newStatus") Integer newStatus);
+
+    @Update("""
+        UPDATE orders
+        SET status = #{newStatus}
+        WHERE id = #{orderId}
+        AND merchant_id = #{merchantId}
+        AND status =#{oldStatus}
+    """)
+    int updateOrderStatusToReady(@Param("orderId") Long orderId,
+                                 @Param("merchantId") Long merchantId,
+                                 @Param("oldStatus") Integer oldStatus,
+                                 @Param("newStatus") Integer newStatus);
+
+    @Update("""
+        UPDATE orders
+        SET status = #{newStatus}
+        WHERE id = #{orderId}
+        AND status =#{oldStatus}
+    """)
+    int updateOrderStatusToDelivering(@Param("orderId") Long orderId,
+                                      @Param("oldStatus") Integer oldStatus,
+                                      @Param("newStatus") Integer newStatus);
+
+    @Update("""
+        UPDATE orders
+        SET status = #{newStatus}
+        WHERE id = #{orderId}
+        AND status =#{oldStatus}
+    """)
+    int updateOrderStatusToDelivered(@Param("orderId") Long orderId,
+                                     @Param("oldStatus") Integer oldStatus,
+                                     @Param("newStatus") Integer newStatus);
+}

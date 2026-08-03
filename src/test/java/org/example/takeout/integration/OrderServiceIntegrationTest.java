@@ -693,7 +693,7 @@ class OrderServiceIntegrationTest {
     @Test
     void checkOrder_ConcurrentOrder() throws InterruptedException {
         insertMerchant();
-        Order order = insertOrder(OrderStatusEnum.PAID.getCode());
+        Order order = insertOrder(OrderStatusEnum.DELIVERED.getCode());
 
         AtomicInteger success = new AtomicInteger();
         AtomicInteger fail = new AtomicInteger();

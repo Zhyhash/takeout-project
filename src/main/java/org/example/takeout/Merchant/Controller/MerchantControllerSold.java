@@ -57,4 +57,16 @@ public class MerchantControllerSold {
         merchantService.updateStatus(status);
         return Result.success("success");
     }
+
+    @PatchMapping("/orders/{orderId}/accept")
+    public Result<?> acceptOrder(@PathVariable @Min(1) Long orderId) {
+        merchantService.acceptOrder(orderId);
+        return Result.success("success");
+    }
+
+    @PatchMapping("/orders/{orderId}/ready")
+    public Result<?> completePreparation(@PathVariable @Min(1) Long orderId) {
+        merchantService.completePreparation(orderId);
+        return Result.success("success");
+    }
 }

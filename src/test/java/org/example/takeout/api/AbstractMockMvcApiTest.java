@@ -12,6 +12,7 @@ import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.Service.MerchantQueryService;
 import org.example.takeout.Merchant.Service.MerchantService;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
@@ -84,6 +85,9 @@ abstract class AbstractMockMvcApiTest {
     protected OrderService orderService;
 
     @MockitoBean
+    protected DeliveryTaskService deliveryTaskService;
+
+    @MockitoBean
     protected JdbcTemplate jdbcTemplate;
 
     @BeforeEach
@@ -95,7 +99,7 @@ abstract class AbstractMockMvcApiTest {
     @AfterEach
     void resetMocks() {
         reset(userService, merchantService, merchantQueryService, categoryService,
-                productService, cartService, orderService, jdbcTemplate);
+                productService, cartService, orderService, deliveryTaskService, jdbcTemplate);
     }
 
     protected String json(Object value) throws JsonProcessingException {
@@ -108,6 +112,10 @@ abstract class AbstractMockMvcApiTest {
 
     protected String merchantBearer() {
         return "Bearer " + jwtUtils.createToken(201L, AuthRole.MERCHANT);
+    }
+
+    protected String riderBearer() {
+        return "Bearer " + jwtUtils.createToken(301L, AuthRole.RIDER);
     }
 
     protected String invalidBearer() {

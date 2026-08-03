@@ -10,7 +10,12 @@ public enum OrderStatusEnum {
     PAYING(1,"正在支付"),
     PAID(2, "已支付"),
     FINISHED(3,"已完成"),
-    CANCELLED(4, "已取消");
+    CANCELLED(4, "已取消"),
+    PREPARING(5,"商家正在制作菜品"),
+    READY(6,"菜品制作完成，等待骑手接单"),
+    DELIVERING(7,"骑手正在配送"),
+    DELIVERED(8,"骑手已经送达");
+
 
     // getter 方法
     private final Integer code;   // 数据库存这个数字
@@ -41,7 +46,7 @@ public enum OrderStatusEnum {
     }
 
     public boolean canConfirm() {
-        return this == PAID;
+        return this == DELIVERED;
     }
 
     public OrderStatusEnum nextAfterPay() {

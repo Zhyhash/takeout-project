@@ -8,6 +8,7 @@ import org.example.takeout.Common.Auth.AuthPathMatcher;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
+import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.jspecify.annotations.Nullable;
@@ -56,6 +57,8 @@ public class JwtInterceptor implements HandlerInterceptor {
                 MerchantContextHolder.setMerchantId(id);
             } else if (AuthRole.USER.equals(role)) {
                 UserContextHolder.setUserId(id);
+            } else if (AuthRole.RIDER.equals(role)) {
+                RiderContextHolder.setRiderId(id);
             } else {
                 throw new AuthException("token角色无效");
             }
@@ -63,6 +66,7 @@ public class JwtInterceptor implements HandlerInterceptor {
         } catch (RuntimeException e) {
             UserContextHolder.clear();
             MerchantContextHolder.clear();
+            RiderContextHolder.clear();
             throw e;
         }
     }
@@ -73,6 +77,9 @@ public class JwtInterceptor implements HandlerInterceptor {
         }
         if (AuthPathMatcher.requiresUser(path) && !AuthRole.USER.equals(role)) {
             throw new AuthException("无权访问该资源，请使用用户账号登录");
+        }
+        if (AuthPathMatcher.requiresRider(path) && !AuthRole.RIDER.equals(role)) {
+            throw new AuthException("无权访问该资源，请使用骑手账号登录");
         }
     }
 
@@ -94,5 +101,6 @@ public class JwtInterceptor implements HandlerInterceptor {
                                 Object handler, @Nullable Exception ex) {
         UserContextHolder.clear();
         MerchantContextHolder.clear();
+        RiderContextHolder.clear();
     }
 }

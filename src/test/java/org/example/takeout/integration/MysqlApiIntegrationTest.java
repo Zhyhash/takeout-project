@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
+import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
+import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
+import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
@@ -52,6 +55,9 @@ class MysqlApiIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private DeliveryTaskService deliveryTaskService;
 
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
@@ -195,6 +201,89 @@ class MysqlApiIntegrationTest {
                 seed.orderId());
         assertThat(row.get("status")).isEqualTo(OrderStatusEnum.PAID.getCode());
         assertThat(row.get("pay_time")).isNotNull();
+    }
+
+    @Test
+    void orderDeliveryLifecycleCompletesSuccessfully() throws Exception {
+        OrderSeed seed = createOrderThroughApi();
+        String merchantUsername = jdbcTemplate.queryForObject(
+                "select username from merchant where id = ?",
+                String.class,
+                seed.merchantId());
+        String merchantToken = loginMerchant(merchantUsername);
+        Long riderId = insertRider("it_rider_" + suffix());
+
+        //支付
+        mockMvc.perform(patch("/order/{id}/pay", seed.orderId())
+                        .header("Authorization", bearer(seed.userToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        Map<String, Object> paidOrder = jdbcTemplate.queryForMap(
+                "select status, pay_time from orders where id = ?",
+                seed.orderId());
+        assertThat(paidOrder.get("status")).isEqualTo(OrderStatusEnum.PAID.getCode());
+        assertThat(paidOrder.get("pay_time")).isNotNull();
+
+        //商家接单
+        mockMvc.perform(patch("/merchant/orders/{orderId}/accept", seed.orderId())
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.PREPARING.getCode());
+
+        //制作完成
+        mockMvc.perform(patch("/merchant/orders/{orderId}/ready", seed.orderId())
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.READY.getCode());
+
+        Map<String, Object> waitingTask = jdbcTemplate.queryForMap(
+                "select id, rider_id, status, create_time from delivery_task where order_id = ?",
+                seed.orderId());
+        Long taskId = ((Number) waitingTask.get("id")).longValue();
+        assertThat(waitingTask.get("rider_id")).isNull();
+        assertThat(waitingTask.get("status")).isEqualTo(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
+        assertThat(waitingTask.get("create_time")).isNotNull();
+
+        RiderContextHolder.setRiderId(riderId);
+        try {
+            //骑手抢单
+            deliveryTaskService.claimTask(taskId);
+
+            Map<String, Object> deliveringTask = jdbcTemplate.queryForMap(
+                    "select rider_id, status, accepted_time from delivery_task where id = ?",
+                    taskId);
+            assertThat(deliveringTask.get("rider_id")).isEqualTo(riderId);
+            assertThat(deliveringTask.get("status")).isEqualTo(DeliveryTaskEnums.DELIVERING.getCode());
+            assertThat(deliveringTask.get("accepted_time")).isNotNull();
+            assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.DELIVERING.getCode());
+
+            //骑手送达
+            deliveryTaskService.completeDelivery(taskId);
+
+            Map<String, Object> completedTask = jdbcTemplate.queryForMap(
+                    "select status, delivered_time from delivery_task where id = ?",
+                    taskId);
+            assertThat(completedTask.get("status")).isEqualTo(DeliveryTaskEnums.COMPLETED.getCode());
+            assertThat(completedTask.get("delivered_time")).isNotNull();
+            assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.DELIVERED.getCode());
+        } finally {
+            RiderContextHolder.clear();
+        }
+
+        //用户收货
+        mockMvc.perform(patch("/order/{id}/confirm", seed.orderId())
+                        .header("Authorization", bearer(seed.userToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        Map<String, Object> finishedOrder = jdbcTemplate.queryForMap(
+                "select status, finish_time from orders where id = ?",
+                seed.orderId());
+        assertThat(finishedOrder.get("status")).isEqualTo(OrderStatusEnum.FINISHED.getCode());
+        assertThat(finishedOrder.get("finish_time")).isNotNull();
     }
 
     @Test
@@ -377,10 +466,10 @@ class MysqlApiIntegrationTest {
     void confirmOrderUpdatesOrderStatus() throws Exception {
         OrderSeed seed = createOrderThroughApi();
 
-        mockMvc.perform(patch("/order/{id}/pay", seed.orderId())
-                        .header("Authorization", bearer(seed.userToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+        jdbcTemplate.update(
+                "update orders set status = ? where id = ?",
+                OrderStatusEnum.DELIVERED.getCode(),
+                seed.orderId());
 
         mockMvc.perform(patch("/order/{id}/confirm", seed.orderId())
                         .header("Authorization", bearer(seed.userToken())))
@@ -619,6 +708,25 @@ class MysqlApiIntegrationTest {
         return new MerchantSeed(id, username);
     }
 
+    private Long insertRider(String name) {
+        String phone = phone();
+        jdbcTemplate.update("""
+                insert into rider (name, phone, password, status, create_time, is_delete)
+                values (?, ?, ?, 1, now(), 0)
+                """, name, phone, BCrypt.encode(PASSWORD));
+        return jdbcTemplate.queryForObject(
+                "select id from rider where name = ?",
+                Long.class,
+                name);
+    }
+
+    private Integer orderStatus(Long orderId) {
+        return jdbcTemplate.queryForObject(
+                "select status from orders where id = ?",
+                Integer.class,
+                orderId);
+    }
+
     private Long insertCategory(Long merchantId, String categoryName) {
         jdbcTemplate.update("""
                 insert into category (merchant_id, category_name, status, is_default)
@@ -702,6 +810,8 @@ class MysqlApiIntegrationTest {
     }
 
     private void recreateSchema() {
+        jdbcTemplate.execute("drop table if exists delivery_task");
+        jdbcTemplate.execute("drop table if exists rider");
         jdbcTemplate.execute("drop table if exists order_item");
         jdbcTemplate.execute("drop table if exists orders");
         jdbcTemplate.execute("drop table if exists cart");
@@ -856,6 +966,40 @@ class MysqlApiIntegrationTest {
                     PRIMARY KEY (`id`) USING BTREE,
                     INDEX `idx_order_item_order` (`order_id` ASC) USING BTREE,
                     INDEX `idx_order_item_product` (`product_id` ASC) USING BTREE
+                ) ENGINE = InnoDB CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE `rider` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `phone` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `password` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `status` int NOT NULL,
+                    `create_time` datetime NOT NULL,
+                    `update_time` datetime NULL DEFAULT NULL,
+                    `is_delete` int NOT NULL,
+                    PRIMARY KEY (`id`) USING BTREE,
+                    UNIQUE INDEX `uk_rider_name` (`name` ASC) USING BTREE,
+                    UNIQUE INDEX `uk_rider_phone` (`phone` ASC) USING BTREE
+                ) ENGINE = InnoDB CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE `delivery_task` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `order_id` bigint NOT NULL,
+                    `rider_id` bigint NULL DEFAULT NULL,
+                    `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `status` int NOT NULL,
+                    `create_time` datetime NOT NULL COMMENT '商家制作完成，任务创建时间',
+                    `accepted_time` datetime NULL DEFAULT NULL COMMENT '骑手接取时间，当前也代表开始配送时间',
+                    `delivered_time` datetime NULL DEFAULT NULL COMMENT '骑手确认送达时间',
+                    `update_time` datetime NULL DEFAULT NULL COMMENT '更新时间',
+                    PRIMARY KEY (`id`) USING BTREE,
+                    UNIQUE INDEX `uk_delivery_task_order_id` (`order_id` ASC) USING BTREE
                 ) ENGINE = InnoDB CHARACTER SET = utf8mb4
                   COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
                 """);

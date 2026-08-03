@@ -11,6 +11,9 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
+import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
+import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
@@ -19,6 +22,9 @@ import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
+import org.example.takeout.Order.Entity.Order;
+import org.example.takeout.Order.Enums.OrderStatusEnum;
+import org.example.takeout.Order.Mapper.OrderMapper;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -38,6 +44,10 @@ public class MerchantService {
     private JWTUtils jwtUtils;
     @Autowired
     private CategoryMapper categoryMapper;
+    @Autowired
+    private OrderMapper orderMapper;
+    @Autowired
+    private DeliveryTaskMapper deliveryTaskMapper;
     /**
      * 商家登录
      * @param dto 登录请求DTO
@@ -118,4 +128,62 @@ public class MerchantService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家营业状态更新失败");
         }
     }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void acceptOrder(@NonNull Long orderId) {
+
+        Long merchantId = MerchantContextHolder.getMerchantId();
+
+        int rows = orderMapper.updateOrderStatusToPreparing(
+                orderId,
+                merchantId,
+                OrderStatusEnum.PAID.getCode(),
+                OrderStatusEnum.PREPARING.getCode()
+        );
+
+        if(rows != 1){
+            Order order = orderMapper.selectById(orderId);
+            if (order == null || !merchantId.equals(order.getMerchantId())) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或不属于当前商家");
+            }
+
+            if (OrderStatusEnum.PREPARING.getCode().equals(order.getStatus())) {
+                return;
+            }
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "接单失败，当前订单状态为：" + order.getStatus());
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void completePreparation(Long orderId){
+        Long merchantId = MerchantContextHolder.getMerchantId();
+
+        int rows = orderMapper.updateOrderStatusToReady(
+                orderId,
+                merchantId,
+                OrderStatusEnum.PREPARING.getCode(),
+                OrderStatusEnum.READY.getCode()
+        );
+        Order order = orderMapper.selectById(orderId);
+        if(rows != 1){
+
+            if (order == null || !merchantId.equals(order.getMerchantId())) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或不属于当前商家");
+            }
+
+            if (OrderStatusEnum.READY.getCode().equals(order.getStatus())) {
+                return;
+            }
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单当前状态为：" + order.getStatus() + "，无法出餐");
+        }
+        DeliveryTask task = new DeliveryTask();
+        task.setOrderId(orderId);
+        task.setMerchantName(order.getMerchantName());
+        task.setStatus(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
+        deliveryTaskMapper.insert(task);
+    }
+
+
 }

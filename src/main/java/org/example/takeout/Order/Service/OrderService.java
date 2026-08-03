@@ -5,7 +5,6 @@ import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
-import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.Service.cartDomainService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
@@ -16,7 +15,6 @@ import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
-import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.VO.CreateOrderVO;
@@ -26,7 +24,6 @@ import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -236,7 +233,7 @@ public class OrderService {
         Long userId = UserContextHolder.getUserId();
 
         int i = orderMapper.updateOrderStatusToFinished(orderId,userId,
-                OrderStatusEnum.PAID.getCode(),
+                OrderStatusEnum.DELIVERED.getCode(),
                 OrderStatusEnum.FINISHED.getCode(),LocalDateTime.now());
         if (i != 1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或当前状态不可确认");

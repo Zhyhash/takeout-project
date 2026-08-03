@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -223,6 +224,36 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                         .param("status", "2"))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void merchantAcceptOrderReturnsSuccess() throws Exception {
+        mockMvc.perform(patch("/merchant/orders/501/accept")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value("success"));
+
+        verify(merchantService).acceptOrder(501L);
+    }
+
+    @Test
+    void merchantCompletePreparationReturnsSuccess() throws Exception {
+        mockMvc.perform(patch("/merchant/orders/501/ready")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value("success"));
+
+        verify(merchantService).completePreparation(501L);
+    }
+
+    @Test
+    void merchantOrderOperationRejectsUserToken() throws Exception {
+        mockMvc.perform(patch("/merchant/orders/501/accept")
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(UNAUTHORIZED));
     }
 
     @Test

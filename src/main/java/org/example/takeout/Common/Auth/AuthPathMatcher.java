@@ -73,7 +73,14 @@ public final class AuthPathMatcher {
         if (PATH_MATCHER.match("/merchant/restore/**", path)) {
             return true;
         }
+        if (PATH_MATCHER.match("/merchant/orders/**", path)) {
+            return true;
+        }
         return false;
+    }
+
+    public static boolean requiresRider(String path) {
+        return PATH_MATCHER.match("/rider/**", path);
     }
 
     public static String normalizePath(HttpServletRequest request) {
