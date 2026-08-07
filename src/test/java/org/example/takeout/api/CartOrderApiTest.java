@@ -166,7 +166,7 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
         mockMvc.perform(delete("/cart/items")
                         .header("Authorization", userBearer()))
                 .andExpect(status().isOk())
-                .andExpect(resultCode(UNKNOWN_ERROR));
+                .andExpect(resultCode(PARAM_ERROR));
     }
 
     @Test
@@ -255,7 +255,7 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", userBearer())
                         .param("pageSize", "101"))
                 .andExpect(status().isOk())
-                .andExpect(resultCode(UNKNOWN_ERROR));
+                .andExpect(resultCode(PARAM_ERROR));
     }
 
     @Test

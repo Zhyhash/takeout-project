@@ -6,10 +6,13 @@ import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Common.Result.ResultCodeEnum;
+import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
 import java.util.Objects;
 @Slf4j
@@ -25,7 +28,11 @@ public class GlobalExceptionHandle {
 
     @ExceptionHandler(value = MethodArgumentNotValidException.class)
     public Result<?> MethodArgumentNotValidExceptionHandle(MethodArgumentNotValidException e) {
-        String defaultMessage = Objects.requireNonNull(e.getBindingResult().getFieldError()).getDefaultMessage();
+        String defaultMessage = e.getBindingResult().getAllErrors().stream()
+                .map(DefaultMessageSourceResolvable::getDefaultMessage)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse("参数校验失败");
         log.warn("参数校验异常：{}", defaultMessage);
         return Result.error(ResultCodeEnum.PARAM_ERROR,defaultMessage);
     }
@@ -35,6 +42,24 @@ public class GlobalExceptionHandle {
         String message = Objects.requireNonNull(e.getConstraintViolations().iterator().next()).getMessage();
         log.warn("参数id最小值校检异常：{}", message);
         return Result.error(ResultCodeEnum.PARAM_ERROR,message);
+    }
+
+    @ExceptionHandler(value = HandlerMethodValidationException.class)
+    public Result<?> handlerMethodValidationExceptionHandle(HandlerMethodValidationException e) {
+        String message = e.getAllErrors().stream()
+                .map(error -> error.getDefaultMessage())
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse("参数校验失败");
+        log.warn("方法参数校验异常：{}", message);
+        return Result.error(ResultCodeEnum.PARAM_ERROR, message);
+    }
+
+    @ExceptionHandler(value = MissingServletRequestParameterException.class)
+    public Result<?> missingServletRequestParameterExceptionHandle(MissingServletRequestParameterException e) {
+        String message = "缺少请求参数：" + e.getParameterName();
+        log.warn("请求参数缺失：{}", e.getParameterName());
+        return Result.error(ResultCodeEnum.PARAM_ERROR, message);
     }
 
     @ExceptionHandler(value = AuthException.class)

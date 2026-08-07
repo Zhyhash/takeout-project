@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.Version;
-import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -20,9 +19,7 @@ public class Product {
 
 
     private String imageUrl;
-    @NotNull(message = "价格不能为空")
     private BigDecimal price;
-    @NotNull(message = "库存不能为空")
     private Integer stock;
 
     private Long merchantId;

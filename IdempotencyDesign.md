@@ -115,10 +115,14 @@ Redis 方案只经过 `RedisServiceIntegrationTest` 直接调用验证，尚未�
 |---|---|---|
 | `PATCH /order/{id}/cancel` | `WAIT_PAY -> CANCELLED` 条件更新，随后在同一事务归还库存 | 重复或并发取消只有一次成功，库存只归还一次；不重放首次响应 |
 | `PATCH /order/{id}/pay` | `WAIT_PAY -> PAYING -> PAID` 条件更新 | 当前模拟支付下结果安全；不代表真实渠道扣款幂等 |
-| `PATCH /order/{id}/confirm` | `PAID -> FINISHED` 条件更新 | 重复或并发确认只有一次成功 |
+| `PATCH /order/{id}/confirm` | `DELIVERED -> FINISHED` 条件更新 | 重复或并发确认只有一次成功 |
 | `POST /category` | 服务层提前查重，数据库唯一键 `(merchant_id, category_name)` 最终兜底 | 并发重复分类被数据库阻止；重复调用不重放首次响应 |
-| 商品实体更新 | `product.version` 与 MyBatis-Plus 乐观锁 | Mapper 层已验证过期版本更新失败；当前商品上下架 Service 的版本写法仍导致 API 集成测试失败，不能视为已完成 |
+| 商品实体更新 | `product.version` 与 MyBatis-Plus 乐观锁；上下架统一合法性检查与目标状态更新 | Mapper 层过期版本更新失败；上下架和同状态重试已由 API/MySQL 集成测试验证 |
 | 商家资料或营业状态更新 | `merchant.version` 乐观锁 | 防止旧版本静默覆盖新版本 |
+| `PATCH /merchant/orders/{id}/accept` | `PAID -> PREPARING` 条件更新并校验商家归属 | 已是 `PREPARING` 时幂等返回，其他状态返回业务错误 |
+| `PATCH /merchant/orders/{id}/ready` | 同一事务执行 `PREPARING -> READY` 并创建任务；`delivery_task.order_id` 唯一 | 已是 `READY` 且任务仍为未接取的 `WAIT_ASSIGN` 时幂等返回；任务缺失或不一致时拒绝 |
+| `PATCH /rider/delivery-tasks/{id}/claim` | 任务按 `WAIT_ASSIGN + rider_id IS NULL` 条件更新，并在同一事务推进订单 | 当前骑手重试幂等；其他骑手并发只能一人成功 |
+| `PATCH /rider/delivery-tasks/{id}/complete` | 按任务归属及 `DELIVERING` 条件更新，并在同一事务推进订单 | 已完成且订单已送达/完成时，当前骑手重试幂等 |
 | `DELETE /cart/items` | 删除条件包含当前用户，删除行数必须匹配请求数量 | 首次成功后重复删除会报错，最终状态安全 |
 | `DELETE /cart/items/all` | 按当前用户清空 | 重复执行后仍为空 |
 | 分类删除与商品创建 | 双方对目标分类行 `FOR UPDATE`，并有分类外键 | 防止并发产生孤儿商品 |
@@ -129,18 +133,18 @@ Redis 方案只经过 `RedisServiceIntegrationTest` 直接调用验证，尚未�
 |---|---|---|
 | `POST /cart/items` | 每次调用代表一次 `quantity + 1` | 加购不扣库存、不产生支付义务，用户下单前能检查数量 |
 | `PATCH /cart/items` | 每次 `+1/-1` 是独立指令，`version` 只防止并发覆盖 | 客户端不得把自动重试误当作同一数量意图；需要重放时应改为绝对数量或增加操作 ID |
-| `POST /user/register`、`POST /merchant/register` | 数据库用户名和手机号唯一；重复注册返回已存在或唯一键错误 | 注册暂不附带发券、计费等不可重复外部权益 |
+| `POST /user/register`、`POST /merchant/register`、`POST /rider/register` | 数据库用户名/骑手名和手机号唯一；重复注册返回已存在或唯一键错误 | 注册暂不附带发券、计费等不可重复外部权益 |
 | 分类、购物车条目等删除 | 关注最终资源状态，不要求重复请求都返回第一次的成功响应 | 调用方能够在错误后刷新最新状态 |
 
 ### 5.3 无需专门处理
 
 - 所有 `GET` 查询；
-- `POST /user/login`、`POST /merchant/login`：JWT 无服务端会话写入副作用；
+- `POST /user/login`、`POST /merchant/login`、`POST /rider/login`：JWT 无服务端会话写入副作用；
 - `PUT /merchant/info`：按请求内容覆盖资料，但并发覆盖由商家版本保护；
 - `PATCH /merchant/info?status=...`：设置绝对状态，不是相对切换；
 - 购物车清空和显式同状态返回的操作。
 
-当前商品上下架 API 是已知例外：同状态分支可以直接返回，但需要改变状态时，上架路径的显式版本赋值会与乐观锁插件共同处理版本而更新 0 行；下架路径当前还设置了错误的 `ON_SALE` 目标状态。因此本文不把上下架接口列为已经验证的幂等实现。
+骑手的可接任务、当前任务与详情均为查询操作，但每次查询仍会验证骑手账号存在且处于正常状态；任务详情还要求任务归属于当前骑手。
 
 ## 6. 仍需重新评估的场景
 

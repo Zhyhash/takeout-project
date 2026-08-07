@@ -21,6 +21,7 @@ import org.example.takeout.Product.VO.ProductVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -45,16 +46,14 @@ public class MerchantQueryService {
     }
     //NOTE:用户查询店铺（限制页面/翻页限制）
     public PageInfo<MerchantListVO> listMerchants(Integer pageNum, Integer pageSize,String merchantName,Integer status){
-        if (merchantName == null || merchantName.isEmpty()){
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家名字不能为空");
-        }
+        String keyword = StringUtils.hasText(merchantName) ? merchantName.trim() : null;
         if (status == null){
             //NOTE:这里如果这样写的话，可能需要与前端的交互，提示用户输入为空，默认为开启营业的商家
             status = MerchantStatusEnum.BUSINESS_OPEN.getCode();
         }
         PageHelper.startPage(pageNum,pageSize);
         List<Merchant> merchants = merchantMapper.selectList(Wrappers.<Merchant>lambdaQuery().
-                like(Merchant::getMerchantName, merchantName).
+                like(keyword != null, Merchant::getMerchantName, keyword).
                 eq(Merchant::getStatus, status));
 
         if (merchants==null||merchants.isEmpty())

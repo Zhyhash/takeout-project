@@ -11,6 +11,7 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
@@ -18,6 +19,7 @@ import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Entity.Merchant;
+import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
@@ -27,6 +29,7 @@ import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,6 +51,11 @@ public class MerchantService {
     private OrderMapper orderMapper;
     @Autowired
     private DeliveryTaskMapper deliveryTaskMapper;
+    @Autowired
+    private DeliveryFeeCalculator  deliveryFeeCalculator;
+    @Autowired
+    private ThreadPoolTaskExecutor threadPoolTaskExecutor;
+
     /**
      * 商家登录
      * @param dto 登录请求DTO
@@ -85,6 +93,7 @@ public class MerchantService {
         }
         Merchant merchant= merchantConverter.toMerchant(dto);
         merchant.setPassword(BCrypt.encode(dto.getPassword()));
+        merchant.setStatus(MerchantStatusEnum.BUSINESS_CLOSED.getCode());
         merchantMapper.insert(merchant);
         createDefaultCategory(merchant.getId());
     }
@@ -101,9 +110,12 @@ public class MerchantService {
      * 更新商家信息
      */
     public MerchantUpdateVO updateMerchant(MerchantUpdateDTO merchantUpdateDTO) {
-        Merchant oldMerchant = merchantMapper.selectById(MerchantContextHolder.getMerchantId());
+        Merchant oldMerchant = merchantMapper.selectOne(Wrappers.<Merchant>lambdaQuery().
+                eq(Merchant::getId,MerchantContextHolder.getMerchantId()).
+                eq(Merchant::getStatus, MerchantStatusEnum.BUSINESS_CLOSED.getCode()));
         if (oldMerchant == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商户不存在");
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "商户不存在或者当前状态不允许修改信息");
         }
         //NOTE:维持原判。商家的名字不做去重处理
         Merchant merchant = merchantConverter.toMerchant(merchantUpdateDTO, oldMerchant);
@@ -122,6 +134,10 @@ public class MerchantService {
         }
         Merchant merchant = merchantMapper.
                 selectById(MerchantContextHolder.getMerchantId());
+        if (merchant == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "商户不能为空");
+        }
         merchant.setStatus(manualStatus);
         int i = merchantMapper.updateById(merchant);
         if (i != 1) {
@@ -173,17 +189,50 @@ public class MerchantService {
             }
 
             if (OrderStatusEnum.READY.getCode().equals(order.getStatus())) {
+                assertWaitingDeliveryTask(orderId);
                 return;
             }
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "订单当前状态为：" + order.getStatus() + "，无法出餐");
         }
+
+
+        Merchant merchant = merchantMapper.selectById(merchantId);
+        if (merchant == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商户不存在");
+        }
+
         DeliveryTask task = new DeliveryTask();
         task.setOrderId(orderId);
         task.setMerchantName(order.getMerchantName());
+        task.setReceiverName(order.getReceiverName());
+        task.setReceiverPhone(order.getReceiverPhone());
+        task.setReceiverAddress(order.getReceiverAddress());
+        task.setMerchantAddress(merchant.getAddress());
+        task.setMerchantPhone(merchant.getPhone());
+        task.setDeliveryReward(deliveryFeeCalculator.calculateDeliveryReward());
         task.setStatus(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
-        deliveryTaskMapper.insert(task);
+        int insertedRows = deliveryTaskMapper.insert(task);
+        if (insertedRows != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "配送任务创建失败");
+        }
     }
 
+
+
+    private void assertWaitingDeliveryTask(Long orderId) {
+        DeliveryTask task = findDeliveryTaskByOrderId(orderId);
+        if (task == null
+                || !DeliveryTaskEnums.WAIT_ASSIGN.getCode().equals(task.getStatus())
+                || task.getRiderId() != null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单已出餐但配送任务不存在或状态不一致");
+        }
+    }
+
+    private DeliveryTask findDeliveryTaskByOrderId(Long orderId) {
+        return deliveryTaskMapper.selectOne(Wrappers.<DeliveryTask>lambdaQuery()
+                .eq(DeliveryTask::getOrderId, orderId));
+    }
 
 }

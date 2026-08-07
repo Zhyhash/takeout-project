@@ -1,5 +1,8 @@
 package org.example.takeout.Category.Controller;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import org.example.takeout.Category.Service.CategoryService;
 import org.example.takeout.Category.VO.CategoryVO;
 import org.example.takeout.Category.VO.CreateCategoryVO;
@@ -44,7 +47,10 @@ public class CategoryController {
      * @param categoryName 分类名称
      */
     @PostMapping
-    public Result<?> create(@RequestParam String categoryName) {
+    public Result<?> create(@RequestParam(value = "categoryName")
+                                @NotBlank(message = "分类名称不能为空")
+                                @Size(max = 15, message = "分类名称长度不能超过15个字符")
+                                String categoryName) {
         CreateCategoryVO createCategoryVO = categoryService.createCategory(categoryName);
         return Result.success(createCategoryVO);
     }

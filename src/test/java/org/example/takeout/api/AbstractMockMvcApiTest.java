@@ -23,6 +23,7 @@ import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Service.ProductService;
 import org.example.takeout.Product.VO.MerchantProductVO;
+import org.example.takeout.Rider.Service.RiderService;
 import org.example.takeout.User.Service.UserService;
 import org.example.takeout.User.VO.LoginVO;
 import org.junit.jupiter.api.AfterEach;
@@ -88,6 +89,9 @@ abstract class AbstractMockMvcApiTest {
     protected DeliveryTaskService deliveryTaskService;
 
     @MockitoBean
+    protected RiderService riderService;
+
+    @MockitoBean
     protected JdbcTemplate jdbcTemplate;
 
     @BeforeEach
@@ -99,7 +103,7 @@ abstract class AbstractMockMvcApiTest {
     @AfterEach
     void resetMocks() {
         reset(userService, merchantService, merchantQueryService, categoryService,
-                productService, cartService, orderService, deliveryTaskService, jdbcTemplate);
+                productService, cartService, orderService, deliveryTaskService, riderService, jdbcTemplate);
     }
 
     protected String json(Object value) throws JsonProcessingException {

@@ -81,7 +81,16 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         mockMvc.perform(post("/category")
                         .header("Authorization", merchantBearer()))
                 .andExpect(status().isOk())
-                .andExpect(resultCode(UNKNOWN_ERROR));
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void createCategoryRejectsOverlongCategoryName() throws Exception {
+        mockMvc.perform(post("/category")
+                        .header("Authorization", merchantBearer())
+                        .param("categoryName", "1234567890123456"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
     }
 
     @Test

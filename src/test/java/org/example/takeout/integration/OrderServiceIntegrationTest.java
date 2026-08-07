@@ -331,6 +331,7 @@ class OrderServiceIntegrationTest {
         );
         assertEquals(1, orderItems.size());
         assertEquals(5, orderItems.get(0).getQuantity());
+        assertEquals(product.getImageUrl(), orderItems.get(0).getProductPicture());
     }
 
     /// 临时测试：检验数据库唯一键是否真的存在

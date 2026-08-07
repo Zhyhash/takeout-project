@@ -1,32 +1,51 @@
 package org.example.takeout.DeliveryTask.Service;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.github.pagehelper.PageHelper;
+import com.github.pagehelper.PageInfo;
+import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
+import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskConverter;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
+import org.example.takeout.DeliveryTask.VO.RiderDeliveryDetailVO;
+import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
+import org.example.takeout.Rider.Entity.Rider;
+import org.example.takeout.Rider.Enums.RiderStatusEnum;
+import org.example.takeout.Rider.Mapper.RiderMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class DeliveryTaskService {
     @Autowired
     private DeliveryTaskMapper deliveryTaskMapper;
     @Autowired
     private OrderMapper orderMapper;
+    @Autowired
+    private RiderMapper riderMapper;
+    @Autowired
+    private DeliveryTaskConverter deliveryTaskConverter;
 
     @Transactional(rollbackFor = Exception.class)
     public void claimTask(Long taskId){
-        Long riderId = RiderContextHolder.getRiderId();
+        Long riderId = requireActiveRiderId();
 
         //抢配送任务
         LambdaUpdateWrapper<DeliveryTask> deliveryTaskLambdaUpdateWrapper = new LambdaUpdateWrapper<>();
@@ -46,6 +65,8 @@ public class DeliveryTaskService {
 
             if (DeliveryTaskEnums.DELIVERING.getCode().equals(deliveryTask.getStatus())
                     && Objects.equals(deliveryTask.getRiderId(), riderId)) {
+                assertOrderStatus(deliveryTask.getOrderId(), OrderStatusEnum.DELIVERING.getCode(),
+                        "配送任务已被当前骑手接取，但订单状态不一致");
                 return;
             }
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
@@ -60,18 +81,14 @@ public class DeliveryTaskService {
             if (order == null) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
             }
-
-            if (OrderStatusEnum.DELIVERING.getCode().equals(order.getStatus())) {
-                return;
-            }
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "订单当前状态为：" + order.getStatus() + "，无法配送");
+                    "配送任务已更新但订单状态为：" + order.getStatus() + "，数据状态不一致");
         }
     }
 
     @Transactional(rollbackFor = Exception.class)
     public void completeDelivery(Long taskId){
-        Long riderId = RiderContextHolder.getRiderId();
+        Long riderId = requireActiveRiderId();
 
         //骑手确认送达
         LambdaUpdateWrapper<DeliveryTask> deliveryTaskLambdaUpdateWrapper = new LambdaUpdateWrapper<>();
@@ -93,6 +110,9 @@ public class DeliveryTaskService {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                         "配送任务当前状态为：" + deliveryTask.getStatus() + "，无法确认送达");
             }
+
+            assertOrderReachedDeliveryCompletion(deliveryTask.getOrderId());
+            return;
         }
 
         //修改订单状态
@@ -103,13 +123,108 @@ public class DeliveryTaskService {
             if (order == null) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
             }
-
-            if (OrderStatusEnum.DELIVERED.getCode().equals(order.getStatus())) {
-                return;
-            }
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "订单当前状态为：" + order.getStatus() + "，无法确认送达");
+                    "配送任务已更新但订单状态为：" + order.getStatus() + "，数据状态不一致");
         }
     }
+
+    //NOTE：骑手查询目前派送任务
+    public List<RiderTaskListVO> getRiderTaskList() {
+        Long riderId = requireActiveRiderId();
+        List<DeliveryTask> deliveryTasks = deliveryTaskMapper.selectList(Wrappers.<DeliveryTask>lambdaQuery().
+                eq(DeliveryTask::getRiderId, riderId).
+                eq(DeliveryTask::getStatus, DeliveryTaskEnums.DELIVERING.getCode()));
+        if (deliveryTasks.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        return deliveryTasks.stream()
+                .peek(this::warnIfTaskInfoMissing)
+                .map(deliveryTaskConverter::toRiderTaskListVO)
+                .collect(Collectors.toList());
+    }
+
+    //NOTE：骑手查询某一个任务的详情（已经接取了任务的详情）
+    public RiderDeliveryDetailVO getRiderDeliveryDetail(Long taskId) {
+        Long riderId = requireActiveRiderId();
+        DeliveryTask deliveryTask = deliveryTaskMapper.selectOne(Wrappers.lambdaQuery(DeliveryTask.class).
+                eq(DeliveryTask::getId, taskId).
+                eq(DeliveryTask::getRiderId, riderId));
+        if (deliveryTask == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "配送任务不存在");
+        }
+        return deliveryTaskConverter.toRiderDeliveryDetailVO(deliveryTask);
+    }
+
+    //NOTE：骑手抢订单的时候，查询可接取的任务表
+    public PageInfo<RiderTaskListVO> getAvailableRiderTaskPage(Integer page, Integer pageSize){
+        requireActiveRiderId();
+        PageHelper.startPage(page, pageSize);
+        List<DeliveryTask> deliveryTasks = deliveryTaskMapper.selectList(Wrappers.<DeliveryTask>lambdaQuery().
+                eq(DeliveryTask::getStatus, DeliveryTaskEnums.WAIT_ASSIGN.getCode()).
+                isNull(DeliveryTask::getRiderId));
+        PageInfo<DeliveryTask> pageInfo = new PageInfo<>(deliveryTasks);
+
+
+        return pageInfo.convert(deliveryTaskConverter::toRiderTaskListVO);
+    }
+
+
+
+
+
+
+    private void warnIfTaskInfoMissing(DeliveryTask deliveryTask) {
+        if (!StringUtils.hasText(deliveryTask.getMerchantName())) {
+            log.warn("配送任务Id:{},商家名字为空", deliveryTask.getId());
+        }
+        if (!StringUtils.hasText(deliveryTask.getMerchantAddress())) {
+            log.warn("配送任务Id:{},商家地址为空", deliveryTask.getId());
+        }
+        if (!StringUtils.hasText(deliveryTask.getReceiverAddress())) {
+            log.warn("配送任务Id:{},用户接收为空", deliveryTask.getId());
+        }
+    }
+
+
+    private void assertOrderStatus(Long orderId, Integer expectedStatus, String message) {
+        Order order = orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
+        }
+        if (!expectedStatus.equals(order.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    message + "，当前订单状态为：" + order.getStatus());
+        }
+    }
+
+    private void assertOrderReachedDeliveryCompletion(Long orderId) {
+        Order order = orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
+        }
+        if (!OrderStatusEnum.DELIVERED.getCode().equals(order.getStatus())
+                && !OrderStatusEnum.FINISHED.getCode().equals(order.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "配送任务已完成，但订单状态不一致，当前订单状态为：" + order.getStatus());
+        }
+    }
+
+
+    private Long requireActiveRiderId() {
+        Long riderId = RiderContextHolder.getRiderId();
+        if (riderId == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手身份无效");
+        }
+
+        Rider rider = riderMapper.selectById(riderId);
+        if (rider == null || !RiderStatusEnum.NORMAL.getCode().equals(rider.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手账号已禁用或不存在");
+        }
+        return riderId;
+    }
+
+
 
 }

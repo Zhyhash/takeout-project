@@ -180,11 +180,7 @@ public class CartService {
             return emptyVO;
         }
 
-        // 7. 如果是在增加数量，需要校验库存上限
-        if (change == 1 && newQuantity > product.getStock()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "库存不足，当前库存：" + product.getStock());
-        }
+
 
         // 8. 执行更新
         cartItem.setQuantity(newQuantity);
@@ -236,16 +232,8 @@ public class CartService {
 
             boolean productValid = (product != null && ProductStatusEnum.ON_SALE.getCode().equals(product.getStatus()));
             boolean merchantOpen = (merchant != null && !MerchantStatusEnum.BUSINESS_CLOSED.getCode().equals(merchant.getStatus()));
-
-            // 商品无效
-            if (!productValid) {
-                canBuy = false;
-                if (!invalidReason.contains("商品不存在或状态无效\n"))
-                    invalidReason += "商品不存在或状态无效\n";
-            }
-
             CartVO vo = getCartVO(item);
-            // 商品有效但商家打烊 → 标记为不可用
+
             if (!merchantOpen) {
                 vo.setAvailable(false);
                 vo.setDisableReason("商家已打烊");
@@ -253,6 +241,12 @@ public class CartService {
                 canBuy = false;
                 if (!invalidReason.contains("商家已打烊\n"))
                     invalidReason += "商家已打烊\n";
+            }else if (!productValid) {
+                canBuy = false;
+                vo.setAvailable(false);
+                vo.setDisableReason("商品无效");
+                if (!invalidReason.contains("商品不存在或状态无效\n"))
+                    invalidReason += "商品不存在或状态无效\n";
             } else {
                 vo.setAvailable(true);
                 // 只有可用商品才计入总价

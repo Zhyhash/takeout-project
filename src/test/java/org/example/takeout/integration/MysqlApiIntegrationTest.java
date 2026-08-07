@@ -4,18 +4,21 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
+import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
+import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
+import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,7 +31,9 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalTime;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -107,7 +112,7 @@ class MysqlApiIntegrationTest {
 
         mockMvc.perform(post("/category")
                         .header("Authorization", bearer(token))
-                        .param("categoryName", "it_category_" + suffix()))
+                        .param("categoryName", "c_" + suffix()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
@@ -210,6 +215,10 @@ class MysqlApiIntegrationTest {
                 "select username from merchant where id = ?",
                 String.class,
                 seed.merchantId());
+        String merchantPhone = jdbcTemplate.queryForObject(
+                "select phone from merchant where id = ?",
+                String.class,
+                seed.merchantId());
         String merchantToken = loginMerchant(merchantUsername);
         Long riderId = insertRider("it_rider_" + suffix());
 
@@ -230,6 +239,10 @@ class MysqlApiIntegrationTest {
                         .header("Authorization", bearer(merchantToken)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
+        mockMvc.perform(patch("/merchant/orders/{orderId}/accept", seed.orderId())
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
         assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.PREPARING.getCode());
 
         //制作完成
@@ -240,16 +253,35 @@ class MysqlApiIntegrationTest {
         assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.READY.getCode());
 
         Map<String, Object> waitingTask = jdbcTemplate.queryForMap(
-                "select id, rider_id, status, create_time from delivery_task where order_id = ?",
+                "select id, rider_id, status, create_time, delivery_reward, receiver_phone, receiver_address, " +
+                        "receiver_name, merchant_address, merchant_phone from delivery_task where order_id = ?",
                 seed.orderId());
         Long taskId = ((Number) waitingTask.get("id")).longValue();
         assertThat(waitingTask.get("rider_id")).isNull();
         assertThat(waitingTask.get("status")).isEqualTo(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
         assertThat(waitingTask.get("create_time")).isNotNull();
+        assertThat((BigDecimal) waitingTask.get("delivery_reward")).isEqualByComparingTo("5.00");
+        assertThat(waitingTask.get("receiver_phone")).isEqualTo("13800138000");
+        assertThat(waitingTask.get("receiver_address")).isEqualTo("Integration Road 1");
+        assertThat(waitingTask.get("receiver_name")).isEqualTo("Integration Tester");
+        assertThat(waitingTask.get("merchant_address")).isEqualTo("Integration Address");
+        assertThat(waitingTask.get("merchant_phone")).isEqualTo(merchantPhone);
+
+        //重复出餐必须同时验证订单与配送任务状态，且不能创建第二条任务
+        mockMvc.perform(patch("/merchant/orders/{orderId}/ready", seed.orderId())
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        Integer taskCount = jdbcTemplate.queryForObject(
+                "select count(*) from delivery_task where order_id = ?",
+                Integer.class,
+                seed.orderId());
+        assertThat(taskCount).isEqualTo(1);
 
         RiderContextHolder.setRiderId(riderId);
         try {
             //骑手抢单
+            deliveryTaskService.claimTask(taskId);
             deliveryTaskService.claimTask(taskId);
 
             Map<String, Object> deliveringTask = jdbcTemplate.queryForMap(
@@ -261,6 +293,7 @@ class MysqlApiIntegrationTest {
             assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.DELIVERING.getCode());
 
             //骑手送达
+            deliveryTaskService.completeDelivery(taskId);
             deliveryTaskService.completeDelivery(taskId);
 
             Map<String, Object> completedTask = jdbcTemplate.queryForMap(
@@ -287,6 +320,47 @@ class MysqlApiIntegrationTest {
     }
 
     @Test
+    void concurrentRidersClaimExactlyOnceOnMysql() throws Exception {
+        OrderSeed seed = createOrderThroughApi();
+        String merchantUsername = jdbcTemplate.queryForObject(
+                "select username from merchant where id = ?",
+                String.class,
+                seed.merchantId());
+        String merchantToken = loginMerchant(merchantUsername);
+        Long riderAId = insertRider("it_concurrent_rider_a_" + suffix());
+        Long riderBId = insertRider("it_concurrent_rider_b_" + suffix());
+
+        mockMvc.perform(patch("/order/{id}/pay", seed.orderId())
+                        .header("Authorization", bearer(seed.userToken())))
+                .andExpect(jsonPath("$.code").value(200));
+        mockMvc.perform(patch("/merchant/orders/{orderId}/accept", seed.orderId())
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(jsonPath("$.code").value(200));
+        mockMvc.perform(patch("/merchant/orders/{orderId}/ready", seed.orderId())
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(jsonPath("$.code").value(200));
+
+        Long taskId = jdbcTemplate.queryForObject(
+                "select id from delivery_task where order_id = ?",
+                Long.class,
+                seed.orderId());
+        ConcurrentTestTemplate.TwoTaskResult<Boolean, Boolean> attempts =
+                ConcurrentTestTemplate.runTwoTasks(
+                        Duration.ofSeconds(10),
+                        () -> tryClaimTask(riderAId, taskId),
+                        () -> tryClaimTask(riderBId, taskId));
+
+        assertThat(List.of(attempts.firstResult(), attempts.secondResult()))
+                .containsExactlyInAnyOrder(true, false);
+        Map<String, Object> task = jdbcTemplate.queryForMap(
+                "select rider_id, status from delivery_task where id = ?",
+                taskId);
+        assertThat(((Number) task.get("rider_id")).longValue()).isIn(riderAId, riderBId);
+        assertThat(task.get("status")).isEqualTo(DeliveryTaskEnums.DELIVERING.getCode());
+        assertThat(orderStatus(seed.orderId())).isEqualTo(OrderStatusEnum.DELIVERING.getCode());
+    }
+
+    @Test
     void cancelOrderUpdatesOrderStatus() throws Exception {
         OrderSeed seed = createOrderThroughApi();
 
@@ -309,6 +383,10 @@ class MysqlApiIntegrationTest {
     @Test
     void updateMerchantInfoUpdatesMerchantRow() throws Exception {
         MerchantSeed merchant = insertMerchant("it_update_merchant_" + suffix());
+        jdbcTemplate.update(
+                "update merchant set status = ? where id = ?",
+                MerchantStatusEnum.BUSINESS_CLOSED.getCode(),
+                merchant.id());
         String token = loginMerchant(merchant.username());
         String updatedPhone = phone();
 
@@ -343,6 +421,26 @@ class MysqlApiIntegrationTest {
         assertThat(row.get("opening_time").toString()).startsWith("09:30");
         assertThat(row.get("closing_time").toString()).startsWith("21:45");
         assertThat(row.get("version")).isEqualTo(1);
+    }
+
+    @Test
+    void updateMerchantInfoRejectsBusinessOpenMerchant() throws Exception {
+        MerchantSeed merchant = insertMerchant("it_open_merchant_" + suffix());
+        String token = loginMerchant(merchant.username());
+
+        MerchantUpdateDTO dto = new MerchantUpdateDTO();
+        dto.setMerchantName("Updated Shop " + suffix());
+        dto.setAddress("Updated Integration Road");
+        dto.setPhone(phone());
+        dto.setOpeningTime(LocalTime.of(9, 30));
+        dto.setClosingTime(LocalTime.of(21, 45));
+
+        mockMvc.perform(put("/merchant/info")
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(dto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(500));
     }
 
     @Test
@@ -720,6 +818,18 @@ class MysqlApiIntegrationTest {
                 name);
     }
 
+    private boolean tryClaimTask(Long riderId, Long taskId) {
+        RiderContextHolder.setRiderId(riderId);
+        try {
+            deliveryTaskService.claimTask(taskId);
+            return true;
+        } catch (BusinessException exception) {
+            return false;
+        } finally {
+            RiderContextHolder.clear();
+        }
+    }
+
     private Integer orderStatus(Long orderId) {
         return jdbcTemplate.queryForObject(
                 "select status from orders where id = ?",
@@ -993,11 +1103,17 @@ class MysqlApiIntegrationTest {
                     `order_id` bigint NOT NULL,
                     `rider_id` bigint NULL DEFAULT NULL,
                     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `delivery_reward` decimal(10,2) NOT NULL COMMENT '配送奖励金额快照',
+                    `receiver_name` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '收货人姓名快照',
                     `status` int NOT NULL,
                     `create_time` datetime NOT NULL COMMENT '商家制作完成，任务创建时间',
                     `accepted_time` datetime NULL DEFAULT NULL COMMENT '骑手接取时间，当前也代表开始配送时间',
                     `delivered_time` datetime NULL DEFAULT NULL COMMENT '骑手确认送达时间',
                     `update_time` datetime NULL DEFAULT NULL COMMENT '更新时间',
+                    `receiver_phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '收货人联系电话快照',
+                    `receiver_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '收货地址快照',
+                    `merchant_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '商家地址快照',
+                    `merchant_phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '商家联系电话快照',
                     PRIMARY KEY (`id`) USING BTREE,
                     UNIQUE INDEX `uk_delivery_task_order_id` (`order_id` ASC) USING BTREE
                 ) ENGINE = InnoDB CHARACTER SET = utf8mb4

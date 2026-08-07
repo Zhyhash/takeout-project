@@ -4,32 +4,6 @@
 
 <!-- namespace 必须指向你的 Mapper 接口全类名 -->
 <mapper namespace="org.example.takeout.Product.Mapper.ProductMapper">
-<select id="listMerchantProducts" resultType="org.example.takeout.Product.VO.MerchantProductVO">
-    SELECT
-    p.id,
-    p.product_name AS productName,
-    p.price,
-    p.stock,
-    p.status,
-    p.description,
-    p.image_url AS imageUrl,
-    c.category_name AS categoryName
-    FROM product p
-    LEFT JOIN category c ON p.category_id = c.id
-    <where>
-        p.merchant_id = #{merchantId}
-        AND p.is_deleted = 0
-
-        <if test="status != null">
-            AND p.status = #{status}
-        </if>
-
-        <if test="categoryId != null">
-            AND p.category_id = #{categoryId}
-        </if>
-    </where>
-</select>
-
     <update id="restoreDeletedProduct">
         UPDATE product p1
         SET p1.is_deleted = 0

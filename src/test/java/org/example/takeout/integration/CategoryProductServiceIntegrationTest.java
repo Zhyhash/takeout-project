@@ -10,6 +10,7 @@ import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.Service.ProductService;
+import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.dataFactory.TestDataFactory;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -70,6 +71,19 @@ class CategoryProductServiceIntegrationTest {
         } finally {
             MerchantContextHolder.clear();
         }
+    }
+
+    @Test
+    void createProduct_shouldUseDefaultImageWhenImageUrlMissing() {
+        MerchantProductVO nullImageProduct = productService.createProduct(
+                createProductDTO("default_null", null));
+        MerchantProductVO blankImageProduct = productService.createProduct(
+                createProductDTO("default_blank", "   "));
+
+        assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, nullImageProduct.getImageUrl());
+        assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, blankImageProduct.getImageUrl());
+        assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, productImageUrl("default_null"));
+        assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, productImageUrl("default_blank"));
     }
 
 
@@ -187,6 +201,22 @@ class CategoryProductServiceIntegrationTest {
         dto.setImageUrl("https://example.test/concurrent-product.png");
         dto.setCategoryId(TARGET_CATEGORY_ID);
         return dto;
+    }
+
+    private CreateProductDTO createProductDTO(String productName, String imageUrl) {
+        CreateProductDTO dto = createProductDTO();
+        dto.setProductName(productName);
+        dto.setImageUrl(imageUrl);
+        return dto;
+    }
+
+    private String productImageUrl(String productName) {
+        return jdbcTemplate.queryForObject(
+                "SELECT image_url FROM product WHERE merchant_id = ? AND product_name = ?",
+                String.class,
+                TEST_MERCHANT_ID,
+                productName
+        );
     }
 
     private void deleteTestData() {

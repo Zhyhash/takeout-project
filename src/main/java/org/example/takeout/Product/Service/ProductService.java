@@ -26,10 +26,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class ProductService {
+    public static final String DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.svg";
+
     @Autowired
     private CategoryMapper categoryMapper;
     @Autowired
@@ -38,18 +44,28 @@ public class ProductService {
     private ProductConverter productConverter;
 
     //NOTE:抽取方法，转换VO
-    public MerchantProductVO toMerchantProductVO(Product product, @NonNull Category category) {
+    public MerchantProductVO toMerchantProductVO(Product product, Category category) {
         // 从 product 实体中拷贝基础属性（此时 product 已经被回填了 id）
         return productConverter.toMerchantProductVO(product,category);
     }
 
     //NOTE:抽取方法，转换Product
     public Product toProduct(CreateProductDTO createProductDTO){
-        return productConverter.toProduct(createProductDTO,MerchantContextHolder.getMerchantId());
+        Product product = productConverter.toProduct(createProductDTO, MerchantContextHolder.getMerchantId());
+        product.setImageUrl(resolveImageUrl(product.getImageUrl()));
+        return product;
     }
+
+    private String resolveImageUrl(String imageUrl) {
+        if (imageUrl == null || imageUrl.isBlank()) {
+            return DEFAULT_PRODUCT_IMAGE_URL;
+        }
+        return imageUrl.trim();
+    }
+
     //NOTE:抽取方法，扣减库存，目前只用于orderService
-    public void decreaseStock(Product product, Integer quantity){
-        if (product == null || product.getId() == null) {
+    public void decreaseStock(Long productId, Integer quantity){
+        if (productId == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品信息不能为空");
         }
 
@@ -57,7 +73,7 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "扣减数量必须大于0");
         }
         UpdateWrapper<Product> wrapper = new UpdateWrapper<>();
-        wrapper.eq("id", product.getId())
+        wrapper.eq("id", productId)
                 .ge("stock", quantity)
                 .setSql("stock = stock - " + quantity);
         int row= productMapper.update(null,wrapper);
@@ -84,48 +100,14 @@ public class ProductService {
     //NOTE:上架商品
     @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO onShelf(Long productId){
-        //查询商品
         Product product = getProduct(productId);
-        // 不存在则抛 BusinessException
-        if (product == null){
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"不存在该商品");
-        }
+        validateShelfChangeLegal(product, ProductStatusEnum.ON_SALE);
         Category category = getCategory(product.getCategoryId());
-        // 2. 幂等处理：已经是上架状态，直接转换成 VO 返回
-        //    不能抛异常
-        if (product.getStatus().equals(ProductStatusEnum.ON_SALE.getCode())) {
-            return toMerchantProductVO(product,category);
-        }
-        // 3. 只有下架状态才能上架，其他状态（售罄、删除等）抛业务异常
-        if (!product.getStatus().equals(ProductStatusEnum.OFF_SALE.getCode())) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"当前状态不允许上架");
-        }
-        // 4. 库存必须 > 0
-        if (product.getStock() == null || product.getStock() <= 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存不足，无法上架");
-        }
-        //新增. 价格必须>=0且存在
-        // 价格校验
-        if (product.getPrice() == null || product.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"价格无效，无法上架");
+
+        if (!ProductStatusEnum.ON_SALE.getCode().equals(product.getStatus())) {
+            changeProductStatus(product, ProductStatusEnum.ON_SALE);
         }
 
-        // 5. 可选防御：名称非空
-        if (product.getProductName() == null || product.getProductName().isBlank()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品名称为空，无法上架");
-        }
-
-        LambdaUpdateWrapper<Product> wrapper = new LambdaUpdateWrapper<>();
-        wrapper.eq(Product::getId, productId)
-                .eq(Product::getVersion, product.getVersion());
-        Product updateEntity = new Product();
-        updateEntity.setVersion(product.getVersion()+1);
-        updateEntity.setStatus(ProductStatusEnum.ON_SALE.getCode());
-
-        int i = productMapper.update(updateEntity,wrapper);
-        if (i!=1)
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品上架失败");
-        // 7. 返回 VO
         return toMerchantProductVO(product,category);
     }
 
@@ -133,27 +115,68 @@ public class ProductService {
     @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO offShelf(Long productId){
         Product product = getProduct(productId);
-        if (product == null){
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在");
-        }
+        validateShelfChangeLegal(product, ProductStatusEnum.OFF_SALE);
         Category category = getCategory(product.getCategoryId());
-        //幂等性
-        if (product.getStatus().equals(ProductStatusEnum.OFF_SALE.getCode())) {
-            return toMerchantProductVO(product,category);
-        }
-        //上架和售罄的本来就可以下架，不进行额外校检
-        LambdaUpdateWrapper<Product> wrapper = new LambdaUpdateWrapper<>();
-        wrapper.eq(Product::getId, productId)
-                .eq(Product::getVersion, product.getVersion());
-        Product updateEntity = new Product();
-        updateEntity.setVersion(product.getVersion()+1);
-        updateEntity.setStatus(ProductStatusEnum.ON_SALE.getCode());
 
-        int i = productMapper.update(updateEntity,wrapper);
-        if (i!=1)
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品下架失败");
+        if (!ProductStatusEnum.OFF_SALE.getCode().equals(product.getStatus())) {
+            changeProductStatus(product, ProductStatusEnum.OFF_SALE);
+        }
+
         return toMerchantProductVO(product,category);
     }
+
+    private void validateShelfChangeLegal(Product product, ProductStatusEnum targetStatus) {
+        if (product == null){
+            String message = targetStatus == ProductStatusEnum.ON_SALE ? "不存在该商品" : "商品不存在";
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,message);
+        }
+
+        Integer currentStatus = product.getStatus();
+        if (targetStatus.getCode().equals(currentStatus)) {
+            return;
+        }
+
+        if (targetStatus == ProductStatusEnum.ON_SALE) {
+            if (!ProductStatusEnum.OFF_SALE.getCode().equals(currentStatus)) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"当前状态不允许上架");
+            }
+            if (product.getStock() == null || product.getStock() <= 0) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存不足，无法上架");
+            }
+            if (product.getPrice() == null || product.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"价格无效，无法上架");
+            }
+            if (product.getProductName() == null || product.getProductName().isBlank()) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品名称为空，无法上架");
+            }
+            return;
+        }
+
+        if (!ProductStatusEnum.ON_SALE.getCode().equals(currentStatus)
+                && !ProductStatusEnum.SALE_OUT.getCode().equals(currentStatus)) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"当前状态不允许下架");
+        }
+    }
+
+    private void changeProductStatus(Product product, ProductStatusEnum targetStatus) {
+        LambdaUpdateWrapper<Product> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(Product::getId, product.getId());
+
+        Product updateEntity = new Product();
+        updateEntity.setId(product.getId());
+        updateEntity.setVersion(product.getVersion());
+        updateEntity.setStatus(targetStatus.getCode());
+
+        int i = productMapper.update(updateEntity,wrapper);
+        if (i!=1) {
+            String message = targetStatus == ProductStatusEnum.ON_SALE ? "商品上架失败" : "商品下架失败";
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,message);
+        }
+
+        product.setStatus(targetStatus.getCode());
+        product.setVersion(product.getVersion()+1);
+    }
+
     private Category getCategory(Long categoryId){
         Category category = categoryMapper.selectById(categoryId);
 
@@ -175,12 +198,31 @@ public class ProductService {
         PageHelper.startPage(pageNum, pageSize);
 
 
-        List<MerchantProductVO> merchantProductVOS = productMapper.listMerchantProducts(
-                MerchantContextHolder.getMerchantId(),
-                status,
-                categoryId
-        );
-        return new PageInfo<>(merchantProductVOS);
+        List<Product> products = productMapper.selectList(Wrappers.<Product>lambdaQuery()
+                .eq(Product::getMerchantId, MerchantContextHolder.getMerchantId())
+                .eq(Product::getIsDeleted, DeleteConstant.NOT_DELETED)
+                .eq(status != null, Product::getStatus, status)
+                .eq(categoryId != null, Product::getCategoryId, categoryId));
+        PageInfo<Product> productPage = new PageInfo<>(products);
+        Map<Long, Category> categoryMap = getCategoryMap(products);
+        return productPage.convert(product -> toMerchantProductVO(product, categoryMap.get(product.getCategoryId())));
+    }
+
+    private Map<Long, Category> getCategoryMap(List<Product> products) {
+        List<Long> categoryIds = products.stream()
+                .map(Product::getCategoryId)
+                .filter(id -> id != null)
+                .distinct()
+                .collect(Collectors.toList());
+        if (categoryIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        return categoryMapper.selectList(Wrappers.<Category>lambdaQuery()
+                        .eq(Category::getMerchantId, MerchantContextHolder.getMerchantId())
+                        .in(Category::getId, categoryIds))
+                .stream()
+                .collect(Collectors.toMap(Category::getId, Function.identity(), (first, second) -> first));
     }
     //恢复删除的商品
     @Transactional(rollbackFor = Exception.class)

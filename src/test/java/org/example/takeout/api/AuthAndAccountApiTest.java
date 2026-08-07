@@ -135,6 +135,18 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
+    void merchantRegisterRejectsBlankMerchantName() throws Exception {
+        MerchantRegisterDTO dto = merchantRegisterDTO();
+        dto.setMerchantName("  ");
+
+        mockMvc.perform(post("/merchant/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
     void merchantRegisterRejectsDuplicateUsername() throws Exception {
         MerchantRegisterDTO dto = merchantRegisterDTO();
         doThrow(businessError("merchant exists")).when(merchantService).register(any(MerchantRegisterDTO.class));
@@ -164,6 +176,30 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     void merchantLoginRejectsMissingUsername() throws Exception {
         MerchantLoginDTO dto = merchantLoginDTO();
         dto.setUserName(null);
+
+        mockMvc.perform(post("/merchant/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void merchantLoginRejectsBlankUsername() throws Exception {
+        MerchantLoginDTO dto = merchantLoginDTO();
+        dto.setUserName("");
+
+        mockMvc.perform(post("/merchant/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void merchantLoginRejectsOverlongUsername() throws Exception {
+        MerchantLoginDTO dto = merchantLoginDTO();
+        dto.setUserName("a".repeat(51));
 
         mockMvc.perform(post("/merchant/login")
                         .contentType(MediaType.APPLICATION_JSON)
