@@ -769,7 +769,7 @@ class MysqlApiIntegrationTest {
 
     private String loginMerchant(String username) throws Exception {
         MerchantLoginDTO dto = new MerchantLoginDTO();
-        dto.setUserName(username);
+        dto.setUsername(username);
         dto.setPassword(PASSWORD);
         MvcResult result = postJson("/merchant/login", dto)
                 .andExpect(status().isOk())

@@ -12,6 +12,8 @@ public class RiderTaskListVO {
     private String  merchantAddress;
     private String receiverAddress;
     private BigDecimal deliveryReward;
+    private Integer status;
+    private String statusDesc;
     private LocalDateTime createTime;
     //预留位，商家/用户距离
 }

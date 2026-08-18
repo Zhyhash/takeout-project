@@ -20,6 +20,7 @@ public class RiderDeliveryDetailVO {
     private BigDecimal deliveryReward;
 
     private Integer status;
+    private String statusDesc;
 
     private LocalDateTime acceptedTime;
 }

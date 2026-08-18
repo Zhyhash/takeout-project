@@ -63,6 +63,7 @@ public class cartDomainService {
             }
         }
         CartAvailableResult cartAvailableResult = new CartAvailableResult();
+        cartAvailableResult.setAllItems(allItems);
         cartAvailableResult.setAvailableItems(available);
         cartAvailableResult.setProductMap(productMap);
         cartAvailableResult.setMerchantMap(merchantMap);

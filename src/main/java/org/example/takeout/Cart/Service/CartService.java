@@ -10,7 +10,6 @@ import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.VO.CartListVO;
 import org.example.takeout.Cart.VO.CartVO;
 import org.example.takeout.Common.Constants.DeleteConstant;
-import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
@@ -131,8 +130,9 @@ public class CartService {
     @Transactional(rollbackFor = Exception.class)
     public CartVO update(UpdateCartDTO updateCartDTO) {
         // 1. 参数校验：只允许 +1 或 -1
-        if (updateCartDTO.getQuantityChange() != 1 && updateCartDTO.getQuantityChange() != -1) {
-            throw new AuthException("参数不合法");
+        Integer quantityChange = updateCartDTO.getQuantityChange();
+        if (!Integer.valueOf(1).equals(quantityChange) && !Integer.valueOf(-1).equals(quantityChange)) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "修改的数量只能为-1或1");
         }
 
         // 2. 查询购物车记录（带用户ID，防止越权）

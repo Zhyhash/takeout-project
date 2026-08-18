@@ -13,6 +13,7 @@ public class MerchantProductVO {
     private BigDecimal price;
     private Integer stock;
     private Integer status;
+    private String statusDesc;
     private String description;
     private String imageUrl;
 }

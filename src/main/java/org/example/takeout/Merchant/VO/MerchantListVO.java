@@ -10,4 +10,5 @@ public class MerchantListVO {
     private String address;
     private String description;
     private Integer status;
+    private String statusDesc;
 }

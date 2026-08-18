@@ -1,13 +1,14 @@
 package org.example.takeout.Category.Controller;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import org.example.takeout.Category.Service.CategoryService;
 import org.example.takeout.Category.VO.CategoryVO;
 import org.example.takeout.Category.VO.CreateCategoryVO;
 import org.example.takeout.Common.Result.Result;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.List;
  * 提供商家分类的增删查接口
  */
 @RestController
+@Validated
 @RequestMapping("/category")
 public class CategoryController {
 
@@ -37,7 +39,7 @@ public class CategoryController {
      * 根据分类ID获取单个分类详情
      */
     @GetMapping("{id}")
-    public Result<?> getById(@PathVariable Long id) {
+    public Result<?> getById(@PathVariable @Positive Long id) {
         CategoryVO categoryVO = categoryService.getByIdAndMerchant(id);
         return Result.success(categoryVO);
     }
@@ -60,7 +62,7 @@ public class CategoryController {
      * 删除后，该分类下的商品会自动转移到默认分类
      */
     @DeleteMapping("{id}")
-    public Result<?> delete(@PathVariable Long id) {
+    public Result<?> delete(@PathVariable @Positive Long id) {
         categoryService.deleteById(id);
         return Result.success("删除成功");
     }

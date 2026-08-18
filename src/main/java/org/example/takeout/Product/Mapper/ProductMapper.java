@@ -14,4 +14,6 @@ public interface ProductMapper extends BaseMapper<Product> {
 
     @Update("UPDATE product SET stock = stock + #{quantity} WHERE id = #{productId}")
     int increaseStock(@Param("productId") Long productId, @Param("quantity") Integer quantity);
+
+
 }

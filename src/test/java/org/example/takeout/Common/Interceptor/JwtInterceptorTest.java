@@ -8,17 +8,14 @@ import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.example.takeout.User.Service.UserService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class JwtInterceptorTest {
 
@@ -32,7 +29,8 @@ class JwtInterceptorTest {
     @Test
     void riderTokenPopulatesAndClearsRiderContext() {
         JWTUtils jwtUtils = mock(JWTUtils.class);
-        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils);
+        UserService userService = mock(UserService.class);
+        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils, userService);
         when(jwtUtils.parseToken("rider-token")).thenReturn(claims(301L, AuthRole.RIDER));
 
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/rider/tasks");
@@ -50,7 +48,8 @@ class JwtInterceptorTest {
     @Test
     void riderPathRejectsNonRiderTokenAndClearsContext() {
         JWTUtils jwtUtils = mock(JWTUtils.class);
-        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils);
+        UserService userService = mock(UserService.class);
+        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils, userService);
         when(jwtUtils.parseToken("user-token")).thenReturn(claims(101L, AuthRole.USER));
 
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/rider/tasks");
@@ -61,6 +60,39 @@ class JwtInterceptorTest {
         assertNull(UserContextHolder.getUserId());
         assertNull(MerchantContextHolder.getMerchantId());
         assertNull(RiderContextHolder.getRiderId());
+    }
+
+    @Test
+    void userTokenRequiresActiveDatabaseAccount() {
+        JWTUtils jwtUtils = mock(JWTUtils.class);
+        UserService userService = mock(UserService.class);
+        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils, userService);
+        when(jwtUtils.parseToken("user-token")).thenReturn(claims(101L, AuthRole.USER));
+        when(userService.requireActiveUserId()).thenReturn(101L);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/order");
+        request.addHeader("Authorization", "Bearer user-token");
+
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
+        assertEquals(101L, UserContextHolder.getUserId());
+        verify(userService).requireActiveUserId();
+    }
+
+    @Test
+    void disabledUserWithExistingTokenIsRejectedAndContextIsCleared() {
+        JWTUtils jwtUtils = mock(JWTUtils.class);
+        UserService userService = mock(UserService.class);
+        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils, userService);
+        when(jwtUtils.parseToken("disabled-user-token")).thenReturn(claims(102L, AuthRole.USER));
+        doThrow(new AuthException("用户账号已禁用或不存在，请重新登录"))
+                .when(userService).requireActiveUserId();
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/cart/items");
+        request.addHeader("Authorization", "Bearer disabled-user-token");
+
+        assertThrows(AuthException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
+        assertNull(UserContextHolder.getUserId());
     }
 
     private Claims claims(Long id, String role) {

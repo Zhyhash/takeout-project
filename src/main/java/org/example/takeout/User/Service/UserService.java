@@ -2,8 +2,10 @@ package org.example.takeout.User.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.example.takeout.Common.Auth.AuthRole;
+import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
+import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.User.DTO.LoginDTO;
@@ -62,10 +64,30 @@ public class UserService {
         if(!matches){
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
         }
+        if (!UserStatusEnum.NORMAL.getCode().equals(user.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户账号已禁用或不可用");
+        }
         LoginVO loginVO = new LoginVO();
         loginVO.setId(user.getId());
         loginVO.setNickname(user.getNickname());
         loginVO.setToken(jwtUtils.createToken(user.getId(), AuthRole.USER));
         return loginVO;
+    }
+
+    /**
+     * 返回当前请求中的有效用户 ID，并复核数据库中的实时账号状态。
+     * 用于阻断账号被禁用、注销或删除后继续使用旧 Token。
+     */
+    public Long requireActiveUserId() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new AuthException("用户身份无效，请重新登录");
+        }
+
+        User user = userMapper.selectById(userId);
+        if (user == null || !UserStatusEnum.NORMAL.getCode().equals(user.getStatus())) {
+            throw new AuthException("用户账号已禁用或不存在，请重新登录");
+        }
+        return userId;
     }
 }

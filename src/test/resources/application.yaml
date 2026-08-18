@@ -15,3 +15,7 @@ spring:
       database: 0
       connect-timeout: 2s
       timeout: 2s
+
+order:
+  timeout:
+    enabled: false

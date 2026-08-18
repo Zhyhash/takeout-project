@@ -1,9 +1,10 @@
 package org.example.takeout.integration;
 
+import org.example.takeout.testsupport.RedisTestSupport;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.context.ActiveProfiles;
@@ -23,6 +24,11 @@ class RedisBasicIntegrationTest {
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
+
+    @BeforeEach
+    void requireRedis() {
+        RedisTestSupport.assumeRedisAvailable(stringRedisTemplate);
+    }
 
     @Test
     void shouldWriteAndReadString() {
@@ -162,29 +168,4 @@ class RedisBasicIntegrationTest {
         }
     }
 
-    @Test
-    void shouldObserveBehaviorWhenRedisIsUnavailable() {
-        Throwable throwable = assertThrows(
-                RedisConnectionFailureException.class,
-                () -> stringRedisTemplate.opsForValue()
-                        .get("test:takeout:redis:unavailable")
-        );
-
-        System.out.println(
-                "Top exception: " + throwable.getClass().getName()
-        );
-
-        Throwable rootCause = throwable;
-        while (rootCause.getCause() != null) {
-            rootCause = rootCause.getCause();
-        }
-
-        System.out.println(
-                "Root cause: " + rootCause.getClass().getName()
-        );
-
-        System.out.println(
-                "Message: " + rootCause.getMessage()
-        );
-    }
 }

@@ -72,3 +72,4 @@ public class OrderDomainService {
                 }).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 }
+

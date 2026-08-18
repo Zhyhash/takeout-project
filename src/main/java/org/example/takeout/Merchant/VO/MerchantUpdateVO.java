@@ -12,6 +12,7 @@ public class MerchantUpdateVO {
     private String description;
     private String pictureURL;
     private Integer status;
+    private String statusDesc;
 
     private LocalTime openingTime;
     private LocalTime closingTime;

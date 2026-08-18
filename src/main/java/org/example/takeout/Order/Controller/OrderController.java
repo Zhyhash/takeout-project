@@ -3,6 +3,8 @@ package org.example.takeout.Order.Controller;
 import com.github.pagehelper.PageInfo;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Positive;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Service.OrderService;
@@ -14,6 +16,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
+@Validated
 @RequestMapping("/order")
 public class OrderController {
     @Autowired
@@ -34,10 +37,9 @@ public class OrderController {
      * @param pageSize 每页数量
      * */
     @GetMapping
-    @Validated
     public Result<?> list(
-            @RequestParam(defaultValue = "1")@Max(100) Integer pageNum,
-            @RequestParam(defaultValue = "10") @Max(100) Integer pageSize){
+            @RequestParam(defaultValue = "1") @Min(1) @Max(100) Integer pageNum,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) Integer pageSize){
         PageInfo<OrderVO> orderPageInfo = orderService.listOrders(pageNum, pageSize);
         return Result.success(orderPageInfo);
     }
@@ -47,7 +49,7 @@ public class OrderController {
      * @param id 订单ID
      * */
     @GetMapping("{id}")
-    public Result<?> getById(@PathVariable Long id){
+    public Result<?> getById(@PathVariable @Positive Long id){
         OrderDetailVO orderDetailVO = orderService.searchOrderDetailById(id);
         return Result.success(orderDetailVO);
     }
@@ -57,7 +59,7 @@ public class OrderController {
      * @param id 订单ID
      * */
     @PatchMapping("{id}/cancel")
-    public Result<?> cancel(@PathVariable Long id){
+    public Result<?> cancel(@PathVariable @Positive Long id){
         orderService.cancelOrder(id);
         return Result.success("取消成功");
     }
@@ -67,7 +69,7 @@ public class OrderController {
      * @param id 订单ID
      * */
     @PatchMapping("{id}/pay")
-    public Result<?> pay(@PathVariable Long id){
+    public Result<?> pay(@PathVariable @Positive Long id){
         orderService.payOrder(id);
         return Result.success("支付成功");
     }
@@ -77,7 +79,7 @@ public class OrderController {
      * @param id 订单ID
      * */
     @PatchMapping("{id}/confirm")
-    public Result<?> confirm(@PathVariable Long id){
+    public Result<?> confirm(@PathVariable @Positive Long id){
         orderService.checkedOrder(id);
         return Result.success("确认收货成功");
     }

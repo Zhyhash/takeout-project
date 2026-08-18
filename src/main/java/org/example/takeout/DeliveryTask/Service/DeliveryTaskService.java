@@ -1,5 +1,6 @@
 package org.example.takeout.DeliveryTask.Service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
@@ -8,12 +9,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
+import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskConverter;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
 import org.example.takeout.DeliveryTask.VO.RiderDeliveryDetailVO;
 import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
+import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
@@ -42,6 +45,8 @@ public class DeliveryTaskService {
     private RiderMapper riderMapper;
     @Autowired
     private DeliveryTaskConverter deliveryTaskConverter;
+    @Autowired
+    private DeliveryFeeCalculator  deliveryFeeCalculator;
 
     @Transactional(rollbackFor = Exception.class)
     public void claimTask(Long taskId){
@@ -56,7 +61,10 @@ public class DeliveryTaskService {
                 eq(DeliveryTask::getId, taskId).isNull(DeliveryTask::getRiderId);
         int update = deliveryTaskMapper.update(null,deliveryTaskLambdaUpdateWrapper);
 
-        DeliveryTask deliveryTask = deliveryTaskMapper.selectById(taskId);
+        LambdaQueryWrapper<DeliveryTask> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(DeliveryTask::getId, taskId).last("for update");
+        DeliveryTask deliveryTask = deliveryTaskMapper.selectOne(wrapper);
+
         if (update != 1) {
 
             if (deliveryTask == null) {
@@ -99,7 +107,9 @@ public class DeliveryTaskService {
                 eq(DeliveryTask::getStatus, DeliveryTaskEnums.DELIVERING.getCode());
         int update = deliveryTaskMapper.update(null, deliveryTaskLambdaUpdateWrapper);
 
-        DeliveryTask deliveryTask = deliveryTaskMapper.selectById(taskId);
+        LambdaQueryWrapper<DeliveryTask> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(DeliveryTask::getId, taskId).last("for update");
+        DeliveryTask deliveryTask = deliveryTaskMapper.selectOne(wrapper);
         if (update != 1) {
             if (deliveryTask == null || !Objects.equals(deliveryTask.getRiderId(), riderId)) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
@@ -168,6 +178,39 @@ public class DeliveryTaskService {
 
 
         return pageInfo.convert(deliveryTaskConverter::toRiderTaskListVO);
+    }
+
+
+    public void createWaitingTask(Order order, Merchant merchant) {
+        DeliveryTask task = new DeliveryTask();
+        task.setOrderId(order.getId());
+        task.setMerchantName(order.getMerchantName());
+        task.setReceiverName(order.getReceiverName());
+        task.setReceiverPhone(order.getReceiverPhone());
+        task.setReceiverAddress(order.getReceiverAddress());
+        task.setMerchantAddress(merchant.getAddress());
+        task.setMerchantPhone(merchant.getPhone());
+        task.setDeliveryReward(deliveryFeeCalculator.calculateDeliveryReward());
+        task.setStatus(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
+        int insertedRows = deliveryTaskMapper.insert(task);
+        if (insertedRows != 1) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "配送任务创建失败");
+        }
+    }
+
+    public void assertWaitingDeliveryTask(Long orderId) {
+        DeliveryTask task = findDeliveryTaskByOrderId(orderId);
+        if (task == null
+                || !DeliveryTaskEnums.WAIT_ASSIGN.getCode().equals(task.getStatus())
+                || task.getRiderId() != null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单已出餐但配送任务不存在或状态不一致");
+        }
+    }
+
+    private DeliveryTask findDeliveryTaskByOrderId(Long orderId) {
+        return deliveryTaskMapper.selectOne(Wrappers.<DeliveryTask>lambdaQuery()
+                .eq(DeliveryTask::getOrderId, orderId));
     }
 
 

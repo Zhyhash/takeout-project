@@ -20,5 +20,7 @@ public class OrderVO {
 
     private Integer status;
 
+    private String statusDesc;
+
     private LocalDateTime createTime;
 }

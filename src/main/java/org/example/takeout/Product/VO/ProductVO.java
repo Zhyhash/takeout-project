@@ -11,6 +11,8 @@ public class ProductVO {
     private String productName;
     private String imageUrl;
     private String categoryName;
-    private Integer status;//不需要存量了，只让用户看见还有没有的那种状态就可以了
+    private Boolean inStock;
+    private Integer status;
+    private String statusDesc;
     private BigDecimal price;
 }

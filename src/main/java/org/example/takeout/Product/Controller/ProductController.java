@@ -1,6 +1,6 @@
 package org.example.takeout.Product.Controller;
 
-import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Positive;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Product.Service.ProductService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,7 +17,7 @@ public class ProductController {
     @Autowired
     private ProductService productService;
     @PostMapping("/restore/{id}")
-    public Result<Void> restoreProduct(@PathVariable("id") @Min(0) Long id) {
+    public Result<Void> restoreProduct(@PathVariable("id") @Positive Long id) {
         productService.restoreProduct(id);
         return Result.success(null);
     }

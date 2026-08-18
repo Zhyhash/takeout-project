@@ -11,6 +11,8 @@ import java.util.Map;
 @Data
 public class CartAvailableResult {
 
+    private List<CartItem> allItems= Collections.emptyList();
+
     private List<CartItem> availableItems= Collections.emptyList();
 
     private Map<Long, Product> productMap=Collections.emptyMap();

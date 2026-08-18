@@ -1,5 +1,6 @@
 package org.example.takeout.Merchant.Controller;
 
+import com.github.pagehelper.PageInfo;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -7,7 +8,11 @@ import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
+import org.example.takeout.Merchant.Enums.MerchantOrderListType;
+import org.example.takeout.Merchant.Service.MerchantOrderQueryService;
 import org.example.takeout.Merchant.Service.MerchantService;
+import org.example.takeout.Merchant.VO.MerchantOrderDetailVO;
+import org.example.takeout.Merchant.VO.MerchantOrderListVO;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +30,8 @@ public class MerchantControllerSold {
     
     @Autowired
     private MerchantService merchantService;
+    @Autowired
+    private MerchantOrderQueryService merchantOrderQueryService;
     @PostMapping("/register")
     public Result<?> register(@Valid  @RequestBody MerchantRegisterDTO dto){
         merchantService.register(dto);
@@ -56,6 +63,25 @@ public class MerchantControllerSold {
     public Result<?> updateMerchantStatus(@RequestParam @Min(0) @Max(1) Integer status) {
         merchantService.updateStatus(status);
         return Result.success("success");
+    }
+
+    /**
+     * 分页查看当前商家的待接取或已接取订单。
+     */
+    @GetMapping("/orders")
+    public Result<PageInfo<MerchantOrderListVO>> listOrders(
+            @RequestParam(defaultValue = "PENDING") MerchantOrderListType type,
+            @RequestParam(defaultValue = "1") @Min(1) Integer pageNum,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) Integer pageSize) {
+        return Result.success(merchantOrderQueryService.listOrders(type, pageNum, pageSize));
+    }
+
+    /**
+     * 查看当前商家名下的单个订单详情。
+     */
+    @GetMapping("/orders/{orderId}")
+    public Result<MerchantOrderDetailVO> getOrderDetail(@PathVariable @Min(1) Long orderId) {
+        return Result.success(merchantOrderQueryService.getOrderDetail(orderId));
     }
 
     @PatchMapping("/orders/{orderId}/accept")

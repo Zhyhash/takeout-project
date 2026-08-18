@@ -3,6 +3,7 @@ package org.example.takeout.Order.Mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.example.takeout.Order.Entity.Order;
 
@@ -12,6 +13,30 @@ import java.util.List;
 
 @Mapper
 public interface OrderMapper extends BaseMapper<Order> {
+    @Select("""
+        SELECT id
+        FROM orders
+        WHERE status = #{status}
+          AND create_time <= #{expiredBefore}
+        ORDER BY create_time ASC, id ASC
+        LIMIT #{limit}
+        """)
+    List<Long> selectTimeoutOrderIds(@Param("status") Integer status,
+                                     @Param("expiredBefore") LocalDateTime expiredBefore,
+                                     @Param("limit") Integer limit);
+
+    @Update("""
+        UPDATE orders
+        SET status = #{newStatus}
+        WHERE id = #{orderId}
+          AND status = #{oldStatus}
+          AND create_time <= #{expiredBefore}
+        """)
+    int updateTimeoutOrderToCancelled(@Param("orderId") Long orderId,
+                                      @Param("oldStatus") Integer oldStatus,
+                                      @Param("newStatus") Integer newStatus,
+                                      @Param("expiredBefore") LocalDateTime expiredBefore);
+
     @Update("""
         <script>
         UPDATE orders

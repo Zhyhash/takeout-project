@@ -11,8 +11,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -43,6 +42,21 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                         .content(json(dto)))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void addCartItemRejectsNonPositiveProductId() throws Exception {
+        AddCartDTO dto = addCartDTO();
+        dto.setProductId(0L);
+
+        mockMvc.perform(post("/cart/items")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(cartService, never()).add(any(AddCartDTO.class));
     }
 
     @Test
@@ -137,6 +151,38 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                         .content(json(dto)))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
+
+        verify(cartService, never()).update(any(UpdateCartDTO.class));
+    }
+
+    @Test
+    void updateCartQuantityRejectsZeroQuantityChangeAtDtoBoundary() throws Exception {
+        UpdateCartDTO dto = updateCartDTO();
+        dto.setQuantityChange(0);
+
+        mockMvc.perform(patch("/cart/items")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(cartService, never()).update(any(UpdateCartDTO.class));
+    }
+
+    @Test
+    void updateCartQuantityRejectsNonPositiveCartItemId() throws Exception {
+        UpdateCartDTO dto = updateCartDTO();
+        dto.setCartItemId(0L);
+
+        mockMvc.perform(patch("/cart/items")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(cartService, never()).update(any(UpdateCartDTO.class));
     }
 
     @Test
@@ -170,6 +216,28 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
+    void deleteCartItemsRejectsNonPositiveId() throws Exception {
+        mockMvc.perform(delete("/cart/items")
+                        .header("Authorization", userBearer())
+                        .param("ids", "401", "0"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(cartService, never()).delete(any());
+    }
+
+    @Test
+    void deleteCartItemsRejectsDuplicateIds() throws Exception {
+        mockMvc.perform(delete("/cart/items")
+                        .header("Authorization", userBearer())
+                        .param("ids", "401", "401"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(cartService, never()).delete(any());
+    }
+
+    @Test
     void clearCartReturnsSuccess() throws Exception {
         mockMvc.perform(delete("/cart/items/all")
                         .header("Authorization", userBearer()))
@@ -195,6 +263,32 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
     void createOrderRejectsBlankReceiverName() throws Exception {
         CreateOrderDTO dto = orderDTO();
         dto.setReceiverName("");
+
+        mockMvc.perform(post("/order")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void createOrderRejectsTooLongReceiverName() throws Exception {
+        CreateOrderDTO dto = orderDTO();
+        dto.setReceiverName("x".repeat(21));
+
+        mockMvc.perform(post("/order")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void createOrderRejectsTooLongReceiverAddress() throws Exception {
+        CreateOrderDTO dto = orderDTO();
+        dto.setReceiverAddress("x".repeat(256));
 
         mockMvc.perform(post("/order")
                         .header("Authorization", userBearer())
@@ -246,7 +340,9 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", userBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.list[0].id").value(501));
+                .andExpect(jsonPath("$.data.list[0].id").value(501))
+                .andExpect(jsonPath("$.data.list[0].status").value(0))
+                .andExpect(jsonPath("$.data.list[0].statusDesc").value("待支付"));
     }
 
     @Test
@@ -259,6 +355,24 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
+    void listOrdersRejectsNonPositivePageNum() throws Exception {
+        mockMvc.perform(get("/order")
+                        .header("Authorization", userBearer())
+                        .param("pageNum", "0"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void listOrdersRejectsNonPositivePageSize() throws Exception {
+        mockMvc.perform(get("/order")
+                        .header("Authorization", userBearer())
+                        .param("pageSize", "0"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
     void getOrderDetailReturnsDetail() throws Exception {
         when(orderService.searchOrderDetailById(501L)).thenReturn(orderDetailVO(501L));
 
@@ -266,7 +380,9 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", userBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.id").value(501));
+                .andExpect(jsonPath("$.data.id").value(501))
+                .andExpect(jsonPath("$.data.status").value(0))
+                .andExpect(jsonPath("$.data.statusDesc").value("待支付"));
     }
 
     @Test
@@ -277,6 +393,29 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", userBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(BUSINESS_ERROR));
+    }
+
+    @Test
+    void orderEndpointsRejectZeroId() throws Exception {
+        mockMvc.perform(get("/order/0")
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        mockMvc.perform(patch("/order/0/cancel")
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        mockMvc.perform(patch("/order/0/pay")
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        mockMvc.perform(patch("/order/0/confirm")
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
     }
 
     @Test

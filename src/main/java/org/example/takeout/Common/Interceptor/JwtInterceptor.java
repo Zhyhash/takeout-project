@@ -11,6 +11,7 @@ import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.example.takeout.User.Service.UserService;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
@@ -19,9 +20,11 @@ import org.springframework.web.servlet.HandlerInterceptor;
 public class JwtInterceptor implements HandlerInterceptor {
 
     private final JWTUtils jwtUtils;
+    private final UserService userService;
 
-    public JwtInterceptor(JWTUtils jwtUtils) {
+    public JwtInterceptor(JWTUtils jwtUtils, UserService userService) {
         this.jwtUtils = jwtUtils;
+        this.userService = userService;
     }
 
     @Override
@@ -57,6 +60,7 @@ public class JwtInterceptor implements HandlerInterceptor {
                 MerchantContextHolder.setMerchantId(id);
             } else if (AuthRole.USER.equals(role)) {
                 UserContextHolder.setUserId(id);
+                userService.requireActiveUserId();
             } else if (AuthRole.RIDER.equals(role)) {
                 RiderContextHolder.setRiderId(id);
             } else {

@@ -2,6 +2,8 @@ package org.example.takeout.api;
 
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Product.DTO.CreateProductDTO;
+import org.example.takeout.Product.DTO.UpdateProductDTO;
+import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 
@@ -10,6 +12,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -62,6 +65,14 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", merchantBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(BUSINESS_ERROR));
+    }
+
+    @Test
+    void getCategoryByIdRejectsNonPositiveId() throws Exception {
+        mockMvc.perform(get("/category/0")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
     }
 
     @Test
@@ -134,7 +145,9 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         .content(json(dto)))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.productName").value("Rice"));
+                .andExpect(jsonPath("$.data.productName").value("Rice"))
+                .andExpect(jsonPath("$.data.status").value(0))
+                .andExpect(jsonPath("$.data.statusDesc").value("正在销售"));
     }
 
     @Test
@@ -154,6 +167,45 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
     void createProductRejectsIllegalPrice() throws Exception {
         CreateProductDTO dto = productDTO();
         dto.setPrice(BigDecimal.ZERO);
+
+        mockMvc.perform(post("/category/products")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void createProductRejectsPriceWithTooManyDecimalPlaces() throws Exception {
+        CreateProductDTO dto = productDTO();
+        dto.setPrice(new BigDecimal("18.801"));
+
+        mockMvc.perform(post("/category/products")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void createProductRejectsOverlongImageUrl() throws Exception {
+        CreateProductDTO dto = productDTO();
+        dto.setImageUrl("x".repeat(256));
+
+        mockMvc.perform(post("/category/products")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void createProductRejectsNonPositiveCategoryId() throws Exception {
+        CreateProductDTO dto = productDTO();
+        dto.setCategoryId(0L);
 
         mockMvc.perform(post("/category/products")
                         .header("Authorization", merchantBearer())
@@ -213,7 +265,9 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", merchantBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.list[0].productName").value("Rice"));
+                .andExpect(jsonPath("$.data.list[0].productName").value("Rice"))
+                .andExpect(jsonPath("$.data.list[0].status").value(0))
+                .andExpect(jsonPath("$.data.list[0].statusDesc").value("正在销售"));
     }
 
     @Test
@@ -223,6 +277,92 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         .param("pageNum", "0"))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void listProductsRejectsIllegalPageSize() throws Exception {
+        mockMvc.perform(get("/category/products")
+                        .header("Authorization", merchantBearer())
+                        .param("pageSize", "0"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void listProductsRejectsNonPositiveCategoryId() throws Exception {
+        mockMvc.perform(get("/category/products")
+                        .header("Authorization", merchantBearer())
+                        .param("categoryId", "0"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void getProductDetailReturnsProduct() throws Exception {
+        ProductVO productVO = new ProductVO();
+        productVO.setId(301L);
+        productVO.setProductName("Rice");
+        productVO.setStatus(0);
+        productVO.setStatusDesc("正在销售");
+        when(productService.getProductDetail(301L)).thenReturn(productVO);
+
+        mockMvc.perform(get("/category/products/301")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data.id").value(301))
+                .andExpect(jsonPath("$.data.productName").value("Rice"))
+                .andExpect(jsonPath("$.data.status").value(0))
+                .andExpect(jsonPath("$.data.statusDesc").value("正在销售"));
+    }
+
+    @Test
+    void updateProductReturnsUpdatedProduct() throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
+                .thenReturn(merchantProductVO(301L, "Updated Rice"));
+
+        mockMvc.perform(put("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data.productName").value("Updated Rice"));
+    }
+
+    @Test
+    void updateProductRejectsMissingVersion() throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        dto.setVersion(null);
+
+        mockMvc.perform(put("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void deleteProductReturnsSuccess() throws Exception {
+        mockMvc.perform(delete("/category/products/301")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value("删除成功"));
+
+        verify(productService).deleteProduct(301L);
+    }
+
+    @Test
+    void deleteProductReturnsBusinessErrorWhenMissing() throws Exception {
+        doThrow(businessError("product missing")).when(productService).deleteProduct(999L);
+
+        mockMvc.perform(delete("/category/products/999")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(BUSINESS_ERROR));
     }
 
     @Test
@@ -238,7 +378,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
 
     @Test
     void onShelfRejectsIllegalId() throws Exception {
-        mockMvc.perform(patch("/category/products/-1/on-shelf")
+        mockMvc.perform(patch("/category/products/0/on-shelf")
                         .header("Authorization", merchantBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
@@ -283,6 +423,14 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(BUSINESS_ERROR));
     }
 
+    @Test
+    void restoreProductRejectsNonPositiveId() throws Exception {
+        mockMvc.perform(post("/merchant/restore/0")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+    }
+
     private CreateProductDTO productDTO() {
         CreateProductDTO dto = new CreateProductDTO();
         dto.setProductName("Rice");
@@ -291,6 +439,14 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         dto.setStock(20);
         dto.setImageUrl("https://example.test/rice.png");
         dto.setCategoryId(1L);
+        return dto;
+    }
+
+    private UpdateProductDTO updateProductDTO() {
+        UpdateProductDTO dto = new UpdateProductDTO();
+        dto.setProductName("Updated Rice");
+        dto.setPrice(new BigDecimal("20.80"));
+        dto.setVersion(0);
         return dto;
     }
 }

@@ -15,14 +15,17 @@ public class CreateProductDTO {
 
     @NotNull(message = "商品价格不能为空")
     @DecimalMin(value = "0.00", inclusive = false, message = "商品价格必须大于0")
+    @Digits(integer = 8, fraction = 2, message = "商品价格最多8位整数和2位小数")
     private BigDecimal price;
 
     @NotNull(message = "库存不能为空")
     @Min(value = 0, message = "库存数量不能为负数")
     private Integer stock;
 
+    @Size(max = 255, message = "商品图片URL长度不能超过255个字符")
     private String imageUrl;
 
     @NotNull(message = "分类ID不能为空")
+    @Positive(message = "分类ID必须大于0")
     private Long categoryId;
 }

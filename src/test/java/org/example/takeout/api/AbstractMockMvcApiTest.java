@@ -159,6 +159,7 @@ abstract class AbstractMockMvcApiTest {
         vo.setAddress("No.1 Test Road");
         vo.setPhone("13800138000");
         vo.setStatus(0);
+        vo.setStatusDesc("店铺正常开启");
         return vo;
     }
 
@@ -185,6 +186,7 @@ abstract class AbstractMockMvcApiTest {
         vo.setPrice(new BigDecimal("18.80"));
         vo.setStock(20);
         vo.setStatus(0);
+        vo.setStatusDesc("正在销售");
         vo.setDescription("fresh");
         return vo;
     }
@@ -223,6 +225,7 @@ abstract class AbstractMockMvcApiTest {
         vo.setTotalAmount(new BigDecimal("25.00"));
         vo.setProductSummary("Rice");
         vo.setStatus(0);
+        vo.setStatusDesc("待支付");
         return vo;
     }
 
@@ -239,6 +242,7 @@ abstract class AbstractMockMvcApiTest {
         vo.setDiscountAmount(BigDecimal.ZERO);
         vo.setTotalAmount(new BigDecimal("25.00"));
         vo.setStatus(0);
+        vo.setStatusDesc("待支付");
         vo.setItems(Collections.emptyList());
         return vo;
     }

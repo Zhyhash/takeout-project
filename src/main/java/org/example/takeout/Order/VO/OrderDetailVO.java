@@ -29,6 +29,7 @@ public class OrderDetailVO {
 
     // 状态
     private Integer status;
+    private String statusDesc;
 
     // 时间
     private LocalDateTime createTime;

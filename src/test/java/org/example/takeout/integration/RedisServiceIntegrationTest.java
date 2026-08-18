@@ -21,6 +21,7 @@ import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.dataFactory.TestDataFactory;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
+import org.example.takeout.testsupport.RedisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,11 +39,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.same;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyString;
 
 @SpringBootTest
 @ActiveProfiles("redis-test")
@@ -89,6 +89,7 @@ public class RedisServiceIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        RedisTestSupport.assumeRedisAvailable(redisTemplate);
         deleteTestData();
         UserContextHolder.setUserId(TEST_USER_ID);
     }
@@ -474,23 +475,6 @@ public class RedisServiceIntegrationTest {
         insertCategory();
         productMapper.insert(product);
         return product;
-    }
-
-    private Order insertOrder(Integer status) {
-        Order order = TestDataFactory.createOrder(TEST_USER_ID, TEST_MERCHANT_ID, status);
-        orderMapper.insert(order);
-        return order;
-    }
-
-    private CartItem insertCartItem(Product product, Integer quantity) {
-        CartItem cartItem = TestDataFactory.createCartItem(
-                TEST_CART_ID_CUP,
-                TEST_USER_ID,
-                product,
-                quantity
-        );
-        cartMapper.insert(cartItem);
-        return cartItem;
     }
 
     private Merchant insertMerchant() {

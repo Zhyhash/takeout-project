@@ -4,8 +4,10 @@ import com.github.pagehelper.PageInfo;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
+import org.example.takeout.Merchant.VO.MerchantDetailCategoryVO;
 import org.example.takeout.Merchant.VO.MerchantDetailVO;
 import org.example.takeout.Merchant.VO.MerchantListVO;
+import org.example.takeout.Product.VO.ProductVO;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
 import org.junit.jupiter.api.Test;
@@ -14,9 +16,7 @@ import org.springframework.http.MediaType;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -175,7 +175,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Test
     void merchantLoginRejectsMissingUsername() throws Exception {
         MerchantLoginDTO dto = merchantLoginDTO();
-        dto.setUserName(null);
+        dto.setUsername(null);
 
         mockMvc.perform(post("/merchant/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -187,7 +187,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Test
     void merchantLoginRejectsBlankUsername() throws Exception {
         MerchantLoginDTO dto = merchantLoginDTO();
-        dto.setUserName("");
+        dto.setUsername("");
 
         mockMvc.perform(post("/merchant/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -199,7 +199,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Test
     void merchantLoginRejectsOverlongUsername() throws Exception {
         MerchantLoginDTO dto = merchantLoginDTO();
-        dto.setUserName("a".repeat(51));
+        dto.setUsername("a".repeat(51));
 
         mockMvc.perform(post("/merchant/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -231,7 +231,34 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                         .content(json(dto)))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.merchantName").value("Test Shop"));
+                .andExpect(jsonPath("$.data.merchantName").value("Test Shop"))
+                .andExpect(jsonPath("$.data.status").value(0))
+                .andExpect(jsonPath("$.data.statusDesc").value("店铺正常开启"));
+    }
+
+    @Test
+    void updateMerchantInfoRejectsEmptyUpdate() throws Exception {
+        assertMerchantUpdateRejected("{}");
+    }
+
+    @Test
+    void updateMerchantInfoRejectsBlankMerchantName() throws Exception {
+        assertMerchantUpdateRejected("{\"merchantName\":\" \\t\"}");
+    }
+
+    @Test
+    void updateMerchantInfoRejectsBlankAddress() throws Exception {
+        assertMerchantUpdateRejected("{\"address\":\" \\n\"}");
+    }
+
+    @Test
+    void updateMerchantInfoRejectsBlankPhone() throws Exception {
+        assertMerchantUpdateRejected("{\"phone\":\"   \"}");
+    }
+
+    @Test
+    void updateMerchantInfoRejectsInvalidPhone() throws Exception {
+        assertMerchantUpdateRejected("{\"phone\":\"12345\"}");
     }
 
     @Test
@@ -297,13 +324,25 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
         MerchantListVO shop = new MerchantListVO();
         shop.setId(201L);
         shop.setMerchantName("Test Shop");
+        shop.setStatus(0);
+        shop.setStatusDesc("店铺正常开启");
         when(merchantQueryService.listMerchants(1, 10, null, null))
                 .thenReturn(new PageInfo<>(List.of(shop)));
 
         mockMvc.perform(get("/api/customer/shops"))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.list[0].merchantName").value("Test Shop"));
+                .andExpect(jsonPath("$.data.list[0].merchantName").value("Test Shop"))
+                .andExpect(jsonPath("$.data.list[0].status").value(0))
+                .andExpect(jsonPath("$.data.list[0].statusDesc").value("店铺正常开启"));
+    }
+
+    @Test
+    void listCustomerShopsRejectsZeroPageSize() throws Exception {
+        mockMvc.perform(get("/api/customer/shops")
+                        .param("size", "0"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
     }
 
     @Test
@@ -311,12 +350,38 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
         MerchantDetailVO detail = new MerchantDetailVO();
         detail.setId(201L);
         detail.setMerchantName("Test Shop");
+        detail.setStatus(0);
+        detail.setStatusDesc("店铺正常开启");
+
+        ProductVO product = new ProductVO();
+        product.setId(301L);
+        product.setProductName("Sold-out Dish");
+        product.setStatus(0);
+        product.setStatusDesc("正在销售");
+        product.setInStock(false);
+        MerchantDetailCategoryVO category = new MerchantDetailCategoryVO();
+        category.setCategoryId(1L);
+        category.setCategoryName("Main");
+        category.setProducts(List.of(product));
+        detail.setCategories(List.of(category));
+
         when(merchantQueryService.getMerchantDetailWithGroupedProducts(201L)).thenReturn(detail);
 
         mockMvc.perform(get("/api/customer/shops/201"))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.id").value(201));
+                .andExpect(jsonPath("$.data.id").value(201))
+                .andExpect(jsonPath("$.data.status").value(0))
+                .andExpect(jsonPath("$.data.statusDesc").value("店铺正常开启"))
+                .andExpect(jsonPath("$.data.categories[0].products[0].inStock").value(false))
+                .andExpect(jsonPath("$.data.categories[0].products[0].stock").doesNotExist());
+    }
+
+    @Test
+    void getCustomerShopDetailRejectsZeroId() throws Exception {
+        mockMvc.perform(get("/api/customer/shops/0"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
     }
 
     private RegisterDTO userRegisterDTO() {
@@ -347,7 +412,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
 
     private MerchantLoginDTO merchantLoginDTO() {
         MerchantLoginDTO dto = new MerchantLoginDTO();
-        dto.setUserName("merchant");
+        dto.setUsername("merchant");
         dto.setPassword("password123");
         return dto;
     }
@@ -358,5 +423,16 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
         dto.setAddress("No.1 Test Road");
         dto.setPhone("13800138000");
         return dto;
+    }
+
+    private void assertMerchantUpdateRejected(String content) throws Exception {
+        mockMvc.perform(put("/merchant/info")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(content))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(merchantService, never()).updateMerchant(any(MerchantUpdateDTO.class));
     }
 }

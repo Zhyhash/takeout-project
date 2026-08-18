@@ -1,32 +1,26 @@
 package org.example.takeout.Merchant.Service;
 
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
-import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
-import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
-import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
-import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
+import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
+import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Entity.Merchant;
+import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Order.Entity.Order;
-import org.example.takeout.Order.Enums.OrderStatusEnum;
-import org.example.takeout.Order.Mapper.OrderMapper;
+import org.example.takeout.Order.Record.MarkReadyResult;
+import org.example.takeout.Order.Service.OrderCommandService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.math.BigDecimal;
-
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class MerchantFulfillmentServiceTest {
@@ -35,13 +29,13 @@ class MerchantFulfillmentServiceTest {
     private MerchantMapper merchantMapper;
 
     @Mock
-    private OrderMapper orderMapper;
+    private MerchantConverter merchantConverter;
 
     @Mock
-    private DeliveryTaskMapper deliveryTaskMapper;
+    private OrderCommandService orderCommandService;
 
     @Mock
-    private DeliveryFeeCalculator deliveryFeeCalculator;
+    private DeliveryTaskService deliveryTaskService;
 
     @InjectMocks
     private MerchantService merchantService;
@@ -52,73 +46,125 @@ class MerchantFulfillmentServiceTest {
     }
 
     @Test
-    void completePreparationIsIdempotentWhenOrderAndTaskAreBothWaitingForRider() {
-        mockReadyOrder();
-        DeliveryTask task = new DeliveryTask();
-        task.setOrderId(501L);
-        task.setStatus(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
-        when(deliveryTaskMapper.selectOne(any())).thenReturn(task);
+    void acceptOrderDelegatesToOrderCommandServiceWithCurrentMerchant() {
+        MerchantContextHolder.setMerchantId(101L);
+
+        merchantService.acceptOrder(501L);
+
+        verify(orderCommandService).acceptOrderByMerchant(501L, 101L);
+    }
+
+    @Test
+    void completePreparationCreatesDeliveryTaskAfterOrderBecomesReady() {
+        Merchant merchant = currentMerchant();
+        Order order = readyOrder();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(true, order));
+
+        merchantService.completePreparation(501L);
+
+        verify(deliveryTaskService).createWaitingTask(order, merchant);
+        verify(deliveryTaskService, never()).assertWaitingDeliveryTask(any());
+    }
+
+    @Test
+    void completePreparationIsIdempotentWhenOrderWasAlreadyReady() {
+        currentMerchant();
+        Order order = readyOrder();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(false, order));
 
         assertDoesNotThrow(() -> merchantService.completePreparation(501L));
+
+        verify(deliveryTaskService).assertWaitingDeliveryTask(501L);
+        verify(deliveryTaskService, never()).createWaitingTask(any(), any());
     }
 
     @Test
-    void completePreparationRejectsReadyOrderWithoutDeliveryTask() {
-        mockReadyOrder();
-        when(deliveryTaskMapper.selectOne(any())).thenReturn(null);
+    void completePreparationPropagatesDeliveryTaskConsistencyFailure() {
+        currentMerchant();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(false, readyOrder()));
+        BusinessException expected = new BusinessException(
+                ResultCodeEnum.BUSINESS_ERROR,
+                "配送任务状态不一致");
+        org.mockito.Mockito.doThrow(expected)
+                .when(deliveryTaskService).assertWaitingDeliveryTask(501L);
 
-        assertThrows(BusinessException.class, () -> merchantService.completePreparation(501L));
+        BusinessException actual = assertThrows(
+                BusinessException.class,
+                () -> merchantService.completePreparation(501L));
+
+        assertSame(expected, actual);
+        verify(deliveryTaskService, never()).createWaitingTask(any(), any());
     }
 
     @Test
-    void completePreparationRejectsReadyOrderWithClaimedWaitingTask() {
-        mockReadyOrder();
-        DeliveryTask task = new DeliveryTask();
-        task.setOrderId(501L);
-        task.setRiderId(301L);
-        task.setStatus(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
-        when(deliveryTaskMapper.selectOne(any())).thenReturn(task);
-
-        assertThrows(BusinessException.class, () -> merchantService.completePreparation(501L));
-    }
-
-    @Test
-    void completePreparationRejectsFailedTaskInsert() {
+    void completePreparationRejectsMissingMerchantBeforeChangingOrder() {
         MerchantContextHolder.setMerchantId(101L);
-        when(orderMapper.updateOrderStatusToReady(
-                501L,
-                101L,
-                OrderStatusEnum.PREPARING.getCode(),
-                OrderStatusEnum.READY.getCode())).thenReturn(1);
+        when(merchantMapper.selectById(101L)).thenReturn(null);
 
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> merchantService.completePreparation(501L));
+
+        assertEquals("商户不存在", exception.getMessage());
+        verify(orderCommandService, never()).markReadyByMerchant(any(), any());
+        verify(deliveryTaskService, never()).createWaitingTask(any(), any());
+    }
+
+    @Test
+    void completePreparationPropagatesTaskCreationFailure() {
+        Merchant merchant = currentMerchant();
+        Order order = readyOrder();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(true, order));
+        BusinessException expected = new BusinessException(
+                ResultCodeEnum.BUSINESS_ERROR,
+                "配送任务创建失败");
+        org.mockito.Mockito.doThrow(expected)
+                .when(deliveryTaskService).createWaitingTask(order, merchant);
+
+        BusinessException actual = assertThrows(
+                BusinessException.class,
+                () -> merchantService.completePreparation(501L));
+
+        assertSame(expected, actual);
+    }
+
+    @Test
+    void updateMerchantRejectsPhoneOwnedByAnotherMerchant() {
+        MerchantContextHolder.setMerchantId(101L);
+        Merchant existingMerchant = new Merchant();
+        existingMerchant.setId(101L);
+        existingMerchant.setPhone("13800138000");
+        when(merchantMapper.selectOne(any())).thenReturn(existingMerchant);
+        when(merchantMapper.selectCount(any())).thenReturn(1L);
+
+        MerchantUpdateDTO dto = new MerchantUpdateDTO();
+        dto.setPhone("13900139000");
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> merchantService.updateMerchant(dto));
+
+        assertEquals("手机号已被其他商家使用", exception.getMessage());
+        verify(merchantMapper).selectCount(any());
+        verify(merchantMapper, never()).updateById(any(Merchant.class));
+    }
+
+    private Merchant currentMerchant() {
+        MerchantContextHolder.setMerchantId(101L);
+        Merchant merchant = new Merchant();
+        merchant.setId(101L);
+        when(merchantMapper.selectById(101L)).thenReturn(merchant);
+        return merchant;
+    }
+
+    private Order readyOrder() {
         Order order = new Order();
         order.setId(501L);
         order.setMerchantId(101L);
-        order.setStatus(OrderStatusEnum.READY.getCode());
-        when(orderMapper.selectById(501L)).thenReturn(order);
-        when(merchantMapper.selectById(101L)).thenReturn(new Merchant());
-        when(deliveryFeeCalculator.calculateDeliveryReward()).thenReturn(BigDecimal.valueOf(5));
-        when(deliveryTaskMapper.insert(any(DeliveryTask.class))).thenReturn(0);
-
-        assertThrows(BusinessException.class, () -> merchantService.completePreparation(501L));
-
-        ArgumentCaptor<DeliveryTask> taskCaptor = ArgumentCaptor.forClass(DeliveryTask.class);
-        verify(deliveryTaskMapper).insert(taskCaptor.capture());
-        assertEquals(0, BigDecimal.valueOf(5).compareTo(taskCaptor.getValue().getDeliveryReward()));
-    }
-
-    private void mockReadyOrder() {
-        MerchantContextHolder.setMerchantId(101L);
-        when(orderMapper.updateOrderStatusToReady(
-                501L,
-                101L,
-                OrderStatusEnum.PREPARING.getCode(),
-                OrderStatusEnum.READY.getCode())).thenReturn(0);
-
-        Order order = new Order();
-        order.setId(501L);
-        order.setMerchantId(101L);
-        order.setStatus(OrderStatusEnum.READY.getCode());
-        when(orderMapper.selectById(501L)).thenReturn(order);
+        return order;
     }
 }

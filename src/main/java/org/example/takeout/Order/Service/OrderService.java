@@ -21,7 +21,7 @@ import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Entity.Product;
-import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductService;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -39,7 +39,7 @@ public class OrderService {
     @Autowired
     private OrderTransactionExecutor orderTransactionExecutor;
     @Autowired
-    private ProductMapper productMapper;
+    private ProductService productService;
     @Autowired
     private OrderItemMapper orderItemMapper;
     @Autowired
@@ -75,9 +75,14 @@ public class OrderService {
         // 获取可用购物车（内部已校验商品/商家状态）
         CartAvailableResult result = cartDomainService.getAvailableCartItems(userId);
 
+        List<CartItem> allCartItems = result.getAllItems();
         List<CartItem> availableCartItems = result.getAvailableItems();
-        if (availableCartItems == null || availableCartItems.isEmpty()) {
+        if (allCartItems == null || allCartItems.isEmpty()) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车为空，无法创建订单");
+        }
+        if (availableCartItems == null || availableCartItems.size() != allCartItems.size()) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "购物车包含不可用商品或不可下单商家，请刷新购物车后重试");
         }
 
         // 防脏数据：过滤多商家情况
@@ -174,32 +179,18 @@ public class OrderService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或当前状态不可取消");
         }
 
+        restoreOrderStock(orderId);
+    }
 
-        //取消了之后需要将库存还回去
+    private void restoreOrderStock(Long orderId) {
         List<OrderItem> orderItems = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery().
                 eq(OrderItem::getOrderId, orderId));
         if (orderItems == null || orderItems.isEmpty()) {
-            return;
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单明细为空，无法取消订单");
         }
-        List<Long> productIds = orderItems.stream()
-                .map(OrderItem::getProductId)
-                .filter(Objects::nonNull)
-                .toList();
-
-        List<Product> products = productMapper.selectBatchIds(productIds);
-
-        Map<Long, Product> productMap = products == null ? Collections.emptyMap() :
-                products.stream().collect(Collectors.toMap(Product::getId, p -> p, (k1, k2) -> k1));
-
         for (OrderItem item : orderItems) {
-            if (!productMap.containsKey(item.getProductId())) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在或已被物理删除");
-            }
-
-            int i = productMapper.increaseStock(item.getProductId(), item.getQuantity());
-            if (i!=1) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"归还库存失败，商品可能处于异常状态");
-            }
+            productService.increaseStock(item.getProductId(), item.getQuantity());
         }
     }
 
@@ -238,6 +229,23 @@ public class OrderService {
         if (i != 1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或当前状态不可确认");
         }
+    }
+
+
+    @Transactional(rollbackFor = Exception.class)
+    public boolean cancelTimeoutOrder(Long orderId, LocalDateTime expiredBefore) {
+        int rows = orderMapper.updateTimeoutOrderToCancelled(
+                orderId,
+                OrderStatusEnum.WAIT_PAY.getCode(),
+                OrderStatusEnum.CANCELLED.getCode(),
+                expiredBefore
+        );
+        if (rows != 1) {
+            return false;
+        }
+
+        restoreOrderStock(orderId);
+        return true;
     }
 }
 
