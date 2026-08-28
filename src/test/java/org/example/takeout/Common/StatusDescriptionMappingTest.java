@@ -65,17 +65,17 @@ class StatusDescriptionMappingTest {
 
         Product product = new Product();
         product.setStatus(ProductStatusEnum.ON_SALE.getCode());
-        product.setStock(0);
+        product.setStock(1);
         Category category = new Category();
         assertEquals("正在销售", productConverter.toMerchantProductVO(product, category).getStatusDesc());
         assertEquals("正在销售", merchantConverter.toProductVO(product).getStatusDesc());
-        assertFalse(merchantConverter.toProductVO(product).getInStock());
+        assertTrue(merchantConverter.toProductVO(product).getInStock());
 
         ProductDetailCacheDTO cache = new ProductDetailCacheDTO();
         cache.setStatus(ProductStatusEnum.SALE_OUT.getCode());
-        cache.setInStock(true);
+        cache.setInStock(false);
         assertEquals("已售罄", productConverter.toProductVO(cache).getStatusDesc());
-        assertTrue(productConverter.toProductVO(cache).getInStock());
+        assertFalse(productConverter.toProductVO(cache).getInStock());
     }
 
     @Test

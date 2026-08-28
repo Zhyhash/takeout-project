@@ -13,7 +13,10 @@ import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.MerchantListVO;
+import org.example.takeout.Merchant.VO.MerchantDetailVO;
+import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -38,6 +41,9 @@ class MerchantQueryServiceTest {
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""),
                 Merchant.class);
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+                Product.class);
     }
 
     @Mock
@@ -84,6 +90,28 @@ class MerchantQueryServiceTest {
         assertEquals(1, wrapper.getParamNameValuePairs().size());
         assertEquals(MerchantStatusEnum.BUSINESS_OPEN.getCode(),
                 wrapper.getParamNameValuePairs().values().iterator().next());
+    }
+
+    @Test
+    void customerShopDetailIncludesOnSaleAndSaleOutProducts() {
+        Merchant merchant = new Merchant();
+        merchant.setId(201L);
+        merchant.setStatus(MerchantStatusEnum.BUSINESS_OPEN.getCode());
+        MerchantDetailVO detail = new MerchantDetailVO();
+
+        when(merchantMapper.selectOne(any())).thenReturn(merchant);
+        when(productMapper.selectList(any())).thenReturn(List.of());
+        when(merchantConverter.toMerchantDetailVO(merchant)).thenReturn(detail);
+
+        assertSame(detail, merchantQueryService.getMerchantDetailWithGroupedProducts(201L));
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        ArgumentCaptor<Wrapper<Product>> wrapperCaptor = ArgumentCaptor.forClass((Class) Wrapper.class);
+        verify(productMapper).selectList(wrapperCaptor.capture());
+        AbstractWrapper<?, ?, ?> wrapper = (AbstractWrapper<?, ?, ?>) wrapperCaptor.getValue();
+        assertTrue(wrapper.getSqlSegment().toUpperCase().contains(" IN "));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(ProductStatusEnum.ON_SALE.getCode()));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(ProductStatusEnum.SALE_OUT.getCode()));
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

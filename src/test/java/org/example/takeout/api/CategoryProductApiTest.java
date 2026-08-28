@@ -3,6 +3,7 @@ package org.example.takeout.api;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
+import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -137,7 +138,10 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
     @Test
     void createProductReturnsProduct() throws Exception {
         CreateProductDTO dto = productDTO();
-        when(productService.createProduct(any(CreateProductDTO.class))).thenReturn(merchantProductVO(301L, "Rice"));
+        MerchantProductVO createdProduct = merchantProductVO(301L, "Rice");
+        createdProduct.setStatus(1);
+        createdProduct.setStatusDesc("已经下架");
+        when(productService.createProduct(any(CreateProductDTO.class))).thenReturn(createdProduct);
 
         mockMvc.perform(post("/category/products")
                         .header("Authorization", merchantBearer())
@@ -146,8 +150,8 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data.productName").value("Rice"))
-                .andExpect(jsonPath("$.data.status").value(0))
-                .andExpect(jsonPath("$.data.statusDesc").value("正在销售"));
+                .andExpect(jsonPath("$.data.status").value(1))
+                .andExpect(jsonPath("$.data.statusDesc").value("已经下架"));
     }
 
     @Test

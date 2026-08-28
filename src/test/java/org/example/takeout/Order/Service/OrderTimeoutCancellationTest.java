@@ -5,7 +5,6 @@ import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
-import org.example.takeout.Product.Service.ProductService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatchers;
@@ -30,7 +29,7 @@ class OrderTimeoutCancellationTest {
     @Mock
     private OrderItemMapper orderItemMapper;
     @Mock
-    private ProductService productService;
+    private OrderItemService orderItemService;
     @InjectMocks
     private OrderService orderService;
 
@@ -53,7 +52,7 @@ class OrderTimeoutCancellationTest {
         )).thenReturn(1);
         when(orderItemMapper.selectList(ArgumentMatchers.<Wrapper<OrderItem>>any())).thenReturn(List.of(item));
         assertTrue(orderService.cancelTimeoutOrder(orderId, expiredBefore));
-        verify(productService).increaseStock(productId, 2);
+        verify(orderItemService).increaseStocksOrderedByProductId(List.of(item));
     }
 
     @Test
@@ -70,6 +69,6 @@ class OrderTimeoutCancellationTest {
 
         assertFalse(orderService.cancelTimeoutOrder(orderId, expiredBefore));
         verify(orderItemMapper, never()).selectList(ArgumentMatchers.<Wrapper<OrderItem>>any());
-        verify(productService, never()).increaseStock(any(), any());
+        verify(orderItemService, never()).increaseStocksOrderedByProductId(any());
     }
 }

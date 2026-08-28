@@ -10,9 +10,11 @@ import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Service.ProductService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -22,6 +24,30 @@ public class OrderItemService {
     private ProductService productService;
     @Autowired
     private OrderItemMapper orderItemMapper;
+
+    //NOTE:按商品 ID 升序扣减库存，确保并发订单以相同顺序获取商品行锁。
+    @Transactional(rollbackFor = Exception.class)
+    public void decreaseStocksOrderedByProductId(List<CartItem> cartItems) {
+        List<CartItem> orderedItems = new ArrayList<>(cartItems);
+        orderedItems.sort(Comparator.comparing(CartItem::getProductId));
+
+        for (CartItem item : orderedItems) {
+            productService.decreaseStock(item.getProductId(), item.getQuantity());
+        }
+    }
+
+
+    //NOTE:库存归还也使用相同的商品 ID 锁顺序，避免与扣减库存形成反向等待。
+    @Transactional(rollbackFor = Exception.class)
+    public void increaseStocksOrderedByProductId(List<OrderItem> orderItems) {
+        List<OrderItem> orderedItems = new ArrayList<>(orderItems);
+        orderedItems.sort(Comparator.comparing(OrderItem::getProductId));
+
+        for (OrderItem item : orderedItems) {
+            productService.increaseStock(item.getProductId(), item.getQuantity());
+        }
+    }
+
     public List<OrderItem> buildOrderItems(Order order, List<CartItem> availableCartItems, Map<Long, Product> productMap) {
 
         List<OrderItem> orderItems = new ArrayList<>();
@@ -31,9 +57,6 @@ public class OrderItemService {
             if (product == null) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
             }
-
-            productService.decreaseStock(product.getId(),cartItem.getQuantity());
-
 
             OrderItem item = new OrderItem();
             item.setOrderId(order.getId());

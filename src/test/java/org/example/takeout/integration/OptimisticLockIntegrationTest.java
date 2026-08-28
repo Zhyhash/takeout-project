@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
+import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Order.Entity.Order;
@@ -12,7 +14,10 @@ import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Product.Entity.Product;
+import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductService;
+import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.dataFactory.TestDataFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +29,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
@@ -56,6 +62,9 @@ public class OptimisticLockIntegrationTest {
     private ProductMapper productMapper;
 
     @Autowired
+    private ProductService productService;
+
+    @Autowired
     private CartMapper cartMapper;
 
     @Autowired
@@ -77,6 +86,7 @@ public class OptimisticLockIntegrationTest {
             deleteTestData();
         } finally {
             UserContextHolder.clear();
+            MerchantContextHolder.clear();
         }
     }
 
@@ -145,6 +155,95 @@ public class OptimisticLockIntegrationTest {
         Merchant result = merchantMapper.selectById(TEST_MERCHANT_ID);
         assertEquals("first concurrent update", result.getAddress());
         assertEquals(1, result.getVersion());
+    }
+
+    @Test
+    void stockCrossingZeroUpdatesStatusAndVersionAtomically() {
+        insertCategory();
+        Product product = TestDataFactory.createProduct(
+                TEST_PRODUCT_ID, "库存状态流转商品", 1, TEST_MERCHANT_ID);
+        product.setCategoryId(TEST_CATEGORY_ID);
+        productMapper.insert(product);
+
+        productService.decreaseStock(TEST_PRODUCT_ID, 1);
+
+        Product soldOut = productMapper.selectById(TEST_PRODUCT_ID);
+        assertEquals(0, soldOut.getStock());
+        assertEquals(ProductStatusEnum.SALE_OUT.getCode(), soldOut.getStatus());
+        assertEquals(1, soldOut.getVersion());
+
+        productService.increaseStock(TEST_PRODUCT_ID, 2);
+
+        Product onSale = productMapper.selectById(TEST_PRODUCT_ID);
+        assertEquals(2, onSale.getStock());
+        assertEquals(ProductStatusEnum.ON_SALE.getCode(), onSale.getStatus());
+        assertEquals(2, onSale.getVersion());
+
+        jdbcTemplate.update(
+                "UPDATE product SET status = ? WHERE id = ?",
+                ProductStatusEnum.OFF_SALE.getCode(), TEST_PRODUCT_ID);
+        productService.increaseStock(TEST_PRODUCT_ID, 1);
+
+        Product stillOffSale = productMapper.selectById(TEST_PRODUCT_ID);
+        assertEquals(3, stillOffSale.getStock());
+        assertEquals(ProductStatusEnum.OFF_SALE.getCode(), stillOffSale.getStatus());
+        assertEquals(3, stillOffSale.getVersion());
+    }
+
+    @Test
+    void returnedStockMakesMerchantAbsoluteResetWithStaleVersionFail() {
+        insertCategory();
+        Product product = TestDataFactory.createProduct(
+                TEST_PRODUCT_ID, "库存重置并发商品", 10, TEST_MERCHANT_ID);
+        product.setCategoryId(TEST_CATEGORY_ID);
+        productMapper.insert(product);
+
+        UpdateProductDTO staleReset = new UpdateProductDTO();
+        staleReset.setStock(20);
+        staleReset.setVersion(0);
+
+        productService.increaseStock(TEST_PRODUCT_ID, 1);
+        MerchantContextHolder.setMerchantId(TEST_MERCHANT_ID);
+
+        assertThrows(BusinessException.class,
+                () -> productService.updateProduct(TEST_PRODUCT_ID, staleReset));
+
+        Product result = productMapper.selectById(TEST_PRODUCT_ID);
+        assertEquals(11, result.getStock());
+        assertEquals(1, result.getVersion());
+    }
+
+    @Test
+    void deletedProductReceivesReturnedStockAndRestoresOffSale() {
+        insertCategory();
+        Product product = TestDataFactory.createProduct(
+                TEST_PRODUCT_ID, "删除商品退库测试", 0, TEST_MERCHANT_ID);
+        product.setCategoryId(TEST_CATEGORY_ID);
+        product.setStatus(ProductStatusEnum.SALE_OUT.getCode());
+        productMapper.insert(product);
+
+        assertEquals(1, productMapper.deleteById(TEST_PRODUCT_ID));
+
+        productService.increaseStock(TEST_PRODUCT_ID, 2);
+
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT is_deleted FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));
+        assertEquals(2, jdbcTemplate.queryForObject(
+                "SELECT stock FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));
+        assertEquals(ProductStatusEnum.SALE_OUT.getCode(), jdbcTemplate.queryForObject(
+                "SELECT status FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));
+
+        MerchantContextHolder.setMerchantId(TEST_MERCHANT_ID);
+        productService.restoreProduct(TEST_PRODUCT_ID);
+
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT is_deleted FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));
+        assertEquals(ProductStatusEnum.OFF_SALE.getCode(), jdbcTemplate.queryForObject(
+                "SELECT status FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));
+        assertEquals(2, jdbcTemplate.queryForObject(
+                "SELECT stock FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));
+        assertEquals(2, jdbcTemplate.queryForObject(
+                "SELECT version FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));
     }
 
     private void deleteTestData() {

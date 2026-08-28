@@ -138,7 +138,10 @@ public class MerchantQueryService {
         }
         List<Product> products = productMapper.selectList(Wrappers.<Product>lambdaQuery()
                 .eq(Product::getMerchantId, merchant.getId()).
-                eq(Product::getStatus, ProductStatusEnum.ON_SALE.getCode()));
+                in(Product::getStatus, Arrays.asList(
+                        ProductStatusEnum.ON_SALE.getCode(),
+                        ProductStatusEnum.SALE_OUT.getCode()
+                )));
 
         Map<Long, List<Product>> collect = products.stream().
                 collect(Collectors.groupingBy(Product::getCategoryId));

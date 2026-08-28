@@ -21,7 +21,6 @@ import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Entity.Product;
-import org.example.takeout.Product.Service.ProductService;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -39,7 +38,7 @@ public class OrderService {
     @Autowired
     private OrderTransactionExecutor orderTransactionExecutor;
     @Autowired
-    private ProductService productService;
+    private OrderItemService orderItemService;
     @Autowired
     private OrderItemMapper orderItemMapper;
     @Autowired
@@ -189,9 +188,7 @@ public class OrderService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "订单明细为空，无法取消订单");
         }
-        for (OrderItem item : orderItems) {
-            productService.increaseStock(item.getProductId(), item.getQuantity());
-        }
+        orderItemService.increaseStocksOrderedByProductId(orderItems);
     }
 
     //NOTE:模拟支付
@@ -201,7 +198,8 @@ public class OrderService {
     public void payOrder(Long orderId){
         Long userId = UserContextHolder.getUserId();
         int i = orderMapper.updateOrderStatusToPaying(orderId, userId,
-                OrderStatusEnum.WAIT_PAY.getCode(), OrderStatusEnum.PAYING.getCode());
+                OrderStatusEnum.WAIT_PAY.getCode(), OrderStatusEnum.PAYING.getCode(),
+                LocalDateTime.now().minusMinutes(30));
         if (i!=1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "订单不存在或当前状态不可支付");

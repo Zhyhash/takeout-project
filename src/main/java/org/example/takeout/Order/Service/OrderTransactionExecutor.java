@@ -68,6 +68,7 @@ public class OrderTransactionExecutor {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车删除失败");
         }
 
+        orderItemService.decreaseStocksOrderedByProductId(orderDataContext.getAvailableItems());
         List<OrderItem> orderItems = orderItemService.buildOrderItems(order,
                 orderDataContext.getAvailableItems(), orderDataContext.getProductMap());
         orderItemService.saveBatch(orderItems);

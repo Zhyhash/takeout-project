@@ -6,7 +6,9 @@
 <mapper namespace="org.example.takeout.Product.Mapper.ProductMapper">
     <update id="restoreDeletedProduct">
         UPDATE product p1
-        SET p1.is_deleted = 0
+        SET p1.is_deleted = 0,
+            p1.status = #{offSaleStatus},
+            p1.version = p1.version + 1
         WHERE p1.id = #{id}
           AND p1.merchant_id = #{merchantId}
           AND p1.is_deleted != 0

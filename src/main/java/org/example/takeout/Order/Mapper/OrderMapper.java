@@ -60,11 +60,13 @@ public interface OrderMapper extends BaseMapper<Order> {
         WHERE id = #{orderId}
         AND user_id = #{userId}
         AND status =#{oldStatus}
+        AND create_time > #{expiredBefore}
     """)
     int updateOrderStatusToPaying(@Param("orderId") Long orderId,
                                   @Param("userId") Long userId,
                                   @Param("oldStatus") Integer oldStatus,
-                                  @Param("newStatus") Integer newStatus);
+                                  @Param("newStatus") Integer newStatus,
+                                  @Param("expiredBefore") LocalDateTime expiredBefore);
 
     @Update("""
         UPDATE orders

@@ -94,7 +94,10 @@ public class ProductService {
                 eq("is_deleted",DeleteConstant.NOT_DELETED).
                 eq("status",ProductStatusEnum.ON_SALE.getCode())
                 .ge("stock", quantity)
-                .setSql("stock = stock - " + quantity + ", version = version + 1");
+                .setSql("status = CASE WHEN stock = " + quantity
+                        + " THEN " + ProductStatusEnum.SALE_OUT.getCode()
+                        + " ELSE status END, stock = stock - " + quantity
+                        + ", version = version + 1");
         int row= productMapper.update(null,wrapper);
         if (row != 1)
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"创建订单失败");
@@ -109,7 +112,11 @@ public class ProductService {
         if (quantity == null || quantity <= 0) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"归还数量必须大于0");
         }
-        if (productMapper.increaseStock(productId, quantity) != 1) {
+        if (productMapper.increaseStock(
+                productId,
+                quantity,
+                ProductStatusEnum.SALE_OUT.getCode(),
+                ProductStatusEnum.ON_SALE.getCode()) != 1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"归还库存失败，商品可能处于异常状态");
         }
         evictCacheIfInStockChanged(productId, quantity);
@@ -137,9 +144,15 @@ public class ProductService {
         Product product = getProduct(productId);
         validateShelfChangeLegal(product, ProductStatusEnum.ON_SALE);
         Category category = getCategory(product.getCategoryId());
+        if (product.getStock() == null || product.getStock() < 0) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存异常，无法上架");
+        }
+        ProductStatusEnum targetStatus = product.getStock() > 0
+                ? ProductStatusEnum.ON_SALE
+                : ProductStatusEnum.SALE_OUT;
 
-        if (!ProductStatusEnum.ON_SALE.getCode().equals(product.getStatus())) {
-            changeProductStatus(product, ProductStatusEnum.ON_SALE);
+        if (!targetStatus.getCode().equals(product.getStatus())) {
+            changeProductStatus(product, targetStatus);
         }
         evictProductDetailCache(productId);
 
@@ -212,6 +225,7 @@ public class ProductService {
         return dto;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO updateProduct(Long productId,@NonNull UpdateProductDTO updateProductDTO) {
         Product updatedProduct = updateProductAndEvictCache(productId, updateProductDTO);
         return toMerchantProductVO(updatedProduct, getCategory(updatedProduct.getCategoryId()));
@@ -247,6 +261,15 @@ public class ProductService {
         if (product.getImageUrl() != null) {
             product.setImageUrl(resolveImageUrl(product.getImageUrl()));
         }
+        if (product.getStock() != null) {
+            Product currentProduct = getProduct(productId);
+            if (currentProduct == null) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                        "商品不存在或不属于当前商家");
+            }
+            product.setStatus(resolveStatusAfterStockReset(
+                    currentProduct.getStatus(), product.getStock()));
+        }
 
         LambdaUpdateWrapper<Product> updateWrapper = Wrappers.<Product>lambdaUpdate()
                 .eq(Product::getId, productId)
@@ -273,7 +296,8 @@ public class ProductService {
         }
 
         if (targetStatus == ProductStatusEnum.ON_SALE) {
-            if (!ProductStatusEnum.OFF_SALE.getCode().equals(currentStatus)) {
+            if (!ProductStatusEnum.OFF_SALE.getCode().equals(currentStatus)
+                    && !ProductStatusEnum.SALE_OUT.getCode().equals(currentStatus)) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"当前状态不允许上架");
             }
             if (product.getPrice() == null || product.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
@@ -304,7 +328,9 @@ public class ProductService {
     }
 
     private void evictCacheIfInStockChanged(Long productId, int stockDelta) {
-        Product updatedProduct = productMapper.selectById(productId);
+        // 订单退库允许更新逻辑删除商品，库存回读也必须绕过逻辑删除过滤，
+        // 否则回读为空会抛异常并回滚已经完成的库存归还。
+        Product updatedProduct = productMapper.selectStockByIdIncludingDeleted(productId);
         if (updatedProduct == null || updatedProduct.getStock() == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存更新后商品信息异常");
         }
@@ -327,12 +353,25 @@ public class ProductService {
 
         int i = productMapper.update(updateEntity,wrapper);
         if (i!=1) {
-            String message = targetStatus == ProductStatusEnum.ON_SALE ? "商品上架失败" : "商品下架失败";
+            String message = targetStatus == ProductStatusEnum.OFF_SALE ? "商品下架失败" : "商品上架失败";
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,message);
         }
 
         product.setStatus(targetStatus.getCode());
         product.setVersion(product.getVersion()+1);
+    }
+
+    private Integer resolveStatusAfterStockReset(Integer currentStatus, Integer newStock) {
+        if (ProductStatusEnum.OFF_SALE.getCode().equals(currentStatus)) {
+            return ProductStatusEnum.OFF_SALE.getCode();
+        }
+        if (!ProductStatusEnum.ON_SALE.getCode().equals(currentStatus)
+                && !ProductStatusEnum.SALE_OUT.getCode().equals(currentStatus)) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品状态异常，无法修改库存");
+        }
+        return newStock > 0
+                ? ProductStatusEnum.ON_SALE.getCode()
+                : ProductStatusEnum.SALE_OUT.getCode();
     }
 
     private Category getCategory(Long categoryId){
@@ -386,7 +425,10 @@ public class ProductService {
     @Transactional(rollbackFor = Exception.class)
     public void restoreProduct(@NotNull Long productId) {
         Long merchantId = MerchantContextHolder.getMerchantId();
-        Integer rows = productMapper.restoreDeletedProduct(productId, merchantId);
+        Integer rows = productMapper.restoreDeletedProduct(
+                productId,
+                merchantId,
+                ProductStatusEnum.OFF_SALE.getCode());
         //如果完全没有影响数据库
         //NOTE:恢复商品可能触发唯一约束异常，需要统一异常处理，将数据库异常转换为业务提示。
         if (rows == 0) {

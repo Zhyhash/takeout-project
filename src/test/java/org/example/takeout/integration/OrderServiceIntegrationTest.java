@@ -31,6 +31,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -688,6 +689,25 @@ class OrderServiceIntegrationTest {
         assertEquals(1, orderMapper.selectCount(Wrappers.<Order>lambdaQuery()
                 .eq(Order::getUserId, TEST_USER_ID)
                 .isNotNull(Order::getPayTime)));
+    }
+
+    //NOTE：超过 30 分钟但尚未被定时任务取消的订单也不能支付
+    @Test
+    void payOrder_shouldRejectExpiredWaitingOrder() {
+        insertMerchant();
+        Order order = TestDataFactory.createOrder(
+                TEST_USER_ID,
+                TEST_MERCHANT_ID,
+                OrderStatusEnum.WAIT_PAY.getCode()
+        );
+        order.setCreateTime(LocalDateTime.now().minusMinutes(31));
+        orderMapper.insert(order);
+
+        assertThrows(BusinessException.class, () -> orderService.payOrder(order.getId()));
+
+        Order persistedOrder = orderMapper.selectById(order.getId());
+        assertEquals(OrderStatusEnum.WAIT_PAY.getCode(), persistedOrder.getStatus());
+        assertNull(persistedOrder.getPayTime());
     }
 
     //NOTE：测试并发完成同一订单时仅一次成功并正确记录完成状态和时间
