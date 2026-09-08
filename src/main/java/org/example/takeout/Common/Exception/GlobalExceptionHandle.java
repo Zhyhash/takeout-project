@@ -95,6 +95,8 @@ public class GlobalExceptionHandle {
         log.warn("重复创建数据{}",e.getMessage());
         return Result.error(ResultCodeEnum.DATABASE_ERROR,"数据已存在，请勿重复创建（名称或编码冲突）");
     }
+
+
     @ExceptionHandler(value = Exception.class)
     public  Result<?> GloballyExceptionHandle(Exception e) {
         log.error("未明确异常：", e);

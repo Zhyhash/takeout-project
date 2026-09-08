@@ -4,6 +4,7 @@ import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
+import org.example.takeout.Product.Cache.ProductCacheService;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
 import org.example.takeout.Product.Cache.RedisKeyConstant;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
@@ -16,21 +17,25 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -40,6 +45,7 @@ class ProductServiceTest {
 
     private static final Long MERCHANT_ID = 201L;
     private static final Long PRODUCT_ID = 301L;
+    private static final String NULL_PRODUCT_CACHE = "__NULL__";
 
     @Mock
     private ProductMapper productMapper;
@@ -51,13 +57,10 @@ class ProductServiceTest {
     private ProductConverter productConverter;
 
     @Mock
-    private StringRedisTemplate stringRedisTemplate;
-
-    @Mock
-    private ValueOperations<String, String> valueOperations;
-
-    @Mock
     private ObjectMapper objectMapper;
+
+    @Mock
+    private ProductCacheService productCacheService;
 
     @InjectMocks
     private ProductService productService;
@@ -79,7 +82,7 @@ class ProductServiceTest {
         productService.deleteProduct(PRODUCT_ID);
 
         verify(productMapper).delete(any());
-        verify(stringRedisTemplate).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
     }
 
     @Test
@@ -88,7 +91,7 @@ class ProductServiceTest {
 
         assertThrows(BusinessException.class, () -> productService.deleteProduct(PRODUCT_ID));
 
-        verify(stringRedisTemplate, never()).delete(any(String.class));
+        verify(productCacheService, never()).delete(any(String.class));
     }
 
     @Test
@@ -129,7 +132,7 @@ class ProductServiceTest {
                 PRODUCT_ID, 2,
                 ProductStatusEnum.SALE_OUT.getCode(),
                 ProductStatusEnum.ON_SALE.getCode());
-        verify(stringRedisTemplate).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
     }
 
     @Test
@@ -144,7 +147,7 @@ class ProductServiceTest {
 
         productService.increaseStock(PRODUCT_ID, 2);
 
-        verify(stringRedisTemplate, never()).delete(any(String.class));
+        verify(productCacheService, never()).delete(any(String.class));
     }
 
     @Test
@@ -177,8 +180,8 @@ class ProductServiceTest {
         cachedProduct.setStatus(ProductStatusEnum.ON_SALE.getCode());
         cachedProduct.setInStock(true);
 
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID)).thenReturn("cached-product");
+        when(productCacheService.get(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID))
+                .thenReturn("cached-product");
         when(objectMapper.readValue("cached-product", ProductDetailCacheDTO.class)).thenReturn(cachedProduct);
         when(productConverter.toProductVO(cachedProduct)).thenAnswer(invocation -> {
             ProductDetailCacheDTO source = invocation.getArgument(0);
@@ -196,6 +199,68 @@ class ProductServiceTest {
     }
 
     @Test
+    void missingProductCachesNullMarkerAndSkipsSecondDatabaseQuery() {
+        String key = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        String lockKey = "Lock:" + key;
+        when(productCacheService.get(key)).thenReturn(null, null, NULL_PRODUCT_CACHE);
+        when(productCacheService.tryLock(
+                anyString(), anyString(), eq(10L), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+        when(productMapper.selectById(PRODUCT_ID)).thenReturn(null);
+
+        assertThrows(BusinessException.class,
+                () -> productService.getProductDetail(PRODUCT_ID));
+        assertThrows(BusinessException.class,
+                () -> productService.getProductDetail(PRODUCT_ID));
+
+        verify(productMapper, times(1)).selectById(PRODUCT_ID);
+        verify(productCacheService).set(
+                eq(key),
+                eq(NULL_PRODUCT_CACHE),
+                anyLong(),
+                eq(TimeUnit.MINUTES)
+        );
+        ArgumentCaptor<String> lockTokenCaptor = ArgumentCaptor.forClass(String.class);
+        verify(productCacheService).tryLock(
+                eq(lockKey),
+                lockTokenCaptor.capture(),
+                eq(10L),
+                eq(TimeUnit.SECONDS)
+        );
+        verify(productCacheService).unlock(lockKey, lockTokenCaptor.getValue());
+    }
+
+    @Test
+    void cacheMissSerializesDatabaseProductAndCachesJson() throws Exception {
+        String key = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        Product product = product(ProductStatusEnum.ON_SALE.getCode(), 8, 1);
+        ProductDetailCacheDTO cacheDto = new ProductDetailCacheDTO();
+        cacheDto.setId(PRODUCT_ID);
+        cacheDto.setMerchantId(MERCHANT_ID);
+        cacheDto.setInStock(true);
+        ProductVO productVO = new ProductVO();
+
+        when(productCacheService.get(key)).thenReturn(null);
+        when(productCacheService.tryLock(
+                anyString(), anyString(), eq(10L), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+        when(productMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        when(productConverter.toProductDetailCacheDTO(product)).thenReturn(cacheDto);
+        when(objectMapper.writeValueAsString(cacheDto)).thenReturn("product-json");
+        when(productConverter.toProductVO(cacheDto)).thenReturn(productVO);
+
+        assertEquals(productVO, productService.getProductDetail(PRODUCT_ID));
+
+        verify(objectMapper).writeValueAsString(cacheDto);
+        verify(productCacheService).set(
+                eq(key),
+                eq("product-json"),
+                anyLong(),
+                eq(TimeUnit.MINUTES)
+        );
+    }
+
+    @Test
     void decreaseStockEvictsProductDetailCacheWhenAvailabilityChanges() {
         Product updatedProduct = new Product();
         updatedProduct.setStock(0);
@@ -204,7 +269,7 @@ class ProductServiceTest {
 
         productService.decreaseStock(PRODUCT_ID, 1);
 
-        verify(stringRedisTemplate).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
     }
 
     @Test
@@ -216,7 +281,7 @@ class ProductServiceTest {
 
         productService.decreaseStock(PRODUCT_ID, 1);
 
-        verify(stringRedisTemplate, never()).delete(any(String.class));
+        verify(productCacheService, never()).delete(any(String.class));
     }
 
     @Test
@@ -232,7 +297,7 @@ class ProductServiceTest {
                 PRODUCT_ID,
                 MERCHANT_ID,
                 ProductStatusEnum.OFF_SALE.getCode());
-        verify(stringRedisTemplate).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
     }
 
     private Product product(Integer status, Integer stock, Integer version) {

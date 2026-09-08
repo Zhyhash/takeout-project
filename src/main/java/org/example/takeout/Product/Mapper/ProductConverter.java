@@ -45,4 +45,5 @@ public interface ProductConverter {
         return stock != null && stock > 0;
     }
 
+
 }

@@ -13,8 +13,10 @@ import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
+import org.example.takeout.Product.Cache.ProductCacheService;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
 import org.example.takeout.Product.Cache.RedisKeyConstant;
 import org.example.takeout.Product.DTO.CreateProductDTO;
@@ -27,7 +29,7 @@ import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -35,10 +37,8 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -46,7 +46,6 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class ProductService {
-    public static final String DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.svg";
 
     @Autowired
     private CategoryMapper categoryMapper;
@@ -55,15 +54,24 @@ public class ProductService {
     @Autowired
     private ProductConverter productConverter;
     @Autowired
-    private StringRedisTemplate  stringRedisTemplate;
-    @Autowired
     private ObjectMapper objectMapper;
+    @Autowired
+    private ProductCacheService productCacheService;
+
+    public static final String DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.svg";
+
+    private static final String NULL_PRODUCT_CACHE = "__NULL__";
+    private static final long PRODUCT_CACHE_LOCK_TTL_SECONDS = 10L;
+    private static final int PRODUCT_CACHE_RETRY_COUNT = 5;
+    private static final long PRODUCT_CACHE_RETRY_INTERVAL_MILLIS = 50L;
 
     //NOTE:抽取方法，转换VO
     public MerchantProductVO toMerchantProductVO(Product product, Category category) {
         // 从 product 实体中拷贝基础属性（此时 product 已经被回填了 id）
         return productConverter.toMerchantProductVO(product,category);
     }
+
+
 
     //NOTE:抽取方法，转换Product
     public Product toProduct(CreateProductDTO createProductDTO){
@@ -175,7 +183,19 @@ public class ProductService {
     }
 
     public ProductVO getProductDetail(Long productId){
-        ProductDetailCacheDTO productDetailCache = getProductDetailCache(productId);
+        ProductDetailCacheDTO productDetailCache;
+        try {
+            productDetailCache = getProductDetailCache(productId);
+        } catch (RedisCacheUnavailableException e) {
+            log.warn(
+                    "Redis不可用，商品详情降级查询MySQL，productId={}",
+                    productId,
+                    e
+            );
+            productDetailCache =
+                    loadProductDetailFromMysqlOnly(productId);
+        }
+
         if (!Objects.equals(productDetailCache.getMerchantId(), MerchantContextHolder.getMerchantId())) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "商品不存在或不属于当前商家");
@@ -184,45 +204,131 @@ public class ProductService {
     }
 
     private ProductDetailCacheDTO getProductDetailCache(Long id){
+        String cacheKey = buildProductDetailKey(id);
+        ProductDetailCacheDTO cachedProduct = readProductDetailCache(cacheKey);
+        if (cachedProduct != null) {
+            return cachedProduct;
+        }
 
-        String key = buildProductDetailKey(id);
+        String lockKey = buildProductLockKey(id);
+        String lockToken = UUID.randomUUID().toString();
+        boolean locked;
 
-        String jsonString = null;
+        locked = productCacheService.tryLock(
+                lockKey,
+                lockToken,
+                PRODUCT_CACHE_LOCK_TTL_SECONDS,
+                TimeUnit.SECONDS
+        );
+
+        if (!locked) {
+            return retryReadProductDetailCache(id, cacheKey);
+        }
+
         try {
-            jsonString = stringRedisTemplate.opsForValue().get(key);
-        } catch (Exception e) {
-            log.error("缓存取出失败，Redis连接和使用可能有异常");
-        }
-        if (StringUtils.hasText(jsonString)) {
-            try {
-                ProductDetailCacheDTO cachedProduct = objectMapper.readValue(jsonString,ProductDetailCacheDTO.class);
-                if (cachedProduct.getInStock() != null) {
-                    return cachedProduct;
-                }
-                log.info("商品缓存缺少 inStock 字段，重新加载 key={}", key);
-                stringRedisTemplate.delete(key);
-            } catch (JacksonException e) {
-                log.warn("商品缓存解析失败，删除缓存 key={}", key, e);
-                stringRedisTemplate.delete(key);
+            // 获得锁后再次查询，避免其他请求已经完成缓存重建。
+            cachedProduct = readProductDetailCache(cacheKey);
+            if (cachedProduct != null) {
+                return cachedProduct;
             }
+            return loadProductDetailAndCache(id, cacheKey);
+        } finally {
+            // Lua 会先比对 lockToken，只释放当前请求持有的锁。
+            productCacheService.unlock(lockKey, lockToken);
+        }
+    }
+
+
+    private ProductDetailCacheDTO readProductDetailCache(String cacheKey) {
+        String cachedJson = productCacheService.get(cacheKey);
+
+        if (!StringUtils.hasText(cachedJson)) {
+            return null;
+        }
+        if (NULL_PRODUCT_CACHE.equals(cachedJson)) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
         }
 
+        try {
+            // StringRedisTemplate 读取的是 JSON 字符串：在这里反序列化为 DTO。
+            ProductDetailCacheDTO cachedProduct = objectMapper.readValue(
+                    cachedJson,
+                    ProductDetailCacheDTO.class
+            );
+            if (cachedProduct != null && cachedProduct.getInStock() != null) {
+                return cachedProduct;
+            }
+            log.info("商品缓存缺少 inStock 字段，重新加载 key={}", cacheKey);
+        } catch (JacksonException e) {
+            log.warn("商品缓存解析失败，删除缓存 key={}", cacheKey, e);
+        }
+
+        productCacheService.delete(cacheKey);
+        return null;
+    }
+
+    //NOTE:降级数据库查询并写入缓存
+    private ProductDetailCacheDTO loadProductDetailAndCache(Long id, String cacheKey) {
         Product product = productMapper.selectById(id);
         if (product == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "商品不存在");
+            productCacheService.set(
+                    cacheKey,
+                    NULL_PRODUCT_CACHE,
+                    randomCacheTtlMinutes(2, 5),
+                    TimeUnit.MINUTES
+            );
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
         }
 
         ProductDetailCacheDTO dto = productConverter.toProductDetailCacheDTO(product);
-
-
-        try {
-            stringRedisTemplate.opsForValue().
-                    set(key,objectMapper.writeValueAsString(dto),1,TimeUnit.HOURS);
-        } catch (Exception e) {
-            log.error("商品缓存更新失败");
-        }
+        // StringRedisTemplate 只能写字符串：在这里把 DTO 序列化为 JSON。
+        String cacheJson = objectMapper.writeValueAsString(dto);
+        productCacheService.set(
+                cacheKey,
+                cacheJson,
+                randomCacheTtlMinutes(50, 70),
+                TimeUnit.MINUTES
+        );
         return dto;
+    }
+
+    //NOTE：没有抢到锁的时候的等待重试
+    private ProductDetailCacheDTO retryReadProductDetailCache(Long id, String cacheKey) {
+        for (int attempt = 0; attempt < PRODUCT_CACHE_RETRY_COUNT; attempt++) {
+
+            try {
+                Thread.sleep(PRODUCT_CACHE_RETRY_INTERVAL_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new BusinessException(
+                        ResultCodeEnum.BUSINESS_ERROR,
+                        "商品缓存等待被中断"
+                );
+            }
+
+            ProductDetailCacheDTO cachedProduct = readProductDetailCache(cacheKey);
+            if (cachedProduct != null) {
+                return cachedProduct;
+            }
+
+        }
+        // Redis 不可用或锁持有时间过长时保证业务可用，允许降级查询数据库。
+        log.warn("等待商品缓存重建超时，降级查询数据库，productId={}", id);
+        return loadProductDetailAndCache(id, cacheKey);
+    }
+
+
+    private ProductDetailCacheDTO loadProductDetailFromMysqlOnly(Long productId) {
+        Product product = productMapper.selectById(productId);
+
+        if (product == null) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "查询的商品不存在"
+            );
+        }
+
+        return productConverter.toProductDetailCacheDTO(product);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -319,12 +425,21 @@ public class ProductService {
         return RedisKeyConstant.PRODUCT_DETAIL + id;
     }
 
-    private void evictProductDetailCache(Long productId) {
-        try {
-            stringRedisTemplate.delete(buildProductDetailKey(productId));
-        } catch (Exception e) {
-            log.error("商品缓存删除失败，商品id：{}", productId, e);
+    private String buildProductLockKey(Long id){
+        return "Lock:"+RedisKeyConstant.PRODUCT_DETAIL + id;
+    }
+
+    private long randomCacheTtlMinutes(long minMinutes, long maxMinutes) {
+        if (minMinutes <= 0 || maxMinutes < minMinutes) {
+            throw new IllegalArgumentException("缓存TTL范围不正确");
         }
+
+        return ThreadLocalRandom.current()
+                .nextLong(minMinutes, maxMinutes + 1);
+    }
+
+    private void evictProductDetailCache(Long productId) {
+        productCacheService.delete(buildProductDetailKey(productId));
     }
 
     private void evictCacheIfInStockChanged(Long productId, int stockDelta) {
@@ -437,4 +552,5 @@ public class ProductService {
         }
         evictProductDetailCache(productId);
     }
+
 }
