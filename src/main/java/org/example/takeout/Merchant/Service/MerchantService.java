@@ -6,6 +6,7 @@ import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
 import org.example.takeout.Common.Auth.AuthRole;
+import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
@@ -41,6 +42,8 @@ public class MerchantService {
     @Autowired
     private JWTUtils jwtUtils;
     @Autowired
+    private LoginAttemptLimiter loginAttemptLimiter;
+    @Autowired
     private CategoryMapper categoryMapper;
     @Autowired
     private OrderCommandService orderCommandService;
@@ -53,23 +56,30 @@ public class MerchantService {
      * @return 登录结果VO（包含ID和Token）
      */
     public loginVO login(@NonNull MerchantLoginDTO dto) {
+        loginAttemptLimiter.checkAllowed(AuthRole.MERCHANT, dto.getUsername());
+
         // 1. 根据用户名查询商家
         Merchant merchant = merchantMapper.selectOne(Wrappers.<Merchant>lambdaQuery()
                 .eq(Merchant::getUsername, dto.getUsername()));
         
         if (merchant == null) {
+            loginAttemptLimiter.recordFailure(AuthRole.MERCHANT, dto.getUsername());
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
         }
 
         // 2. 验证密码
         if (!BCrypt.matches(dto.getPassword(), merchant.getPassword())) {
+            loginAttemptLimiter.recordFailure(AuthRole.MERCHANT, dto.getUsername());
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
         }
+
+        loginAttemptLimiter.clearFailures(AuthRole.MERCHANT, dto.getUsername());
 
         // 3. 生成登录结果
         loginVO loginVO = new loginVO();
         loginVO.setId(merchant.getId());
         loginVO.setToken(jwtUtils.createToken(merchant.getId(), AuthRole.MERCHANT));
+
 
         return loginVO;
     }

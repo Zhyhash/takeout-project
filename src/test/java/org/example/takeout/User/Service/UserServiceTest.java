@@ -1,7 +1,10 @@
 package org.example.takeout.User.Service;
 
+import org.example.takeout.Common.Auth.AuthRole;
+import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.LoginRateLimitException;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
@@ -9,6 +12,7 @@ import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.Entity.User;
 import org.example.takeout.User.Mapper.UserMapper;
 import org.example.takeout.User.StatusEnum.UserStatusEnum;
+import org.example.takeout.User.VO.LoginVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,6 +33,8 @@ class UserServiceTest {
     private UserMapper userMapper;
     @Mock
     private JWTUtils jwtUtils;
+    @Mock
+    private LoginAttemptLimiter loginAttemptLimiter;
     @InjectMocks
     private UserService userService;
 
@@ -50,6 +56,78 @@ class UserServiceTest {
 
         assertThrows(BusinessException.class, () -> userService.login(dto));
         verify(jwtUtils, never()).createToken(anyLong(), anyString());
+        verify(loginAttemptLimiter).clearFailures(AuthRole.USER, dto.getUsername());
+        verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
+    }
+
+    @Test
+    void loginReturnsTokenAndClearsCredentialFailures() {
+        LoginDTO dto = loginDTO();
+        User user = loginUser(dto, UserStatusEnum.NORMAL.getCode());
+        when(userMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(user);
+        when(jwtUtils.createToken(7L, AuthRole.USER)).thenReturn("user-token");
+
+        LoginVO result = userService.login(dto);
+
+        assertEquals(7L, result.getId());
+        assertEquals("user-token", result.getToken());
+        verify(loginAttemptLimiter).checkAllowed(AuthRole.USER, dto.getUsername());
+        verify(loginAttemptLimiter).clearFailures(AuthRole.USER, dto.getUsername());
+        verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
+    }
+
+    @Test
+    void loginRecordsFailureWhenUserDoesNotExist() {
+        LoginDTO dto = loginDTO();
+        when(userMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(null);
+
+        assertThrows(BusinessException.class, () -> userService.login(dto));
+
+        verify(loginAttemptLimiter).recordFailure(AuthRole.USER, dto.getUsername());
+        verify(loginAttemptLimiter, never()).clearFailures(anyString(), anyString());
+        verifyNoInteractions(jwtUtils);
+    }
+
+    @Test
+    void loginRecordsFailureWhenPasswordIsWrong() {
+        LoginDTO dto = loginDTO();
+        User user = loginUser(dto, UserStatusEnum.NORMAL.getCode());
+        user.setPassword(BCrypt.encode("another-password"));
+        when(userMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(user);
+
+        assertThrows(BusinessException.class, () -> userService.login(dto));
+
+        verify(loginAttemptLimiter).recordFailure(AuthRole.USER, dto.getUsername());
+        verify(loginAttemptLimiter, never()).clearFailures(anyString(), anyString());
+        verifyNoInteractions(jwtUtils);
+    }
+
+    @Test
+    void loginClearsCredentialFailuresEvenWhenTokenCreationFails() {
+        LoginDTO dto = loginDTO();
+        User user = loginUser(dto, UserStatusEnum.NORMAL.getCode());
+        when(userMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(user);
+        when(jwtUtils.createToken(7L, AuthRole.USER))
+                .thenThrow(new IllegalStateException("token signing failed"));
+
+        assertThrows(IllegalStateException.class, () -> userService.login(dto));
+
+        verify(loginAttemptLimiter).clearFailures(AuthRole.USER, dto.getUsername());
+        verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
+    }
+
+    @Test
+    void loginStopsBeforeDatabaseWhenRateLimited() {
+        LoginDTO dto = loginDTO();
+        doThrow(new LoginRateLimitException("请求过于频繁"))
+                .when(loginAttemptLimiter)
+                .checkAllowed(AuthRole.USER, dto.getUsername());
+
+        assertThrows(LoginRateLimitException.class, () -> userService.login(dto));
+
+        verifyNoInteractions(userMapper, jwtUtils);
+        verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
+        verify(loginAttemptLimiter, never()).clearFailures(anyString(), anyString());
     }
 
     @Test
@@ -72,6 +150,21 @@ class UserServiceTest {
         User user = new User();
         user.setId(id);
         user.setStatus(status);
+        return user;
+    }
+
+    private LoginDTO loginDTO() {
+        LoginDTO dto = new LoginDTO();
+        dto.setUsername("user-one");
+        dto.setPassword("password123");
+        return dto;
+    }
+
+    private User loginUser(LoginDTO dto, Integer status) {
+        User user = user(7L, status);
+        user.setUsername(dto.getUsername());
+        user.setPassword(BCrypt.encode(dto.getPassword()));
+        user.setNickname("user-one");
         return user;
     }
 }

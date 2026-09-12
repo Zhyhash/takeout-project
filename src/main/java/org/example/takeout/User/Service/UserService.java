@@ -1,9 +1,13 @@
 package org.example.takeout.User.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Auth.AuthRole;
+import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.LoginAttemptStoreException;
+import org.example.takeout.Common.Redis.RedisLoginAttemptStore;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
@@ -27,11 +31,11 @@ public class UserService {
     private UserMapper userMapper;
     @Autowired
     private JWTUtils jwtUtils;
+    @Autowired
+    private LoginAttemptLimiter loginAttemptLimiter;
 
     @Transactional(rollbackFor =  Exception.class)
-
     public void register(RegisterDTO dto){
-
         // 查询用户名是否已存在
         User user = userMapper.selectOne(
                 Wrappers.<User>lambdaQuery()
@@ -53,24 +57,32 @@ public class UserService {
     }
 
     public LoginVO login(@NonNull LoginDTO loginDTO){
+        loginAttemptLimiter.checkAllowed(AuthRole.USER, loginDTO.getUsername());
         //查询用户是否存在
         User user = userMapper.selectOne(Wrappers.<User>lambdaQuery()
                 .eq(User::getUsername, loginDTO.getUsername()));
         if(user == null){
             //安全性保证
+            loginAttemptLimiter.recordFailure(AuthRole.USER, loginDTO.getUsername());
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
         }
         boolean matches = BCrypt.matches(loginDTO.getPassword(), user.getPassword());
         if(!matches){
+            loginAttemptLimiter.recordFailure(AuthRole.USER, loginDTO.getUsername());
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
         }
+
+        loginAttemptLimiter.clearFailures(AuthRole.USER, loginDTO.getUsername());
+
         if (!UserStatusEnum.NORMAL.getCode().equals(user.getStatus())) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户账号已禁用或不可用");
         }
-        LoginVO loginVO = new LoginVO();
+
+       LoginVO loginVO = new LoginVO();
         loginVO.setId(user.getId());
         loginVO.setNickname(user.getNickname());
         loginVO.setToken(jwtUtils.createToken(user.getId(), AuthRole.USER));
+
         return loginVO;
     }
 

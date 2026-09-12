@@ -8,6 +8,7 @@ import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import jakarta.validation.constraints.NotNull;
 import lombok.extern.slf4j.Slf4j;
+import org.example.takeout.CacheInvalidationTask.Service.CacheInvalidationTaskService;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
@@ -29,7 +30,6 @@ import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -57,13 +57,15 @@ public class ProductService {
     private ObjectMapper objectMapper;
     @Autowired
     private ProductCacheService productCacheService;
+    @Autowired
+    private CacheInvalidationTaskService  cacheInvalidationTaskService;
 
     public static final String DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.svg";
 
     private static final String NULL_PRODUCT_CACHE = "__NULL__";
     private static final long PRODUCT_CACHE_LOCK_TTL_SECONDS = 10L;
     private static final int PRODUCT_CACHE_RETRY_COUNT = 5;
-    private static final long PRODUCT_CACHE_RETRY_INTERVAL_MILLIS = 50L;
+    private static final long PRODUCT_CACHE_RETRY_INTERVAL_MILLIS = 100L;
 
     //NOTE:抽取方法，转换VO
     public MerchantProductVO toMerchantProductVO(Product product, Category category) {
@@ -222,7 +224,7 @@ public class ProductService {
         );
 
         if (!locked) {
-            return retryReadProductDetailCache(id, cacheKey);
+            return retryReadProductDetailCache(id, cacheKey,lockKey,lockToken);
         }
 
         try {
@@ -293,7 +295,7 @@ public class ProductService {
     }
 
     //NOTE：没有抢到锁的时候的等待重试
-    private ProductDetailCacheDTO retryReadProductDetailCache(Long id, String cacheKey) {
+    private ProductDetailCacheDTO retryReadProductDetailCache(Long id, String cacheKey,String lockKey,String lockToken) {
         for (int attempt = 0; attempt < PRODUCT_CACHE_RETRY_COUNT; attempt++) {
 
             try {
@@ -306,15 +308,39 @@ public class ProductService {
                 );
             }
 
+            //读取缓存并抢锁
             ProductDetailCacheDTO cachedProduct = readProductDetailCache(cacheKey);
             if (cachedProduct != null) {
                 return cachedProduct;
             }
 
+            boolean locked = productCacheService.tryLock(
+                    lockKey,
+                    lockToken,
+                    PRODUCT_CACHE_LOCK_TTL_SECONDS,
+                    TimeUnit.SECONDS
+            );
+
+            if (!locked) {
+                continue;
+            }
+
+            try {
+                // 获得锁后再次确认，防止竞争期间其他请求已经完成重建。
+                cachedProduct = readProductDetailCache(cacheKey);
+                if (cachedProduct != null) {
+                    return cachedProduct;
+                }
+
+                return loadProductDetailAndCache(id, cacheKey);
+            } finally {
+                productCacheService.unlock(lockKey, lockToken);
+            }
+
         }
-        // Redis 不可用或锁持有时间过长时保证业务可用，允许降级查询数据库。
-        log.warn("等待商品缓存重建超时，降级查询数据库，productId={}", id);
-        return loadProductDetailAndCache(id, cacheKey);
+        log.warn("等待商品缓存重建超时，拒绝继续回源数据库，productId={}", id);
+        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                "请求超时，请稍后重试");
     }
 
 
@@ -439,7 +465,30 @@ public class ProductService {
     }
 
     private void evictProductDetailCache(Long productId) {
-        productCacheService.delete(buildProductDetailKey(productId));
+        String cacheKey = buildProductDetailKey(productId);
+
+        //记录数据库持久化任务
+        //此处设计是为了保存尚未完成的业务意图，让系统恢复后知道还有什么账没收拾。
+        //如果为了删除失败补偿，应该放入log.error后面
+        cacheInvalidationTaskService.createPending(cacheKey);
+        // TODO Outbox任务聚合优化：
+        // 当前允许同一 cacheKey 创建多条 PENDING 任务，Redis 长时间不可用时可能造成任务积压。
+        // 后续考虑按 cacheKey 聚合未完成任务，避免重复 INSERT / DEL。
+        // 可增加 count 记录同 key 累计失效次数，用于任务权重、异常流量识别或限流/风控。
+        // 注意：需要区分历史 SUCCESS 记录与当前活跃任务，不能直接对 cacheKey 做简单 UNIQUE。
+
+        try {
+            productCacheService.delete(cacheKey);
+            cacheInvalidationTaskService.markPendingTasksSuccess(cacheKey);
+        } catch (RedisCacheUnavailableException e) {
+            log.error(
+                    "商品缓存删除失败，暂时允许数据库事务继续，productId={}, cacheKey={}",
+                    productId,
+                    cacheKey,
+                    e
+            );
+
+        }
     }
 
     private void evictCacheIfInStockChanged(Long productId, int stockDelta) {
@@ -552,5 +601,4 @@ public class ProductService {
         }
         evictProductDetailCache(productId);
     }
-
 }

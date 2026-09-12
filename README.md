@@ -270,11 +270,11 @@ docker compose down
 mvn test
 ```
 
-默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张业务表，只能对专用测试库运行。Redis 不可用时，Redis 专用测试通过 JUnit assumption 跳过；要覆盖 Redis 行为则需提供 `127.0.0.1:6379`。如需让测试连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
+默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表（不含缓存失效任务表），只能对专用测试库运行。Redis 不可用时，Redis 专用测试通过 JUnit assumption 跳过；要覆盖 Redis 行为则需提供 `127.0.0.1:6379`。如需让测试连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
 
 ## 7. 数据库初始化
 
-仓库提供 [`deploy/schema.sql`](deploy/schema.sql)，用于创建 `takeout` 数据库及以下九张表：
+仓库提供 [`deploy/schema.sql`](deploy/schema.sql)，用于创建 `takeout` 数据库及以下十张表：
 
 ```text
 user
@@ -286,6 +286,7 @@ orders
 order_item
 rider
 delivery_task
+cache_invalidation_task
 ```
 
 在项目根目录执行：
@@ -293,6 +294,8 @@ delivery_task
 ```powershell
 mysql -u root -p --execute="source deploy/schema.sql"
 ```
+
+已有数据库只需要执行一次 [`deploy/migrations/20260912_cache_invalidation_task.sql`](deploy/migrations/20260912_cache_invalidation_task.sql) 来创建完整的缓存失效任务表；重试字段已经包含在该脚本中，不再需要单独的加列迁移。
 
 ### 7.1 导入演示数据
 
@@ -390,6 +393,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 - **并发控制**：库存使用带库存下限和商品状态的条件更新；购物车、商家、商品使用唯一约束、版本列或条件更新避免常见竞态。
 - **完整履约状态机**：订单状态与配送任务状态分离，并在出餐、抢单、送达等关键动作中保持事务一致。
 - **超时补偿**：定时扫描 30 分钟未支付订单，使用条件状态更新避免重复取消和重复归还库存。
+- **持久化缓存失效任务**：商品修改与 `PENDING` 缓存失效意图在同一本地事务中提交，Redis 删除失败后由定时任务退避重试。
 - **三角色 JWT 鉴权**：按用户、商家、骑手设置身份上下文，业务查询继续按主体 ID 做数据归属过滤。
 - **履约快照**：订单和配送任务保存商品、商家、收货人、地址和联系方式快照，降低基础数据变化对历史业务的影响。
 - **多层测试**：包含 MockMvc API 测试、Service 单元测试、H2 隔离测试以及 MySQL/Redis 并发与集成测试。
@@ -415,7 +419,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 |---|---|
 | [`HELP.md`](HELP.md) | 开发快速入口、常用命令和官方资料链接 |
 | [`IdempotencyDesign.md`](IdempotencyDesign.md) | 订单及其他接口的幂等、重复请求和 Redis 实验设计 |
-| [`数据库结构.md`](数据库结构.md) | 九张业务表的字段、索引、外键和关系说明 |
+| [`数据库结构.md`](数据库结构.md) | 十张业务及基础设施表的字段、索引、外键和关系说明 |
 | [`数据库设计检查报告.md`](数据库设计检查报告.md) | 数据库约束、索引、迁移和完整性问题检查 |
 | [`状态流转表.md`](状态流转表.md) | 订单与配送任务状态、动作契约和最小履约闭环 |
 | [`项目暂缓风险清单.md`](项目暂缓风险清单.md) | 当前明确暂缓、接受或需要重新评估的风险边界 |

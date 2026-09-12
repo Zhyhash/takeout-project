@@ -1,7 +1,9 @@
 package org.example.takeout.Rider.Service;
 
 import org.example.takeout.Common.Auth.AuthRole;
+import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.LoginRateLimitException;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Rider.DTO.RiderLoginDTO;
@@ -29,6 +31,9 @@ class RiderServiceTest {
 
     @Mock
     private JWTUtils jwtUtils;
+
+    @Mock
+    private LoginAttemptLimiter loginAttemptLimiter;
 
     @InjectMocks
     private RiderService riderService;
@@ -74,6 +79,8 @@ class RiderServiceTest {
         assertEquals("rider-one", result.getName());
         assertEquals("rider-token", result.getToken());
         verify(jwtUtils).createToken(301L, AuthRole.RIDER);
+        verify(loginAttemptLimiter).checkAllowed(AuthRole.RIDER, dto.getName());
+        verify(loginAttemptLimiter).clearFailures(AuthRole.RIDER, dto.getName());
     }
 
     @Test
@@ -84,6 +91,19 @@ class RiderServiceTest {
         assertThrows(BusinessException.class, () -> riderService.login(dto));
 
         verify(jwtUtils, never()).createToken(any(), any());
+        verify(loginAttemptLimiter).recordFailure(AuthRole.RIDER, dto.getName());
+    }
+
+    @Test
+    void loginRecordsFailureWhenRiderDoesNotExist() {
+        RiderLoginDTO dto = loginDTO();
+        when(riderMapper.selectOne(any())).thenReturn(null);
+
+        assertThrows(BusinessException.class, () -> riderService.login(dto));
+
+        verify(loginAttemptLimiter).recordFailure(AuthRole.RIDER, dto.getName());
+        verify(loginAttemptLimiter, never()).clearFailures(anyString(), anyString());
+        verifyNoInteractions(jwtUtils);
     }
 
     @Test
@@ -96,6 +116,35 @@ class RiderServiceTest {
         assertThrows(BusinessException.class, () -> riderService.login(dto));
 
         verify(jwtUtils, never()).createToken(any(), any());
+        verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
+        verify(loginAttemptLimiter).clearFailures(AuthRole.RIDER, dto.getName());
+    }
+
+    @Test
+    void loginClearsCredentialFailuresEvenWhenTokenCreationFails() {
+        RiderLoginDTO dto = loginDTO();
+        when(riderMapper.selectOne(any())).thenReturn(rider("password123"));
+        when(jwtUtils.createToken(301L, AuthRole.RIDER))
+                .thenThrow(new IllegalStateException("token signing failed"));
+
+        assertThrows(IllegalStateException.class, () -> riderService.login(dto));
+
+        verify(loginAttemptLimiter).clearFailures(AuthRole.RIDER, dto.getName());
+        verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
+    }
+
+    @Test
+    void loginStopsBeforeDatabaseWhenRateLimited() {
+        RiderLoginDTO dto = loginDTO();
+        doThrow(new LoginRateLimitException("请求过于频繁"))
+                .when(loginAttemptLimiter)
+                .checkAllowed(AuthRole.RIDER, dto.getName());
+
+        assertThrows(LoginRateLimitException.class, () -> riderService.login(dto));
+
+        verifyNoInteractions(riderMapper, jwtUtils);
+        verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
+        verify(loginAttemptLimiter, never()).clearFailures(anyString(), anyString());
     }
 
     private RiderRegisterDTO registerDTO() {

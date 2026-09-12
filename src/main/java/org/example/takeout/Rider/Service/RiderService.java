@@ -2,6 +2,7 @@ package org.example.takeout.Rider.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.example.takeout.Common.Auth.AuthRole;
+import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
@@ -21,10 +22,13 @@ public class RiderService {
 
     private final RiderMapper riderMapper;
     private final JWTUtils jwtUtils;
+    private final LoginAttemptLimiter loginAttemptLimiter;
 
-    public RiderService(RiderMapper riderMapper, JWTUtils jwtUtils) {
+    public RiderService(RiderMapper riderMapper, JWTUtils jwtUtils,
+                        LoginAttemptLimiter loginAttemptLimiter) {
         this.riderMapper = riderMapper;
         this.jwtUtils = jwtUtils;
+        this.loginAttemptLimiter = loginAttemptLimiter;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -46,12 +50,18 @@ public class RiderService {
     }
 
     public RiderLoginVO login(RiderLoginDTO dto) {
+        loginAttemptLimiter.checkAllowed(AuthRole.RIDER, dto.getName());
+
         Rider rider = riderMapper.selectOne(
                 Wrappers.<Rider>lambdaQuery().eq(Rider::getName, dto.getName())
         );
         if (rider == null || !BCrypt.matches(dto.getPassword(), rider.getPassword())) {
+            loginAttemptLimiter.recordFailure(AuthRole.RIDER, dto.getName());
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手名称或密码错误");
         }
+
+        loginAttemptLimiter.clearFailures(AuthRole.RIDER, dto.getName());
+
         if (!RiderStatusEnum.NORMAL.getCode().equals(rider.getStatus())) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手账号已禁用");
         }
@@ -60,6 +70,7 @@ public class RiderService {
         loginVO.setId(rider.getId());
         loginVO.setName(rider.getName());
         loginVO.setToken(jwtUtils.createToken(rider.getId(), AuthRole.RIDER));
+
         return loginVO;
     }
 }

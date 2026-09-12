@@ -1,8 +1,10 @@
 package org.example.takeout.Product.Service;
 
+import org.example.takeout.CacheInvalidationTask.Service.CacheInvalidationTaskService;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Product.Cache.ProductCacheService;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
@@ -19,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.databind.ObjectMapper;
@@ -35,6 +38,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -62,6 +67,9 @@ class ProductServiceTest {
     @Mock
     private ProductCacheService productCacheService;
 
+    @Mock
+    private CacheInvalidationTaskService cacheInvalidationTaskService;
+
     @InjectMocks
     private ProductService productService;
 
@@ -82,7 +90,28 @@ class ProductServiceTest {
         productService.deleteProduct(PRODUCT_ID);
 
         verify(productMapper).delete(any());
-        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+        String cacheKey = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        InOrder invalidationOrder = inOrder(
+                cacheInvalidationTaskService,
+                productCacheService
+        );
+        invalidationOrder.verify(cacheInvalidationTaskService).createPending(cacheKey);
+        invalidationOrder.verify(productCacheService).delete(cacheKey);
+    }
+
+    @Test
+    void deleteProductKeepsPendingTaskWhenImmediateRedisDeletionFails() {
+        String cacheKey = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        when(productMapper.delete(any())).thenReturn(1);
+        doThrow(new RedisCacheUnavailableException(
+                "Redis unavailable",
+                new IllegalStateException("connection failed")
+        )).when(productCacheService).delete(cacheKey);
+
+        assertDoesNotThrow(() -> productService.deleteProduct(PRODUCT_ID));
+
+        verify(cacheInvalidationTaskService).createPending(cacheKey);
+        verify(productCacheService).delete(cacheKey);
     }
 
     @Test
@@ -91,6 +120,7 @@ class ProductServiceTest {
 
         assertThrows(BusinessException.class, () -> productService.deleteProduct(PRODUCT_ID));
 
+        verify(cacheInvalidationTaskService, never()).createPending(anyString());
         verify(productCacheService, never()).delete(any(String.class));
     }
 
@@ -258,6 +288,81 @@ class ProductServiceTest {
                 anyLong(),
                 eq(TimeUnit.MINUTES)
         );
+    }
+
+    @Test
+    void cacheMissRetriesLockAndRebuildsAfterAcquiringIt() throws Exception {
+        String key = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        String lockKey = "Lock:" + key;
+        Product product = product(ProductStatusEnum.ON_SALE.getCode(), 8, 1);
+        ProductDetailCacheDTO cacheDto = new ProductDetailCacheDTO();
+        cacheDto.setId(PRODUCT_ID);
+        cacheDto.setMerchantId(MERCHANT_ID);
+        cacheDto.setInStock(true);
+        ProductVO productVO = new ProductVO();
+
+        // 首次读取、等待后的读取、重试抢锁后的二次确认都没有缓存。
+        when(productCacheService.get(key)).thenReturn(null);
+        when(productCacheService.tryLock(
+                eq(lockKey), anyString(), eq(10L), eq(TimeUnit.SECONDS)))
+                .thenReturn(false, true);
+        when(productMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        when(productConverter.toProductDetailCacheDTO(product)).thenReturn(cacheDto);
+        when(objectMapper.writeValueAsString(cacheDto)).thenReturn("product-json");
+        when(productConverter.toProductVO(cacheDto)).thenReturn(productVO);
+
+        assertEquals(productVO, productService.getProductDetail(PRODUCT_ID));
+
+        ArgumentCaptor<String> lockTokenCaptor = ArgumentCaptor.forClass(String.class);
+        verify(productCacheService, times(2)).tryLock(
+                eq(lockKey),
+                lockTokenCaptor.capture(),
+                eq(10L),
+                eq(TimeUnit.SECONDS)
+        );
+        assertEquals(
+                lockTokenCaptor.getAllValues().get(0),
+                lockTokenCaptor.getAllValues().get(1)
+        );
+        verify(productCacheService, times(3)).get(key);
+        verify(productMapper, times(1)).selectById(PRODUCT_ID);
+        verify(productCacheService).set(
+                eq(key),
+                eq("product-json"),
+                anyLong(),
+                eq(TimeUnit.MINUTES)
+        );
+        verify(productCacheService).unlock(
+                lockKey,
+                lockTokenCaptor.getAllValues().get(1)
+        );
+    }
+
+    @Test
+    void cacheMissTimesOutWithoutFallingBackToDatabase() {
+        String key = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        String lockKey = "Lock:" + key;
+        when(productCacheService.get(key)).thenReturn(null);
+        when(productCacheService.tryLock(
+                eq(lockKey), anyString(), eq(10L), eq(TimeUnit.SECONDS)))
+                .thenReturn(false);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.getProductDetail(PRODUCT_ID)
+        );
+
+        assertEquals("请求超时，请稍后重试", exception.getMessage());
+        // 首次尝试一次，加上循环中的五次重试。
+        verify(productCacheService, times(6)).get(key);
+        verify(productCacheService, times(6)).tryLock(
+                eq(lockKey),
+                anyString(),
+                eq(10L),
+                eq(TimeUnit.SECONDS)
+        );
+        verify(productCacheService, never()).unlock(anyString(), anyString());
+        verifyNoInteractions(productMapper);
     }
 
     @Test

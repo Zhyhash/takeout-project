@@ -69,6 +69,12 @@ public class GlobalExceptionHandle {
         return Result.error(ResultCodeEnum.UNAUTHORIZED,message);
     }
 
+    @ExceptionHandler(value = LoginRateLimitException.class)
+    public Result<?> loginRateLimitExceptionHandle(LoginRateLimitException e) {
+        log.warn("登录请求触发限流：{}", e.getMessage());
+        return Result.error(ResultCodeEnum.FORBIDDEN, e.getMessage());
+    }
+
     @ExceptionHandler(value = CartItemInvalidException.class)
     public Result<?> CartItemInvalidExceptionHandle(CartItemInvalidException e) {
         String message = e.getMessage();

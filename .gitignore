@@ -13,3 +13,6 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Local Codex mentoring context
+/AGENTS.md
+/REDIS_LEARNING_LOG.md

@@ -49,6 +49,7 @@ public class ProductCacheService {
             redisTemplate.delete(key);
         } catch (Exception e) {
             log.warn("Redis delete failed, key={}", key, e);
+            throw new RedisCacheUnavailableException("Redis删除失败，key=" + key, e);
         }
     }
 
