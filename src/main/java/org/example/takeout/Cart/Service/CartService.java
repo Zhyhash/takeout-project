@@ -1,6 +1,7 @@
 package org.example.takeout.Cart.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.DeleteDTO;
@@ -19,7 +20,6 @@ import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,13 +29,11 @@ import java.util.stream.Collectors;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class CartService {
-    @Autowired
-    private CartMapper cartMapper;
-    @Autowired
-    private ProductMapper productMapper;
-    @Autowired
-    private MerchantMapper merchantMapper;
+    private final CartMapper cartMapper;
+    private final ProductMapper productMapper;
+    private final MerchantMapper merchantMapper;
     //添加
     @Transactional(rollbackFor = Exception.class)
     public CartVO add(AddCartDTO addCartDTO) {
@@ -198,7 +196,7 @@ public class CartService {
         Long userId = UserContextHolder.getUserId();
 
         boolean canBuy = true;
-        String invalidReason = "";
+        StringBuilder invalidReason = new StringBuilder();
 
         List<CartItem> cartItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
                 .eq(CartItem::getUserId, userId));
@@ -213,7 +211,7 @@ public class CartService {
 
         if (merchantIds.size() > 1) {
             canBuy = false;
-            invalidReason+="用户购物车有多商家\n";
+            invalidReason.append("用户购物车有多商家\n");
         }
         Map<Long, Product> productMap = productMapper.selectList(Wrappers.<Product>lambdaQuery()
                         .in(Product::getId, productIds))
@@ -239,14 +237,14 @@ public class CartService {
                 vo.setDisableReason("商家已打烊");
 
                 canBuy = false;
-                if (!invalidReason.contains("商家已打烊\n"))
-                    invalidReason += "商家已打烊\n";
+                if (!invalidReason.toString().contains("商家已打烊\n"))
+                    invalidReason.append("商家已打烊\n");
             }else if (!productValid) {
                 canBuy = false;
                 vo.setAvailable(false);
                 vo.setDisableReason("商品无效");
-                if (!invalidReason.contains("商品不存在或状态无效\n"))
-                    invalidReason += "商品不存在或状态无效\n";
+                if (!invalidReason.toString().contains("商品不存在或状态无效\n"))
+                    invalidReason.append("商品不存在或状态无效\n");
             } else {
                 vo.setAvailable(true);
                 // 只有可用商品才计入总价
@@ -261,7 +259,7 @@ public class CartService {
         result.setItems(allItems);
         result.setTotalAmount(totalAmount);
         result.setCanBuy(canBuy);
-        result.setInvalidReason(invalidReason);
+        result.setInvalidReason(invalidReason.toString());
 
         return result;
     }

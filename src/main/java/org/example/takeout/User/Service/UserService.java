@@ -1,13 +1,11 @@
 package org.example.takeout.User.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import lombok.extern.slf4j.Slf4j;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
-import org.example.takeout.Common.Exception.LoginAttemptStoreException;
-import org.example.takeout.Common.Redis.RedisLoginAttemptStore;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
@@ -19,20 +17,17 @@ import org.example.takeout.User.Mapper.UserMapper;
 import org.example.takeout.User.StatusEnum.UserStatusEnum;
 import org.example.takeout.User.VO.LoginVO;
 import org.jspecify.annotations.NonNull;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.example.takeout.Common.Utils.Tool.Random.random;
 
 @Service
+@RequiredArgsConstructor
 public class UserService {
-    @Autowired
-    private UserMapper userMapper;
-    @Autowired
-    private JWTUtils jwtUtils;
-    @Autowired
-    private LoginAttemptLimiter loginAttemptLimiter;
+    private final UserMapper userMapper;
+    private final JWTUtils jwtUtils;
+    private final LoginAttemptLimiter loginAttemptLimiter;
 
     @Transactional(rollbackFor =  Exception.class)
     public void register(RegisterDTO dto){
@@ -68,6 +63,7 @@ public class UserService {
         }
         boolean matches = BCrypt.matches(loginDTO.getPassword(), user.getPassword());
         if(!matches){
+            //限流
             loginAttemptLimiter.recordFailure(AuthRole.USER, loginDTO.getUsername());
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
         }

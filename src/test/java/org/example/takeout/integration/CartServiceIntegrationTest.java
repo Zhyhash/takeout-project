@@ -2,6 +2,7 @@ package org.example.takeout.integration;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
@@ -43,6 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         "jwt.secret=test-secret-key-at-least-32-characters-long!!",
         "jwt.expire-days=7"
 })
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class CartServiceIntegrationTest {
     public static final Long MERCHANT_A_ID = 1001L;  // 商家A
     public static final Long MERCHANT_B_ID = 1002L;  // 商家B
@@ -70,26 +72,18 @@ public class CartServiceIntegrationTest {
     public static final Long CART_ITEM_3_ID = 6003L;
     public static final Long CART_ITEM_4_ID = 6004L;
 
-    @Autowired
-    CartService cartService;
-    @Autowired
-    CartMapper cartMapper;
-    @Autowired
-    ProductMapper  productMapper;
-    @Autowired
-    private MerchantMapper merchantMapper;
+    final CartService cartService;
+    final CartMapper cartMapper;
+    final ProductMapper productMapper;
+    private final MerchantMapper merchantMapper;
 
-    @Autowired
-    private CategoryMapper categoryMapper;
+    private final CategoryMapper categoryMapper;
 
-    @Autowired
-    private OrderMapper orderMapper;
+    private final OrderMapper orderMapper;
 
-    @Autowired
-    private OrderItemMapper orderItemMapper;
+    private final OrderItemMapper orderItemMapper;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void setUp() {

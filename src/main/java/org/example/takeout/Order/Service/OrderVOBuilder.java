@@ -1,5 +1,6 @@
 package org.example.takeout.Order.Service;
 
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Mapper.OrderConvertor;
@@ -7,7 +8,6 @@ import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderItemVO;
 import org.example.takeout.Order.VO.OrderVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 
@@ -18,11 +18,10 @@ import java.util.stream.Collectors;
 
 //NOTE:构建类，构建对象（Order/OrderItem组装），事实上，这个类可能是多余的，就像我下面写的t odo一样
 @Service
+@RequiredArgsConstructor
 public class OrderVOBuilder {
-    @Autowired
-    private OrderDomainService domain;
-    @Autowired
-    private OrderConvertor orderConvertor;
+    private final OrderDomainService domain;
+    private final OrderConvertor orderConvertor;
     public CreateOrderVO toCreateOrderVO(Order order) {
         CreateOrderVO vo = new CreateOrderVO();
         vo.setOrderNo(order.getOrderNo());

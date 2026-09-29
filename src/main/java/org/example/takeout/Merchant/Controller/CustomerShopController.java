@@ -4,11 +4,11 @@ import com.github.pagehelper.PageInfo;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Positive;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Merchant.Service.MerchantQueryService;
 import org.example.takeout.Merchant.VO.MerchantDetailVO;
 import org.example.takeout.Merchant.VO.MerchantListVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,10 +16,10 @@ import org.springframework.web.bind.annotation.*;
 @Validated
 // 1. 路由重构：明确这是【用户/顾客端】听属的【店铺/商家】查询接口
 @RequestMapping("/api/customer/shops")
+@RequiredArgsConstructor
 public class CustomerShopController {
 
-    @Autowired
-    private MerchantQueryService merchantQueryService;
+    private final MerchantQueryService merchantQueryService;
 
     /**
      * 用户端-浏览/搜索商家列表

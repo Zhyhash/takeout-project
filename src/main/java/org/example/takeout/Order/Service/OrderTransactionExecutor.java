@@ -1,6 +1,7 @@
 package org.example.takeout.Order.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -12,7 +13,6 @@ import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderMapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,17 +21,13 @@ import java.math.BigDecimal;
 import java.util.List;
 
 @Service
+@RequiredArgsConstructor
 public class OrderTransactionExecutor {
-    @Autowired
-    private OrderDomainService orderDomainService;
-    @Autowired
-    private OrderItemService orderItemService;
-    @Autowired
-    private OrderConvertor  orderConvertor;
-    @Autowired
-    private OrderMapper orderMapper;
-    @Autowired
-    private CartMapper cartMapper;
+    private final OrderDomainService orderDomainService;
+    private final OrderItemService orderItemService;
+    private final OrderConvertor orderConvertor;
+    private final OrderMapper orderMapper;
+    private final CartMapper cartMapper;
 
     @Transactional(rollbackFor = Exception.class)
     public Order executeOrderCreation(OrderDataContext orderDataContext, CreateOrderDTO createOrderDTO, Long userId) {

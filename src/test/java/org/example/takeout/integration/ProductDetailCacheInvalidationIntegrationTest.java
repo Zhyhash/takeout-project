@@ -1,5 +1,8 @@
 package org.example.takeout.integration;
 
+import lombok.RequiredArgsConstructor;
+import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
+import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
@@ -22,6 +25,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 
@@ -32,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @ActiveProfiles("redis-test")
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 class ProductDetailCacheInvalidationIntegrationTest {
 
     private static final Long TEST_MERCHANT_ID = 9_021_001L;
@@ -42,23 +49,22 @@ class ProductDetailCacheInvalidationIntegrationTest {
 
     private boolean redisAvailable;
 
-    @Autowired
-    private ProductService productService;
+    private final ProductService productService;
 
-    @Autowired
-    private ProductMapper productMapper;
+    private final ProductMapper productMapper;
 
-    @Autowired
-    private MerchantMapper merchantMapper;
+    private final MerchantMapper merchantMapper;
 
-    @Autowired
-    private CategoryMapper categoryMapper;
+    private final CategoryMapper categoryMapper;
 
-    @Autowired
-    private StringRedisTemplate redisTemplate;
+    private final StringRedisTemplate redisTemplate;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
+
+    private final PlatformTransactionManager transactionManager;
+
+    @MockitoBean
+    private CacheInvalidationTaskScheduler cacheInvalidationTaskScheduler;
 
     @BeforeEach
     void setUp() {
@@ -104,7 +110,15 @@ class ProductDetailCacheInvalidationIntegrationTest {
         UpdateProductDTO update = new UpdateProductDTO();
         update.setPrice(NEW_PRICE);
         update.setVersion(0);
-        productService.updateProduct(TEST_PRODUCT_ID, update);
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        transactionTemplate.executeWithoutResult(ignored -> {
+            productService.updateProduct(TEST_PRODUCT_ID, update);
+
+            assertNotNull(
+                    redisTemplate.opsForValue().get(key),
+                    "业务事务提交前不应删除商品详情缓存"
+            );
+        });
 
         assertEquals(
                 0,
@@ -112,6 +126,14 @@ class ProductDetailCacheInvalidationIntegrationTest {
                         "SELECT price FROM product WHERE id = ?", BigDecimal.class, TEST_PRODUCT_ID))
         );
         assertNull(redisTemplate.opsForValue().get(key));
+        assertEquals(
+                CacheInvalidationTaskStatus.PENDING.getCode(),
+                jdbcTemplate.queryForObject(
+                        "SELECT status FROM cache_invalidation_task WHERE cache_key = ?",
+                        Integer.class,
+                        key
+                )
+        );
 
         // 3. A new Redis miss must return MySQL's new price and repopulate Redis.
         ProductVO secondRead = productService.getProductDetail(TEST_PRODUCT_ID);
@@ -131,6 +153,10 @@ class ProductDetailCacheInvalidationIntegrationTest {
 
     private void deleteTestData() {
         redisTemplate.delete(RedisKeyConstant.PRODUCT_DETAIL + TEST_PRODUCT_ID);
+        jdbcTemplate.update(
+                "DELETE FROM cache_invalidation_task WHERE cache_key = ?",
+                RedisKeyConstant.PRODUCT_DETAIL + TEST_PRODUCT_ID
+        );
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", TEST_MERCHANT_ID);
         jdbcTemplate.update("DELETE FROM category WHERE merchant_id = ?", TEST_MERCHANT_ID);
         merchantMapper.deleteById(TEST_MERCHANT_ID);

@@ -1,21 +1,19 @@
 package org.example.takeout.Common.Redis;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
 @Component
+@RequiredArgsConstructor
 public class RedisOrderIdempotencyStore {
 
     private static final String PROCESSING = "PROCESSING";
     private static final String SUCCEEDED_PREFIX = "SUCCEEDED:";
 
     private final StringRedisTemplate redisTemplate;
-
-    public RedisOrderIdempotencyStore(StringRedisTemplate redisTemplate) {
-        this.redisTemplate = redisTemplate;
-    }
 
     public String get(Long userId, String requestId) {
         return redisTemplate.opsForValue().get(buildKey(userId, requestId));

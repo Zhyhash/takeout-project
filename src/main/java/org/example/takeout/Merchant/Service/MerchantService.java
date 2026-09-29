@@ -1,6 +1,7 @@
 package org.example.takeout.Merchant.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
@@ -25,7 +26,6 @@ import org.example.takeout.Merchant.VO.loginVO;
 import org.example.takeout.Order.Record.MarkReadyResult;
 import org.example.takeout.Order.Service.OrderCommandService;
 import org.jspecify.annotations.NonNull;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,21 +34,15 @@ import org.springframework.transaction.annotation.Transactional;
  * 负责商家的登录、信息更新等业务逻辑
  */
 @Service
+@RequiredArgsConstructor
 public class MerchantService {
-    @Autowired
-    private MerchantMapper merchantMapper;
-    @Autowired
-    private MerchantConverter merchantConverter;
-    @Autowired
-    private JWTUtils jwtUtils;
-    @Autowired
-    private LoginAttemptLimiter loginAttemptLimiter;
-    @Autowired
-    private CategoryMapper categoryMapper;
-    @Autowired
-    private OrderCommandService orderCommandService;
-    @Autowired
-    private DeliveryTaskService deliveryTaskService;
+    private final MerchantMapper merchantMapper;
+    private final MerchantConverter merchantConverter;
+    private final JWTUtils jwtUtils;
+    private final LoginAttemptLimiter loginAttemptLimiter;
+    private final CategoryMapper categoryMapper;
+    private final OrderCommandService orderCommandService;
+    private final DeliveryTaskService deliveryTaskService;
 
     /**
      * 商家登录

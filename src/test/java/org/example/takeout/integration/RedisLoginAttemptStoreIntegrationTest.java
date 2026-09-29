@@ -1,5 +1,6 @@
 package org.example.takeout.integration;
 
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Redis.RedisLoginAttemptStore;
 import org.example.takeout.testsupport.RedisTestSupport;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,17 +18,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest
 @ActiveProfiles("redis-test")
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 class RedisLoginAttemptStoreIntegrationTest {
 
     private static final long SHORTENED_TTL_SECONDS = 30L;
     private static final long FAILURE_WINDOW_SECONDS = 300L;
     private static final int MAX_ATTEMPTS = 5;
 
-    @Autowired
-    private RedisLoginAttemptStore loginAttemptStore;
+    private final RedisLoginAttemptStore loginAttemptStore;
 
-    @Autowired
-    private StringRedisTemplate redisTemplate;
+    private final StringRedisTemplate redisTemplate;
 
     @BeforeEach
     void requireRedis() {

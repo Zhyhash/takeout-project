@@ -1,6 +1,7 @@
 package org.example.takeout.Rider.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Constants.DeleteConstant;
@@ -18,18 +19,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
+@RequiredArgsConstructor
 public class RiderService {
 
     private final RiderMapper riderMapper;
     private final JWTUtils jwtUtils;
     private final LoginAttemptLimiter loginAttemptLimiter;
-
-    public RiderService(RiderMapper riderMapper, JWTUtils jwtUtils,
-                        LoginAttemptLimiter loginAttemptLimiter) {
-        this.riderMapper = riderMapper;
-        this.jwtUtils = jwtUtils;
-        this.loginAttemptLimiter = loginAttemptLimiter;
-    }
 
     @Transactional(rollbackFor = Exception.class)
     public void register(RiderRegisterDTO dto) {

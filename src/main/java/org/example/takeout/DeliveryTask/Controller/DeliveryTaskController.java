@@ -2,11 +2,11 @@ package org.example.takeout.DeliveryTask.Controller;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.DeliveryTask.VO.RiderDeliveryDetailVO;
 import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -15,9 +15,9 @@ import java.util.List;
 @RestController
 @Validated
 @RequestMapping("/rider/delivery-tasks")
+@RequiredArgsConstructor
 public class DeliveryTaskController {
-    @Autowired
-    private DeliveryTaskService deliveryTaskService;
+    private final DeliveryTaskService deliveryTaskService;
 
     @GetMapping("/available")
     public Result<?> getAvailableTasks(

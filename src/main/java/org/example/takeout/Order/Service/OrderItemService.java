@@ -1,5 +1,6 @@
 package org.example.takeout.Order.Service;
 
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
@@ -8,7 +9,6 @@ import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Service.ProductService;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,11 +19,10 @@ import java.util.List;
 import java.util.Map;
 
 @Service
+@RequiredArgsConstructor
 public class OrderItemService {
-    @Autowired
-    private ProductService productService;
-    @Autowired
-    private OrderItemMapper orderItemMapper;
+    private final ProductService productService;
+    private final OrderItemMapper orderItemMapper;
 
     //NOTE:按商品 ID 升序扣减库存，确保并发订单以相同顺序获取商品行锁。
     @Transactional(rollbackFor = Exception.class)

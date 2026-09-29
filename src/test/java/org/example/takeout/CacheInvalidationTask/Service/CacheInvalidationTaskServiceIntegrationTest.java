@@ -1,5 +1,6 @@
 package org.example.takeout.CacheInvalidationTask.Service;
 
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
@@ -14,27 +15,32 @@ import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 @SpringBootTest
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 class CacheInvalidationTaskServiceIntegrationTest {
 
     private static final String CACHE_KEY = "product:detail:transaction-test";
 
-    @Autowired
-    private CacheInvalidationTaskService taskService;
+    private final CacheInvalidationTaskService taskService;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
 
-    @Autowired
-    private PlatformTransactionManager transactionManager;
+    private final PlatformTransactionManager transactionManager;
 
     @MockitoBean
     private ProductCacheService productCacheService;
@@ -65,24 +71,31 @@ class CacheInvalidationTaskServiceIntegrationTest {
     }
 
     @Test
-    void createPendingRejectsCallWithoutExistingTransaction() {
+    void requestInvalidationRejectsCallWithoutExistingTransaction() {
         assertThrows(
                 IllegalTransactionStateException.class,
-                () -> taskService.createPending(CACHE_KEY)
+                () -> taskService.requestInvalidation(CACHE_KEY)
         );
 
         assertEquals(0, taskCount());
+        verify(productCacheService, never()).delete(anyString());
     }
 
     @Test
-    void createPendingCommitsWithOuterTransaction() {
+    void requestInvalidationCommitsTaskAndDeletesCacheOnlyAfterOuterCommit() {
         TransactionTemplate transactionTemplate =
                 new TransactionTemplate(transactionManager);
+        LocalDateTime beforeRequest = LocalDateTime.now();
 
-        transactionTemplate.executeWithoutResult(
-                ignored -> taskService.createPending(CACHE_KEY)
-        );
+        transactionTemplate.executeWithoutResult(ignored -> {
+            taskService.requestInvalidation(CACHE_KEY);
 
+            assertEquals(1, taskCount());
+            assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
+            verify(productCacheService, never()).delete(CACHE_KEY);
+        });
+
+        verify(productCacheService).delete(CACHE_KEY);
         assertEquals(1, taskCount());
         assertEquals(
                 CACHE_KEY,
@@ -105,10 +118,9 @@ class CacheInvalidationTaskServiceIntegrationTest {
                         Integer.class
                 )
         );
-        assertNotNull(jdbcTemplate.queryForObject(
-                "SELECT next_retry_time FROM cache_invalidation_task",
-                LocalDateTime.class
-        ));
+        LocalDateTime nextRetryTime = nextRetryTime();
+        assertNotNull(nextRetryTime);
+        assertTrue(nextRetryTime.isAfter(beforeRequest.plusSeconds(10)));
         assertNotNull(jdbcTemplate.queryForObject(
                 "SELECT created_time FROM cache_invalidation_task",
                 LocalDateTime.class
@@ -116,20 +128,22 @@ class CacheInvalidationTaskServiceIntegrationTest {
     }
 
     @Test
-    void createPendingRollsBackWithOuterTransaction() {
+    void requestInvalidationRollsBackWithOuterTransactionWithoutDeletingCache() {
         TransactionTemplate transactionTemplate =
                 new TransactionTemplate(transactionManager);
 
         transactionTemplate.executeWithoutResult(status -> {
-            taskService.createPending(CACHE_KEY);
+            taskService.requestInvalidation(CACHE_KEY);
+            verify(productCacheService, never()).delete(CACHE_KEY);
             status.setRollbackOnly();
         });
 
         assertEquals(0, taskCount());
+        verify(productCacheService, never()).delete(anyString());
     }
 
     @Test
-    void businessWriteAndOutboxRollBackTogether() {
+    void businessWriteAndOutboxRollBackTogetherWithoutDeletingCache() {
         TransactionTemplate transactionTemplate =
                 new TransactionTemplate(transactionManager);
 
@@ -139,12 +153,60 @@ class CacheInvalidationTaskServiceIntegrationTest {
                     1,
                     "business-change"
             );
-            taskService.createPending(CACHE_KEY);
+            taskService.requestInvalidation(CACHE_KEY);
             status.setRollbackOnly();
         });
 
         assertEquals(0, businessWriteCount());
         assertEquals(0, taskCount());
+        verify(productCacheService, never()).delete(anyString());
+    }
+
+    @Test
+    void requestInvalidationKeepsCommittedTaskPendingWhenFastDeleteFails() {
+        RedisCacheUnavailableException redisFailure =
+                new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
+        doThrow(redisFailure).when(productCacheService).delete(CACHE_KEY);
+        TransactionTemplate transactionTemplate =
+                new TransactionTemplate(transactionManager);
+
+        assertDoesNotThrow(() -> transactionTemplate.executeWithoutResult(ignored -> {
+            jdbcTemplate.update(
+                    "INSERT INTO cache_invalidation_business_write_test (id, business_value) VALUES (?, ?)",
+                    1,
+                    "business-change"
+            );
+            taskService.requestInvalidation(CACHE_KEY);
+        }));
+
+        verify(productCacheService).delete(CACHE_KEY);
+        assertEquals(1, businessWriteCount());
+        assertEquals(1, taskCount());
+        assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
+        assertEquals(0, retryCount());
+    }
+
+    @Test
+    void pendingWorkerDeletesAgainAndMarksTaskSuccessAfterFastDelete() {
+        TransactionTemplate transactionTemplate =
+                new TransactionTemplate(transactionManager);
+        transactionTemplate.executeWithoutResult(
+                ignored -> taskService.requestInvalidation(CACHE_KEY)
+        );
+
+        verify(productCacheService).delete(CACHE_KEY);
+        assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
+
+        jdbcTemplate.update(
+                "UPDATE cache_invalidation_task SET next_retry_time = ? WHERE cache_key = ?",
+                LocalDateTime.now().minusSeconds(1),
+                CACHE_KEY
+        );
+        taskService.retryPendingTasks();
+
+        verify(productCacheService, times(2)).delete(CACHE_KEY);
+        assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus());
+        assertEquals(0, retryCount());
     }
 
     @Test
@@ -157,24 +219,187 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
         taskService.retryPendingTasks();
 
+        verify(productCacheService).delete(CACHE_KEY);
         assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus());
         assertEquals(0, retryCount());
     }
 
     @Test
-    void retryPendingTasksRecordsFailuresAndMarksTaskFailedAfterFifthAttempt() {
+    void retryPendingTasksDoesNotExecutePendingTaskBeforeItsRetryTime() {
+        LocalDateTime nextRetryTime = LocalDateTime.now().plusMinutes(1);
+        insertTask(
+                CacheInvalidationTaskStatus.PENDING.getCode(),
+                0,
+                nextRetryTime
+        );
+
+        taskService.retryPendingTasks();
+
+        verify(productCacheService, never()).delete(CACHE_KEY);
+        assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
+        assertEquals(0, retryCount());
+        assertTrue(nextRetryTime().isAfter(LocalDateTime.now()));
+    }
+
+    @Test
+    void retryPendingTasksIgnoresSuccessfulAndFailedTasks() {
+        String successKey = CACHE_KEY + ":already-success";
+        String failedKey = CACHE_KEY + ":already-failed";
+        insertTask(
+                successKey,
+                CacheInvalidationTaskStatus.SUCCESS.getCode(),
+                3,
+                LocalDateTime.now().minusSeconds(1)
+        );
+        insertTask(
+                failedKey,
+                CacheInvalidationTaskStatus.FAILED.getCode(),
+                6,
+                LocalDateTime.now().minusSeconds(1)
+        );
+
+        taskService.retryPendingTasks();
+
+        verify(productCacheService, never()).delete(anyString());
+        assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus(successKey));
+        assertEquals(3, retryCount(successKey));
+        assertEquals(CacheInvalidationTaskStatus.FAILED.getCode(), taskStatus(failedKey));
+        assertEquals(6, retryCount(failedKey));
+    }
+
+    @Test
+    void retryPendingTasksDoesNotOverwriteStatusChangedByAnotherThread() {
+        insertTask(
+                CacheInvalidationTaskStatus.PENDING.getCode(),
+                0,
+                LocalDateTime.now().minusSeconds(1)
+        );
+
+        // 模拟 Redis 删除期间，另一个线程已经把任务改成 FAILED。
+        doAnswer(invocation -> {
+            jdbcTemplate.update(
+                    "UPDATE cache_invalidation_task SET status = ?, retry_count = ? WHERE cache_key = ?",
+                    CacheInvalidationTaskStatus.FAILED.getCode(),
+                    99,
+                    CACHE_KEY
+            );
+            return null;
+        }).when(productCacheService).delete(CACHE_KEY);
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> taskService.retryPendingTasks()
+        );
+
+        assertTrue(exception.getMessage().contains("affectedRows=0"));
+        assertEquals(CacheInvalidationTaskStatus.FAILED.getCode(), taskStatus());
+        assertEquals(99, retryCount());
+    }
+
+    @Test
+    void retryPendingTasksContinuesAfterOneRedisDeleteFails() {
+        String failedKey = CACHE_KEY + ":batch-failed";
+        String succeedingKey = CACHE_KEY + ":batch-succeeding";
+        RedisCacheUnavailableException redisFailure =
+                new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
+        doAnswer(invocation -> {
+            if (failedKey.equals(invocation.getArgument(0, String.class))) {
+                throw redisFailure;
+            }
+            return null;
+        }).when(productCacheService).delete(anyString());
+
+        insertTask(
+                failedKey,
+                CacheInvalidationTaskStatus.PENDING.getCode(),
+                0,
+                LocalDateTime.now().minusSeconds(1)
+        );
+        insertTask(
+                succeedingKey,
+                CacheInvalidationTaskStatus.PENDING.getCode(),
+                0,
+                LocalDateTime.now().minusSeconds(1)
+        );
+
+        taskService.retryPendingTasks();
+
+        verify(productCacheService).delete(failedKey);
+        verify(productCacheService).delete(succeedingKey);
+        assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus(failedKey));
+        assertEquals(1, retryCount(failedKey));
+        assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus(succeedingKey));
+        assertEquals(0, retryCount(succeedingKey));
+    }
+
+    @Test
+    void retryPendingTasksUsesExpectedShortPeriodBackoffSequenceAndKeepsTimeOnSixthFailure() {
+        RedisCacheUnavailableException redisFailure =
+                new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
+        doThrow(redisFailure).when(productCacheService).delete(CACHE_KEY);
+        insertTask(
+                CacheInvalidationTaskStatus.PENDING.getCode(),
+                0,
+                LocalDateTime.now().minusSeconds(1)
+        );
+
+        int[] expectedBackoffSeconds = {10, 30, 60, 120, 300};
+        for (int expectedBackoff : expectedBackoffSeconds) {
+            LocalDateTime beforeRetry = LocalDateTime.now();
+
+            taskService.retryPendingTasks();
+
+            LocalDateTime actualNextRetryTime = nextRetryTime();
+            long actualBackoffSeconds = Duration.between(
+                    beforeRetry,
+                    actualNextRetryTime
+            ).getSeconds();
+            assertTrue(
+                    actualBackoffSeconds >= expectedBackoff - 1
+                            && actualBackoffSeconds <= expectedBackoff + 1,
+                    "expected approximately " + expectedBackoff
+                            + " seconds, but was " + actualBackoffSeconds
+            );
+            assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
+
+            // 模拟等待到下一个重试窗口，进入下一档退避时间。
+            jdbcTemplate.update(
+                    "UPDATE cache_invalidation_task SET next_retry_time = ? WHERE cache_key = ?",
+                    LocalDateTime.now().minusSeconds(1),
+                    CACHE_KEY
+            );
+        }
+
+        assertEquals(5, retryCount());
+
+        // 第六次失败会转为 FAILED，但不再计算新的 next_retry_time。
+        jdbcTemplate.update(
+                "UPDATE cache_invalidation_task SET next_retry_time = ? WHERE cache_key = ?",
+                LocalDateTime.now().minusSeconds(1),
+                CACHE_KEY
+        );
+        LocalDateTime nextRetryTimeBeforeSixthFailure = nextRetryTime();
+
+        taskService.retryPendingTasks();
+
+        assertEquals(CacheInvalidationTaskStatus.FAILED.getCode(), taskStatus());
+        assertEquals(6, retryCount());
+        assertEquals(nextRetryTimeBeforeSixthFailure, nextRetryTime());
+    }
+
+    @Test
+    void retryPendingTasksRecordsFailuresAndMarksTaskFailedAfterSixthAttempt() {
         RedisCacheUnavailableException redisFailure =
                 new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
         doThrow(redisFailure).when(productCacheService).delete(CACHE_KEY);
 
-        LocalDateTime retryTime = LocalDateTime.now().minusSeconds(1);
-        jdbcTemplate.update("""
-                INSERT INTO cache_invalidation_task
-                    (cache_key, status, retry_count, next_retry_time)
-                VALUES (?, ?, ?, ?)
-                """, CACHE_KEY, CacheInvalidationTaskStatus.PENDING.getCode(), 0, retryTime);
+        insertTask(
+                CacheInvalidationTaskStatus.PENDING.getCode(),
+                0,
+                LocalDateTime.now().minusSeconds(1)
+        );
 
-        for (int attempt = 1; attempt <= 5; attempt++) {
+        for (int attempt = 1; attempt <= 6; attempt++) {
             // 每次把任务重新置为到期，模拟定时任务在下一个重试窗口再次执行。
             jdbcTemplate.update(
                     "UPDATE cache_invalidation_task SET next_retry_time = ? WHERE cache_key = ?",
@@ -193,7 +418,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
                     )
             );
             assertEquals(
-                    attempt < 5
+                    attempt < 6
                             ? CacheInvalidationTaskStatus.PENDING.getCode()
                             : CacheInvalidationTaskStatus.FAILED.getCode(),
                     jdbcTemplate.queryForObject(
@@ -242,34 +467,55 @@ class CacheInvalidationTaskServiceIntegrationTest {
     }
 
     private void insertTask(Integer status, int retryCount, LocalDateTime nextRetryTime) {
+        insertTask(CACHE_KEY, status, retryCount, nextRetryTime);
+    }
+
+    private void insertTask(
+            String cacheKey,
+            Integer status,
+            int retryCount,
+            LocalDateTime nextRetryTime
+    ) {
         jdbcTemplate.update("""
                 INSERT INTO cache_invalidation_task
                     (cache_key, status, retry_count, next_retry_time)
                 VALUES (?, ?, ?, ?)
-                """, CACHE_KEY, status, retryCount, nextRetryTime);
+                """, cacheKey, status, retryCount, nextRetryTime);
     }
 
     private int taskStatus() {
+        return taskStatus(CACHE_KEY);
+    }
+
+    private int taskStatus(String cacheKey) {
         return jdbcTemplate.queryForObject(
                 "SELECT status FROM cache_invalidation_task WHERE cache_key = ?",
                 Integer.class,
-                CACHE_KEY
+                cacheKey
         );
     }
 
     private int retryCount() {
+        return retryCount(CACHE_KEY);
+    }
+
+    private int retryCount(String cacheKey) {
         return jdbcTemplate.queryForObject(
                 "SELECT retry_count FROM cache_invalidation_task WHERE cache_key = ?",
                 Integer.class,
-                CACHE_KEY
+                cacheKey
         );
     }
 
     private LocalDateTime nextRetryTime() {
+        return nextRetryTime(CACHE_KEY);
+    }
+
+    private LocalDateTime nextRetryTime(String cacheKey) {
         return jdbcTemplate.queryForObject(
                 "SELECT next_retry_time FROM cache_invalidation_task WHERE cache_key = ?",
                 LocalDateTime.class,
-                CACHE_KEY
+                cacheKey
         );
     }
 

@@ -1,19 +1,19 @@
 package org.example.takeout.Order.Service;
 
 import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Record.MarkReadyResult;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
+@RequiredArgsConstructor
 public class OrderCommandService {
-    @Autowired
-    private OrderMapper orderMapper;
+    private final OrderMapper orderMapper;
 
     public void acceptOrderByMerchant(@NonNull Long orderId, Long merchantId){
         int rows = orderMapper.updateOrderStatusToPreparing(

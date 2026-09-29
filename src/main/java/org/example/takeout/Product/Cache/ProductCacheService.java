@@ -40,6 +40,8 @@ public class ProductCacheService {
         try {
             redisTemplate.opsForValue().set(key, value, ttl, timeUnit);
         } catch (Exception e) {
+            // TODO 后续统一缓存访问层的异常契约：set 也转换为 RedisCacheUnavailableException，
+            // 并在 ProductService 的缓存回填调用处局部捕获，避免触发外层降级而重复查询 MySQL。
             log.warn("Redis set failed, key={}", key, e);
         }
     }

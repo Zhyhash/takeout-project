@@ -2,6 +2,7 @@ package org.example.takeout.integration;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
@@ -33,6 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 class DeliveryTaskLifecycleIntegrationTest {
 
     private static final long TASK_ID = 501L;
@@ -41,17 +43,13 @@ class DeliveryTaskLifecycleIntegrationTest {
     private static final long RIDER_B_ID = 302L;
     private static final Duration CONCURRENT_TIMEOUT = Duration.ofSeconds(10);
 
-    @Autowired
-    private WebApplicationContext webApplicationContext;
+    private final WebApplicationContext webApplicationContext;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
 
-    @Autowired
-    private DeliveryTaskService deliveryTaskService;
+    private final DeliveryTaskService deliveryTaskService;
 
-    @Autowired
-    private JWTUtils jwtUtils;
+    private final JWTUtils jwtUtils;
 
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 

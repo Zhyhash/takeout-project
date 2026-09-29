@@ -3,13 +3,13 @@ package org.example.takeout.Cart.Controller;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.DeleteDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Cart.Service.CartService;
 import org.example.takeout.Common.Result.Result;
 import org.hibernate.validator.constraints.UniqueElements;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,9 +19,9 @@ import java.util.List;
 @RestController
 @Validated
 @RequestMapping("/cart/items")//直接上购物车商品资源，后续都不需要额外路径了
+@RequiredArgsConstructor
 public class CartController {
-    @Autowired
-    private CartService cartService;
+    private final CartService cartService;
     //增加
     @PostMapping
     public Result<?> add(@RequestBody @Valid AddCartDTO addCartDTO) {

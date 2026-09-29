@@ -1,5 +1,8 @@
 package org.example.takeout.api;
 
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.context.WebApplicationContext;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
@@ -17,6 +20,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class CartOrderApiTest extends AbstractMockMvcApiTest {
+
+    @Autowired
+    CartOrderApiTest(JWTUtils jwtUtils, WebApplicationContext webApplicationContext) {
+        super(jwtUtils, webApplicationContext);
+    }
 
     @Test
     void addCartItemReturnsCartItem() throws Exception {
@@ -257,6 +265,20 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data.orderId").value(501))
                 .andExpect(jsonPath("$.data.orderNo").value("ORD-TEST-001"));
+    }
+
+    @Test
+    void createOrderStopsBeforeServiceWhenRateLimited() throws Exception {
+        when(orderCreateRateLimiter.tryAcquire(101L)).thenReturn(false);
+
+        mockMvc.perform(post("/order")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(orderDTO())))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(1001));
+
+        verify(orderService, never()).createOrder(any(CreateOrderDTO.class));
     }
 
     @Test

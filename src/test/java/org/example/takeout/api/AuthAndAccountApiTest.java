@@ -1,5 +1,8 @@
 package org.example.takeout.api;
 
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.context.WebApplicationContext;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
@@ -22,6 +25,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
+
+    @Autowired
+    AuthAndAccountApiTest(JWTUtils jwtUtils, WebApplicationContext webApplicationContext) {
+        super(jwtUtils, webApplicationContext);
+    }
 
     @Test
     void userRegisterReturnsSuccess() throws Exception {

@@ -1,6 +1,7 @@
 package org.example.takeout.Rider.Controller;
 
 import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Rider.DTO.RiderLoginDTO;
 import org.example.takeout.Rider.DTO.RiderRegisterDTO;
@@ -13,13 +14,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/rider")
+@RequiredArgsConstructor
 public class RiderController {
 
     private final RiderService riderService;
-
-    public RiderController(RiderService riderService) {
-        this.riderService = riderService;
-    }
 
     @PostMapping("/register")
     public Result<?> register(@RequestBody @Valid RiderRegisterDTO dto) {

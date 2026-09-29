@@ -11,15 +11,6 @@ public interface CacheInvalidationTaskMapper extends BaseMapper<CacheInvalidatio
     @Update("""
             UPDATE cache_invalidation_task
             SET status = 1
-            WHERE cache_key = #{cacheKey}
-              AND status = #{status}
-            """)
-    int updatePendingToSuccess(@Param("cacheKey") String cacheKey,
-                               @Param("status") Integer status);
-
-    @Update("""
-            UPDATE cache_invalidation_task
-            SET status = 1
             WHERE id = #{id}
               AND status = #{status}
             """)
@@ -28,13 +19,12 @@ public interface CacheInvalidationTaskMapper extends BaseMapper<CacheInvalidatio
 
     @Update("""
             UPDATE cache_invalidation_task
-            SET retry_count = retry_count + 1,
-                status = CASE
-                    WHEN retry_count >= 4 THEN #{failedStatus}
+            SET status = CASE
+                    WHEN retry_count >= 5 THEN #{failedStatus}
                     ELSE #{pendingStatus}
                 END,
                 next_retry_time = CASE
-                    WHEN retry_count >= 4 THEN next_retry_time
+                    WHEN retry_count >= 5 THEN next_retry_time
                     ELSE TIMESTAMPADD(
                         SECOND,
                         CASE retry_count
@@ -42,10 +32,12 @@ public interface CacheInvalidationTaskMapper extends BaseMapper<CacheInvalidatio
                             WHEN 1 THEN 30
                             WHEN 2 THEN 60
                             WHEN 3 THEN 120
+                            ELSE 300
                         END,
                         CURRENT_TIMESTAMP
                     )
-                END
+                END,
+                retry_count = retry_count + 1
             WHERE id = #{id}
               AND status = #{status}
             """)

@@ -2,6 +2,7 @@ package org.example.takeout.Common.Redis;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.Getter;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
@@ -11,7 +12,6 @@ import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Order.Service.OrderVOBuilder;
 import org.example.takeout.Order.VO.CreateOrderVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
@@ -20,11 +20,10 @@ import java.time.Duration;
 import static org.example.takeout.Common.Redis.RedisIdempotencyState.StateType.SUCCEEDED;
 
 @Service
+@RequiredArgsConstructor
 public class RedisOrderCreationExperiment {
-    @Autowired
-    private OrderMapper orderMapper;
-    @Autowired
-    private OrderVOBuilder orderVOBuilder;
+    private final OrderMapper orderMapper;
+    private final OrderVOBuilder orderVOBuilder;
 
     private static final Duration PROCESSING_TTL =
             Duration.ofSeconds(10);
@@ -35,14 +34,6 @@ public class RedisOrderCreationExperiment {
     private final RedisOrderIdempotencyStore idempotencyStore;
     @Getter
     private final OrderService orderService;
-
-    public RedisOrderCreationExperiment(
-            RedisOrderIdempotencyStore idempotencyStore,
-            OrderService orderService
-    ) {
-        this.idempotencyStore = idempotencyStore;
-        this.orderService = orderService;
-    }
 
     public CreateOrderVO createOrder(CreateOrderDTO dto) {
         Long userId = UserContextHolder.getUserId();

@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS `product` (
     `stock` int NOT NULL COMMENT '库存数量',
     `merchant_id` bigint NOT NULL COMMENT '所属商家ID',
     `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除: 0-未删除, 1-已删除',
+    `active_name_guard` tinyint GENERATED ALWAYS AS (
+        CASE WHEN `is_deleted` = 0 THEN 1 ELSE NULL END
+    ) STORED COMMENT '仅用于约束未删除商品名称唯一',
     `status` tinyint NOT NULL DEFAULT 1 COMMENT '商品状态: 0-在售, 1-下架, 2-售罄',
     `description` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品描述',
     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -76,7 +79,8 @@ CREATE TABLE IF NOT EXISTS `product` (
     PRIMARY KEY (`id`) USING BTREE,
     INDEX `idx_category_id` (`category_id` ASC) USING BTREE,
     INDEX `idx_merchant_id` (`merchant_id` ASC) USING BTREE,
-    UNIQUE INDEX `uk_merchant_product` (`merchant_id`, `product_name`) USING BTREE,
+    UNIQUE INDEX `uk_merchant_product_active`
+        (`merchant_id`, `product_name`, `active_name_guard`) USING BTREE,
     CONSTRAINT `fk_product_category`
         FOREIGN KEY (`category_id`) REFERENCES `category` (`id`)
         ON DELETE RESTRICT ON UPDATE RESTRICT

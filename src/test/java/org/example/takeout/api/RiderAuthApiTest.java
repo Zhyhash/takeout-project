@@ -1,5 +1,8 @@
 package org.example.takeout.api;
 
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.context.WebApplicationContext;
 import org.example.takeout.Rider.DTO.RiderLoginDTO;
 import org.example.takeout.Rider.DTO.RiderRegisterDTO;
 import org.example.takeout.Rider.VO.RiderLoginVO;
@@ -13,6 +16,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class RiderAuthApiTest extends AbstractMockMvcApiTest {
+
+    @Autowired
+    RiderAuthApiTest(JWTUtils jwtUtils, WebApplicationContext webApplicationContext) {
+        super(jwtUtils, webApplicationContext);
+    }
 
     @Test
     void riderRegisterIsPublicAndReturnsSuccess() throws Exception {

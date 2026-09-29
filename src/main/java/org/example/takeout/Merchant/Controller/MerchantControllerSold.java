@@ -4,6 +4,7 @@ import com.github.pagehelper.PageInfo;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
@@ -15,7 +16,6 @@ import org.example.takeout.Merchant.VO.MerchantOrderDetailVO;
 import org.example.takeout.Merchant.VO.MerchantOrderListVO;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -26,12 +26,11 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @Validated
 @RequestMapping("/merchant")
+@RequiredArgsConstructor
 public class MerchantControllerSold {
     
-    @Autowired
-    private MerchantService merchantService;
-    @Autowired
-    private MerchantOrderQueryService merchantOrderQueryService;
+    private final MerchantService merchantService;
+    private final MerchantOrderQueryService merchantOrderQueryService;
     @PostMapping("/register")
     public Result<?> register(@Valid  @RequestBody MerchantRegisterDTO dto){
         merchantService.register(dto);

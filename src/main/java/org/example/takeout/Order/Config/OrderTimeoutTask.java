@@ -1,10 +1,10 @@
 package org.example.takeout.Order.Config;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderService;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -15,11 +15,10 @@ import java.util.List;
 @Component
 @Slf4j
 @ConditionalOnProperty(prefix = "order.timeout", name = "enabled", havingValue = "true", matchIfMissing = true)
+@RequiredArgsConstructor
 public class OrderTimeoutTask {
-    @Autowired
-    private OrderMapper orderMapper;
-    @Autowired
-    private OrderService orderService;
+    private final OrderMapper orderMapper;
+    private final OrderService orderService;
 
     @Scheduled(
             fixedDelayString = "${order.timeout.scan-interval-ms:60000}",

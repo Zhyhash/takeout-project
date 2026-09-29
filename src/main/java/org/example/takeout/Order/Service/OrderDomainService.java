@@ -1,6 +1,7 @@
 package org.example.takeout.Order.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
@@ -9,7 +10,6 @@ import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Product.Entity.Product;
 import org.jspecify.annotations.NonNull;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -19,10 +19,10 @@ import java.util.UUID;
 
 //NOTE:校验类
 @Service
+@RequiredArgsConstructor
 public class OrderDomainService {
     //NOTE:全局方法：数据库校验抽取
-    @Autowired
-    private OrderMapper orderMapper;
+    private final OrderMapper orderMapper;
 
     public Order getOrder(Long orderId, Long userId) {
         Order order = orderMapper.selectOne(Wrappers.<Order>lambdaQuery()

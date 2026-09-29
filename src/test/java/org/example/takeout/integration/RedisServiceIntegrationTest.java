@@ -1,6 +1,7 @@
 package org.example.takeout.integration;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -46,6 +47,7 @@ import static org.mockito.Mockito.anyString;
 
 @SpringBootTest
 @ActiveProfiles("redis-test")
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class RedisServiceIntegrationTest {
     private static final Long TEST_USER_ID = 9_001_001L;
     private static final Long TEST_OTHER_USER_ID = 9_001_002L;
@@ -56,30 +58,21 @@ public class RedisServiceIntegrationTest {
     private static final Long TEST_CART_ID_MILK = 9_004_002L;
     private static final Long TEST_CATEGORY_ID = 9_005_001L;
 
-    @Autowired
-    private MerchantMapper merchantMapper;
+    private final MerchantMapper merchantMapper;
 
+    private final ProductMapper productMapper;
 
-    @Autowired
-    private ProductMapper productMapper;
+    private final CartMapper cartMapper;
 
-    @Autowired
-    private CartMapper cartMapper;
+    private final OrderMapper orderMapper;
 
-    @Autowired
-    private OrderMapper orderMapper;
+    private final OrderItemMapper orderItemMapper;
 
-    @Autowired
-    private OrderItemMapper orderItemMapper;
+    private final RedisOrderCreationExperiment redisOrderCreationExperiment;
 
-    @Autowired
-    private RedisOrderCreationExperiment redisOrderCreationExperiment;
+    private final JdbcTemplate jdbcTemplate;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
-
-    @Autowired
-    private StringRedisTemplate redisTemplate;
+    private final StringRedisTemplate redisTemplate;
 
     @MockitoSpyBean
     private RedisOrderIdempotencyStore redisOrderIdempotencyStore;

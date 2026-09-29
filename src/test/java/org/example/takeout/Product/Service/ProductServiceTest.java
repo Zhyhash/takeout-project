@@ -4,11 +4,11 @@ import org.example.takeout.CacheInvalidationTask.Service.CacheInvalidationTaskSe
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Common.Exception.BusinessException;
-import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Product.Cache.ProductCacheService;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
 import org.example.takeout.Product.Cache.RedisKeyConstant;
+import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductConverter;
@@ -21,9 +21,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
-import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
@@ -37,9 +40,8 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -68,6 +70,12 @@ class ProductServiceTest {
     private ProductCacheService productCacheService;
 
     @Mock
+    private StringRedisTemplate redisTemplate;
+
+    @Mock
+    private ValueOperations<String, String> valueOperations;
+
+    @Mock
     private CacheInvalidationTaskService cacheInvalidationTaskService;
 
     @InjectMocks
@@ -84,34 +92,15 @@ class ProductServiceTest {
     }
 
     @Test
-    void deleteProductLogicallyDeletesOwnedProductAndEvictsCache() {
+    void deleteProductLogicallyDeletesOwnedProductAndRequestsCacheInvalidation() {
         when(productMapper.delete(any())).thenReturn(1);
 
         productService.deleteProduct(PRODUCT_ID);
 
         verify(productMapper).delete(any());
         String cacheKey = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
-        InOrder invalidationOrder = inOrder(
-                cacheInvalidationTaskService,
-                productCacheService
-        );
-        invalidationOrder.verify(cacheInvalidationTaskService).createPending(cacheKey);
-        invalidationOrder.verify(productCacheService).delete(cacheKey);
-    }
-
-    @Test
-    void deleteProductKeepsPendingTaskWhenImmediateRedisDeletionFails() {
-        String cacheKey = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
-        when(productMapper.delete(any())).thenReturn(1);
-        doThrow(new RedisCacheUnavailableException(
-                "Redis unavailable",
-                new IllegalStateException("connection failed")
-        )).when(productCacheService).delete(cacheKey);
-
-        assertDoesNotThrow(() -> productService.deleteProduct(PRODUCT_ID));
-
-        verify(cacheInvalidationTaskService).createPending(cacheKey);
-        verify(productCacheService).delete(cacheKey);
+        verify(cacheInvalidationTaskService).requestInvalidation(cacheKey);
+        verify(productCacheService, never()).delete(cacheKey);
     }
 
     @Test
@@ -120,8 +109,35 @@ class ProductServiceTest {
 
         assertThrows(BusinessException.class, () -> productService.deleteProduct(PRODUCT_ID));
 
-        verify(cacheInvalidationTaskService, never()).createPending(anyString());
+        verify(cacheInvalidationTaskService, never()).requestInvalidation(anyString());
         verify(productCacheService, never()).delete(any(String.class));
+    }
+
+    @Test
+    void createProductReportsDuplicateActiveNameAsBusinessError() {
+        Category category = new Category();
+        category.setId(1L);
+
+        CreateProductDTO dto = new CreateProductDTO();
+        dto.setCategoryId(category.getId());
+        dto.setProductName("可乐");
+
+        Product product = new Product();
+        product.setProductName(dto.getProductName());
+
+        when(categoryMapper.selectOne(any())).thenReturn(category);
+        when(productConverter.toProduct(dto, MERCHANT_ID)).thenReturn(product);
+        doThrow(new DuplicateKeyException("duplicate active product name"))
+                .when(productMapper)
+                .insert(product);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.createProduct(dto)
+        );
+
+        assertEquals("当前店铺已存在同名商品", exception.getMessage());
+        verify(productMapper).insert(product);
     }
 
     @Test
@@ -144,6 +160,9 @@ class ProductServiceTest {
 
         assertDoesNotThrow(() -> productService.onShelf(PRODUCT_ID));
         assertEquals(ProductStatusEnum.SALE_OUT.getCode(), product.getStatus());
+        verify(cacheInvalidationTaskService).requestInvalidation(
+                RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID
+        );
     }
 
     @Test
@@ -162,7 +181,9 @@ class ProductServiceTest {
                 PRODUCT_ID, 2,
                 ProductStatusEnum.SALE_OUT.getCode(),
                 ProductStatusEnum.ON_SALE.getCode());
-        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+        verify(cacheInvalidationTaskService).requestInvalidation(
+                RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID
+        );
     }
 
     @Test
@@ -177,7 +198,7 @@ class ProductServiceTest {
 
         productService.increaseStock(PRODUCT_ID, 2);
 
-        verify(productCacheService, never()).delete(any(String.class));
+        verify(cacheInvalidationTaskService, never()).requestInvalidation(anyString());
     }
 
     @Test
@@ -200,6 +221,9 @@ class ProductServiceTest {
         productService.updateProduct(PRODUCT_ID, dto);
 
         assertEquals(ProductStatusEnum.SALE_OUT.getCode(), updateEntity.getStatus());
+        verify(cacheInvalidationTaskService).requestInvalidation(
+                RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID
+        );
     }
 
     @Test
@@ -291,6 +315,54 @@ class ProductServiceTest {
     }
 
     @Test
+    void cacheWriteFailureStillReturnsLoadedProductWithoutSecondDatabaseQuery() throws Exception {
+        String key = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        Product product = product(ProductStatusEnum.ON_SALE.getCode(), 8, 1);
+        ProductDetailCacheDTO cacheDto = new ProductDetailCacheDTO();
+        cacheDto.setId(PRODUCT_ID);
+        cacheDto.setMerchantId(MERCHANT_ID);
+        cacheDto.setInStock(true);
+        ProductVO productVO = new ProductVO();
+
+        useProductCacheWithFailingWriter(key, "product-json");
+        when(productMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        when(productConverter.toProductDetailCacheDTO(product)).thenReturn(cacheDto);
+        when(objectMapper.writeValueAsString(cacheDto)).thenReturn("product-json");
+        when(productConverter.toProductVO(cacheDto)).thenReturn(productVO);
+
+        assertEquals(productVO, productService.getProductDetail(PRODUCT_ID));
+
+        verify(productMapper, times(1)).selectById(PRODUCT_ID);
+        verify(valueOperations).set(
+                eq(key),
+                eq("product-json"),
+                anyLong(),
+                eq(TimeUnit.MINUTES)
+        );
+    }
+
+    @Test
+    void nullMarkerWriteFailureStillReportsMissingProductWithoutSecondDatabaseQuery() {
+        String key = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
+        useProductCacheWithFailingWriter(key, NULL_PRODUCT_CACHE);
+        when(productMapper.selectById(PRODUCT_ID)).thenReturn(null);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.getProductDetail(PRODUCT_ID)
+        );
+
+        assertEquals("商品不存在", exception.getMessage());
+        verify(productMapper, times(1)).selectById(PRODUCT_ID);
+        verify(valueOperations).set(
+                eq(key),
+                eq(NULL_PRODUCT_CACHE),
+                anyLong(),
+                eq(TimeUnit.MINUTES)
+        );
+    }
+
+    @Test
     void cacheMissRetriesLockAndRebuildsAfterAcquiringIt() throws Exception {
         String key = RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID;
         String lockKey = "Lock:" + key;
@@ -374,7 +446,9 @@ class ProductServiceTest {
 
         productService.decreaseStock(PRODUCT_ID, 1);
 
-        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+        verify(cacheInvalidationTaskService).requestInvalidation(
+                RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID
+        );
     }
 
     @Test
@@ -386,23 +460,88 @@ class ProductServiceTest {
 
         productService.decreaseStock(PRODUCT_ID, 1);
 
-        verify(productCacheService, never()).delete(any(String.class));
+        verify(cacheInvalidationTaskService, never()).requestInvalidation(anyString());
     }
 
     @Test
-    void restoreProductForcesOffSaleStatus() {
+    void restoreProductRestoresOffSaleAndRequestsCacheInvalidation() {
         when(productMapper.restoreDeletedProduct(
                 PRODUCT_ID,
                 MERCHANT_ID,
-                ProductStatusEnum.OFF_SALE.getCode())).thenReturn(1);
+                ProductStatusEnum.OFF_SALE.getCode()
+        )).thenReturn(1);
 
         productService.restoreProduct(PRODUCT_ID);
 
         verify(productMapper).restoreDeletedProduct(
                 PRODUCT_ID,
                 MERCHANT_ID,
-                ProductStatusEnum.OFF_SALE.getCode());
-        verify(productCacheService).delete(RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID);
+                ProductStatusEnum.OFF_SALE.getCode()
+        );
+        verify(cacheInvalidationTaskService).requestInvalidation(
+                RedisKeyConstant.PRODUCT_DETAIL + PRODUCT_ID
+        );
+    }
+
+    @Test
+    void restoreProductReportsDuplicateActiveNameAsBusinessError() {
+        doThrow(new DuplicateKeyException("duplicate active product name"))
+                .when(productMapper)
+                .restoreDeletedProduct(
+                        PRODUCT_ID,
+                        MERCHANT_ID,
+                        ProductStatusEnum.OFF_SALE.getCode()
+                );
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.restoreProduct(PRODUCT_ID)
+        );
+
+        assertEquals("当前店铺已存在同名商品", exception.getMessage());
+        verify(cacheInvalidationTaskService, never()).requestInvalidation(anyString());
+    }
+
+    @Test
+    void restoreProductRejectsMissingActiveOrForeignProduct() {
+        when(productMapper.restoreDeletedProduct(
+                PRODUCT_ID,
+                MERCHANT_ID,
+                ProductStatusEnum.OFF_SALE.getCode()
+        )).thenReturn(0);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.restoreProduct(PRODUCT_ID)
+        );
+
+        assertEquals("商品不存在、未删除或不属于当前商家", exception.getMessage());
+        verify(cacheInvalidationTaskService, never()).requestInvalidation(anyString());
+    }
+
+    private void useProductCacheWithFailingWriter(String cacheKey, String cacheValue) {
+        String lockKey = "Lock:" + cacheKey;
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(cacheKey)).thenReturn(null);
+        when(valueOperations.setIfAbsent(
+                eq(lockKey),
+                anyString(),
+                eq(10L),
+                eq(TimeUnit.SECONDS)
+        )).thenReturn(true);
+        doThrow(new IllegalStateException("Redis write failed"))
+                .when(valueOperations)
+                .set(
+                        eq(cacheKey),
+                        eq(cacheValue),
+                        anyLong(),
+                        eq(TimeUnit.MINUTES)
+                );
+        ReflectionTestUtils.setField(
+                productService,
+                "productCacheService",
+                new ProductCacheService(redisTemplate)
+        );
     }
 
     private Product product(Integer status, Integer stock, Integer version) {

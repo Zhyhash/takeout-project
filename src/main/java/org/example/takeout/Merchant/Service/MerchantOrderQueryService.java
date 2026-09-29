@@ -3,6 +3,7 @@ package org.example.takeout.Merchant.Service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
@@ -18,7 +19,6 @@ import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderDomainService;
 import org.example.takeout.Order.VO.OrderItemVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -30,18 +30,14 @@ import java.util.stream.Collectors;
  * 商家订单查询。所有查询都按当前登录商家的 ID 过滤，避免跨店读取订单和收货信息。
  */
 @Service
+@RequiredArgsConstructor
 public class MerchantOrderQueryService {
 
-    @Autowired
-    private OrderMapper orderMapper;
-    @Autowired
-    private OrderItemMapper orderItemMapper;
-    @Autowired
-    private MerchantOrderConverter merchantOrderConverter;
-    @Autowired
-    private OrderConvertor orderConvertor;
-    @Autowired
-    private OrderDomainService orderDomainService;
+    private final OrderMapper orderMapper;
+    private final OrderItemMapper orderItemMapper;
+    private final MerchantOrderConverter merchantOrderConverter;
+    private final OrderConvertor orderConvertor;
+    private final OrderDomainService orderDomainService;
 
     public PageInfo<MerchantOrderListVO> listOrders(MerchantOrderListType type,
                                                      Integer pageNum,

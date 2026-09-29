@@ -5,28 +5,39 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Positive;
+import lombok.RequiredArgsConstructor;
+import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.Result;
+import org.example.takeout.Common.Result.ResultCodeEnum;
+import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
+import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
+import org.example.takeout.Order.Service.OrderItemService;
 import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @Validated
 @RequestMapping("/order")
+@RequiredArgsConstructor
 public class OrderController {
-    @Autowired
-    private OrderService orderService;
+    private final OrderService orderService;
+    private final OrderCreateRateLimiter orderCreateRateLimiter;
 
     /**
      * 创建订单
      * */
     @PostMapping
     public Result<?> create(@RequestBody @Valid CreateOrderDTO createOrderDTO){
+        if (!orderCreateRateLimiter.tryAcquire(UserContextHolder.getUserId())) {
+            throw new BusinessException(ResultCodeEnum.RATE_LIMIT_EXCEEDED,"操作过于频繁，请稍后再试");
+        }
+
+
         CreateOrderVO createOrderVO = orderService.createOrder(createOrderDTO);
         return Result.success(createOrderVO);
     }

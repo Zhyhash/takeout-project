@@ -1,5 +1,8 @@
 package org.example.takeout.api;
 
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.context.WebApplicationContext;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
@@ -20,6 +23,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class CategoryProductApiTest extends AbstractMockMvcApiTest {
+
+    @Autowired
+    CategoryProductApiTest(JWTUtils jwtUtils, WebApplicationContext webApplicationContext) {
+        super(jwtUtils, webApplicationContext);
+    }
 
     @Test
     void listCategoriesReturnsCurrentMerchantCategories() throws Exception {
@@ -415,6 +423,8 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", merchantBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS));
+
+        verify(productService).restoreProduct(301L);
     }
 
     @Test
@@ -428,11 +438,38 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
+    void restoreProductReturnsNameConflictMessage() throws Exception {
+        doThrow(businessError("当前店铺已存在同名商品"))
+                .when(productService).restoreProduct(301L);
+
+        mockMvc.perform(post("/merchant/restore/301")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(BUSINESS_ERROR))
+                .andExpect(jsonPath("$.message").value("当前店铺已存在同名商品"));
+    }
+
+    @Test
     void restoreProductRejectsNonPositiveId() throws Exception {
         mockMvc.perform(post("/merchant/restore/0")
                         .header("Authorization", merchantBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    @Test
+    void restoreProductRejectsMissingToken() throws Exception {
+        mockMvc.perform(post("/merchant/restore/301"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(UNAUTHORIZED));
+    }
+
+    @Test
+    void restoreProductRejectsUserToken() throws Exception {
+        mockMvc.perform(post("/merchant/restore/301")
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(UNAUTHORIZED));
     }
 
     private CreateProductDTO productDTO() {

@@ -1,6 +1,7 @@
 package org.example.takeout.integration;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
@@ -40,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
         "jwt.secret=test-secret-key-at-least-32-characters-long!!",
         "jwt.expire-days=7"
 })
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class OptimisticLockIntegrationTest {
 
     private static final Long TEST_USER_ID = 9_001_001L;
@@ -49,29 +51,21 @@ public class OptimisticLockIntegrationTest {
     private static final Long TEST_CART_ID_MILK = 9_004_002L;
     private static final Long TEST_CATEGORY_ID = 9_005_001L;
 
-    @Autowired
-    private OrderService orderService;
+    private final OrderService orderService;
 
-    @Autowired
-    private OrderMapper orderMapper;
+    private final OrderMapper orderMapper;
 
-    @Autowired
-    private OrderItemMapper orderItemMapper;
+    private final OrderItemMapper orderItemMapper;
 
-    @Autowired
-    private ProductMapper productMapper;
+    private final ProductMapper productMapper;
 
-    @Autowired
-    private ProductService productService;
+    private final ProductService productService;
 
-    @Autowired
-    private CartMapper cartMapper;
+    private final CartMapper cartMapper;
 
-    @Autowired
-    private MerchantMapper merchantMapper;
+    private final MerchantMapper merchantMapper;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void setUp() {

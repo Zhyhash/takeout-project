@@ -22,8 +22,9 @@ public class GlobalExceptionHandle {
     @ExceptionHandler(value = BusinessException.class)
     public Result<?> BusinessExceptionHandle(BusinessException e) {
         String message = e.getMessage();
+        ResultCodeEnum codeEnum = e.getCodeEnum();
         log.warn("业务异常：{}", message);
-        return Result.error(ResultCodeEnum.BUSINESS_ERROR,message);
+        return Result.error(codeEnum,message);
     }
 
     @ExceptionHandler(value = MethodArgumentNotValidException.class)

@@ -2,6 +2,7 @@ package org.example.takeout.api;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Service.CartService;
 import org.example.takeout.Cart.VO.CartListVO;
 import org.example.takeout.Cart.VO.CartVO;
@@ -17,6 +18,7 @@ import org.example.takeout.Merchant.Service.MerchantQueryService;
 import org.example.takeout.Merchant.Service.MerchantService;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
+import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
 import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
@@ -28,7 +30,6 @@ import org.example.takeout.User.Service.UserService;
 import org.example.takeout.User.VO.LoginVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -46,6 +47,7 @@ import static org.mockito.Mockito.reset;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 @SpringBootTest
+@RequiredArgsConstructor
 abstract class AbstractMockMvcApiTest {
 
     static final int SUCCESS = 200;
@@ -58,11 +60,9 @@ abstract class AbstractMockMvcApiTest {
 
     protected final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
-    @Autowired
-    private JWTUtils jwtUtils;
+    private final JWTUtils jwtUtils;
 
-    @Autowired
-    private WebApplicationContext webApplicationContext;
+    private final WebApplicationContext webApplicationContext;
 
     @MockitoBean
     protected UserService userService;
@@ -86,6 +86,9 @@ abstract class AbstractMockMvcApiTest {
     protected OrderService orderService;
 
     @MockitoBean
+    protected OrderCreateRateLimiter orderCreateRateLimiter;
+
+    @MockitoBean
     protected DeliveryTaskService deliveryTaskService;
 
     @MockitoBean
@@ -98,12 +101,14 @@ abstract class AbstractMockMvcApiTest {
     void setUpMockMvcAndValidationDefaults() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
         lenient().when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any())).thenReturn(0);
+        lenient().when(orderCreateRateLimiter.tryAcquire(anyLong())).thenReturn(true);
     }
 
     @AfterEach
     void resetMocks() {
         reset(userService, merchantService, merchantQueryService, categoryService,
-                productService, cartService, orderService, deliveryTaskService, riderService, jdbcTemplate);
+                productService, cartService, orderService, orderCreateRateLimiter,
+                deliveryTaskService, riderService, jdbcTemplate);
     }
 
     protected String json(Object value) throws JsonProcessingException {

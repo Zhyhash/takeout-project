@@ -3,15 +3,15 @@ package org.example.takeout.Common.CustomAnnotation;
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
 import lombok.Data;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 @Component
 @Data
+@RequiredArgsConstructor
 public class UniquePhoneValidator implements ConstraintValidator<UniquePhone, String> {
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
 
     private String targetTable;
 

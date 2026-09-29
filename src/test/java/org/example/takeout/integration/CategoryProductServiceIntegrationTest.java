@@ -1,5 +1,7 @@
 package org.example.takeout.integration;
 
+import lombok.RequiredArgsConstructor;
+import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.Service.CategoryService;
@@ -9,13 +11,16 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Product.DTO.CreateProductDTO;
+import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.Service.ProductService;
+import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.dataFactory.TestDataFactory;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.math.BigDecimal;
 import java.util.concurrent.CountDownLatch;
@@ -33,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.*;
         "jwt.secret=test-secret-key-at-least-32-characters-long!!",
         "jwt.expire-days=7"
 })
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 class CategoryProductServiceIntegrationTest {
 
     private static final Long TEST_MERCHANT_ID = 9_005_001L;
@@ -40,20 +46,20 @@ class CategoryProductServiceIntegrationTest {
     private static final Long TARGET_CATEGORY_ID = 9_006_002L;
     private static final String TEST_PRODUCT_NAME = "并发测试商品";
 
-    @Autowired
-    private CategoryService categoryService;
+    private final CategoryService categoryService;
 
-    @Autowired
-    private ProductService productService;
+    private final ProductService productService;
 
-    @Autowired
-    private CategoryMapper categoryMapper;
+    private final ProductMapper productMapper;
 
-    @Autowired
-    private MerchantMapper merchantMapper;
+    private final CategoryMapper categoryMapper;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final MerchantMapper merchantMapper;
+
+    private final JdbcTemplate jdbcTemplate;
+
+    @MockitoBean
+    private CacheInvalidationTaskScheduler cacheInvalidationTaskScheduler;
 
     @BeforeEach
     void setUp() {
@@ -84,6 +90,139 @@ class CategoryProductServiceIntegrationTest {
         assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, blankImageProduct.getImageUrl());
         assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, productImageUrl("default_null"));
         assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, productImageUrl("default_blank"));
+    }
+
+    @Test
+    void createProductCanReuseDeletedNameAcrossMultipleLifecycles() {
+        MerchantProductVO first = productService.createProduct(
+                createProductDTO("可乐", "https://example.test/cola-1.png"));
+        assertEquals(1, productMapper.deleteById(first.getId()));
+
+        MerchantProductVO second = productService.createProduct(
+                createProductDTO("可乐", "https://example.test/cola-2.png"));
+        assertEquals(1, productMapper.deleteById(second.getId()));
+
+        MerchantProductVO third = productService.createProduct(
+                createProductDTO("可乐", "https://example.test/cola-3.png"));
+
+        assertNotEquals(first.getId(), second.getId());
+        assertNotEquals(second.getId(), third.getId());
+        assertEquals(3, productCountIncludingDeleted("可乐"));
+        assertEquals(1, activeProductCount("可乐"));
+        assertEquals(third.getId(), activeProductId("可乐"));
+    }
+
+    @Test
+    void createProductRejectsDuplicateActiveName() {
+        productService.createProduct(
+                createProductDTO("雪碧", "https://example.test/sprite-1.png"));
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.createProduct(
+                        createProductDTO("雪碧", "https://example.test/sprite-2.png"))
+        );
+
+        assertEquals("当前店铺已存在同名商品", exception.getMessage());
+        assertEquals(1, productCountIncludingDeleted("雪碧"));
+        assertEquals(1, activeProductCount("雪碧"));
+    }
+
+    @Test
+    void restoreProductReactivatesOriginalRecordAndOccupiesActiveName() {
+        MerchantProductVO deleted = productService.createProduct(
+                createProductDTO("芬达", "https://example.test/fanta.png"));
+        assertEquals(1, productMapper.deleteById(deleted.getId()));
+
+        productService.restoreProduct(deleted.getId());
+
+        assertEquals(0, productDeletedFlag(deleted.getId()));
+        assertEquals(ProductStatusEnum.OFF_SALE.getCode(), productStatus(deleted.getId()));
+        assertEquals(deleted.getId(), activeProductId("芬达"));
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.createProduct(
+                        createProductDTO("芬达", "https://example.test/fanta-new.png"))
+        );
+        assertEquals("当前店铺已存在同名商品", exception.getMessage());
+    }
+
+    @Test
+    void restoreProductRejectsNameUsedByNewActiveProduct() {
+        MerchantProductVO deleted = productService.createProduct(
+                createProductDTO("橙汁", "https://example.test/orange-old.png"));
+        assertEquals(1, productMapper.deleteById(deleted.getId()));
+        MerchantProductVO active = productService.createProduct(
+                createProductDTO("橙汁", "https://example.test/orange-new.png"));
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> productService.restoreProduct(deleted.getId())
+        );
+
+        assertEquals("当前店铺已存在同名商品", exception.getMessage());
+        assertEquals(1, productDeletedFlag(deleted.getId()));
+        assertEquals(active.getId(), activeProductId("橙汁"));
+        assertEquals(1, activeProductCount("橙汁"));
+    }
+
+    @Test
+    void concurrentRestoreOfDeletedSameNameAllowsExactlyOneWinner()
+            throws InterruptedException {
+        MerchantProductVO first = productService.createProduct(
+                createProductDTO("柠檬茶", "https://example.test/lemon-1.png"));
+        assertEquals(1, productMapper.deleteById(first.getId()));
+        MerchantProductVO second = productService.createProduct(
+                createProductDTO("柠檬茶", "https://example.test/lemon-2.png"));
+        assertEquals(1, productMapper.deleteById(second.getId()));
+
+        CountDownLatch readyLatch = new CountDownLatch(2);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+
+        Thread firstRestore = restoreThread(
+                "restore-first-product",
+                first.getId(),
+                readyLatch,
+                startLatch,
+                firstFailure
+        );
+        Thread secondRestore = restoreThread(
+                "restore-second-product",
+                second.getId(),
+                readyLatch,
+                startLatch,
+                secondFailure
+        );
+
+        firstRestore.start();
+        secondRestore.start();
+        assertTrue(readyLatch.await(5, TimeUnit.SECONDS), "恢复线程未在规定时间内准备就绪");
+        startLatch.countDown();
+        firstRestore.join(10_000);
+        secondRestore.join(10_000);
+
+        assertFalse(firstRestore.isAlive(), "第一个恢复线程未在规定时间内结束");
+        assertFalse(secondRestore.isAlive(), "第二个恢复线程未在规定时间内结束");
+
+        int successCount = 0;
+        int conflictCount = 0;
+        for (Throwable failure : new Throwable[]{firstFailure.get(), secondFailure.get()}) {
+            if (failure == null) {
+                successCount++;
+                continue;
+            }
+            BusinessException conflict = assertInstanceOf(BusinessException.class, failure);
+            assertEquals("当前店铺已存在同名商品", conflict.getMessage());
+            conflictCount++;
+        }
+
+        assertEquals(1, successCount);
+        assertEquals(1, conflictCount);
+        assertEquals(2, productCountIncludingDeleted("柠檬茶"));
+        assertEquals(1, activeProductCount("柠檬茶"));
     }
 
 
@@ -217,6 +356,80 @@ class CategoryProductServiceIntegrationTest {
                 TEST_MERCHANT_ID,
                 productName
         );
+    }
+
+    private int productCountIncludingDeleted(String productName) {
+        return jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM product WHERE merchant_id = ? AND product_name = ?",
+                Integer.class,
+                TEST_MERCHANT_ID,
+                productName
+        );
+    }
+
+    private int activeProductCount(String productName) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM product
+                WHERE merchant_id = ?
+                  AND product_name = ?
+                  AND is_deleted = 0
+                """,
+                Integer.class,
+                TEST_MERCHANT_ID,
+                productName
+        );
+    }
+
+    private Long activeProductId(String productName) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT id
+                FROM product
+                WHERE merchant_id = ?
+                  AND product_name = ?
+                  AND is_deleted = 0
+                """,
+                Long.class,
+                TEST_MERCHANT_ID,
+                productName
+        );
+    }
+
+    private int productDeletedFlag(Long productId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT is_deleted FROM product WHERE id = ?",
+                Integer.class,
+                productId
+        );
+    }
+
+    private int productStatus(Long productId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT status FROM product WHERE id = ?",
+                Integer.class,
+                productId
+        );
+    }
+
+    private Thread restoreThread(String name,
+                                 Long productId,
+                                 CountDownLatch readyLatch,
+                                 CountDownLatch startLatch,
+                                 AtomicReference<Throwable> failure) {
+        return new Thread(() -> {
+            MerchantContextHolder.setMerchantId(TEST_MERCHANT_ID);
+            try {
+                readyLatch.countDown();
+                startLatch.await();
+                productService.restoreProduct(productId);
+            } catch (Throwable throwable) {
+                failure.set(throwable);
+            } finally {
+                MerchantContextHolder.clear();
+            }
+        }, name);
     }
 
     private void deleteTestData() {

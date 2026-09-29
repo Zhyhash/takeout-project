@@ -12,11 +12,13 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -45,6 +47,23 @@ class ProductCacheServiceTest {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
         productCacheService.set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
+
+        verify(valueOperations).set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
+    }
+
+    @Test
+    void setDoesNotPropagateRedisFailureBecauseCachePopulationIsBestEffort() {
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        doThrow(new IllegalStateException("Redis write failed"))
+                .when(valueOperations)
+                .set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
+
+        assertDoesNotThrow(() -> productCacheService.set(
+                "product:1",
+                "{\"id\":1}",
+                60,
+                TimeUnit.MINUTES
+        ));
 
         verify(valueOperations).set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
     }

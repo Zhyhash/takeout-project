@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
@@ -23,7 +24,6 @@ import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Rider.Entity.Rider;
 import org.example.takeout.Rider.Enums.RiderStatusEnum;
 import org.example.takeout.Rider.Mapper.RiderMapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -36,17 +36,13 @@ import java.util.stream.Collectors;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class DeliveryTaskService {
-    @Autowired
-    private DeliveryTaskMapper deliveryTaskMapper;
-    @Autowired
-    private OrderMapper orderMapper;
-    @Autowired
-    private RiderMapper riderMapper;
-    @Autowired
-    private DeliveryTaskConverter deliveryTaskConverter;
-    @Autowired
-    private DeliveryFeeCalculator  deliveryFeeCalculator;
+    private final DeliveryTaskMapper deliveryTaskMapper;
+    private final OrderMapper orderMapper;
+    private final RiderMapper riderMapper;
+    private final DeliveryTaskConverter deliveryTaskConverter;
+    private final DeliveryFeeCalculator deliveryFeeCalculator;
 
     @Transactional(rollbackFor = Exception.class)
     public void claimTask(Long taskId){

@@ -2,6 +2,10 @@ package org.example.takeout.Common.Result;
 
 import lombok.Getter;
 
+import java.util.Arrays;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 @Getter
 public enum ResultCodeEnum {
     UNKNOWN_ERROR(-1,"未知异常"),
@@ -17,6 +21,8 @@ public enum ResultCodeEnum {
     FORBIDDEN(403, "无权限"),
 
     BUSINESS_ERROR(500, "业务异常"),
+
+    RATE_LIMIT_EXCEEDED(1001, "操作过于频繁，请稍后再试"),
 
     SERVER_ERROR(5000, "服务器异常");
 

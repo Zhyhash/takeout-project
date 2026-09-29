@@ -2,6 +2,8 @@ package org.example.takeout.integration;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -25,6 +27,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -51,18 +54,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "jwt.secret=test-secret-key-at-least-32-characters-long!!",
         "jwt.expire-days=7"
 })
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 class MysqlApiIntegrationTest {
 
     private static final String PASSWORD = "password123";
 
-    @Autowired
-    private WebApplicationContext webApplicationContext;
+    private final WebApplicationContext webApplicationContext;
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
 
-    @Autowired
-    private DeliveryTaskService deliveryTaskService;
+    private final DeliveryTaskService deliveryTaskService;
+
+    @MockitoBean
+    private CacheInvalidationTaskScheduler cacheInvalidationTaskScheduler;
 
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
@@ -920,6 +924,21 @@ class MysqlApiIntegrationTest {
     }
 
     private void recreateSchema() {
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS `cache_invalidation_task` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `cache_key` varchar(255) NOT NULL,
+                    `status` tinyint NOT NULL DEFAULT 0,
+                    `retry_count` int NOT NULL DEFAULT 0,
+                    `next_retry_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `created_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    INDEX `idx_status_created_time` (`status`, `created_time`)
+                ) ENGINE = InnoDB CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci
+                """);
+        jdbcTemplate.update("DELETE FROM cache_invalidation_task");
+
         jdbcTemplate.execute("drop table if exists delivery_task");
         jdbcTemplate.execute("drop table if exists rider");
         jdbcTemplate.execute("drop table if exists order_item");
@@ -994,6 +1013,9 @@ class MysqlApiIntegrationTest {
                     `stock` int NOT NULL COMMENT '库存数量',
                     `merchant_id` bigint NOT NULL COMMENT '所属商家ID',
                     `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除: 0-未删除, 1-已删除',
+                    `active_name_guard` tinyint GENERATED ALWAYS AS (
+                        CASE WHEN `is_deleted` = 0 THEN 1 ELSE NULL END
+                    ) STORED COMMENT '仅用于约束未删除商品名称唯一',
                     `status` tinyint NOT NULL DEFAULT 0 COMMENT '商品状态',
                     `description` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品描述',
                     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -1002,8 +1024,8 @@ class MysqlApiIntegrationTest {
                     PRIMARY KEY (`id`) USING BTREE,
                     INDEX `idx_category_id` (`category_id` ASC) USING BTREE,
                     INDEX `idx_merchant_id` (`merchant_id` ASC) USING BTREE,
-                    -- 添加联合唯一索引
-                    UNIQUE INDEX `uk_merchant_product` (`merchant_id`, `product_name`) USING BTREE,
+                    UNIQUE INDEX `uk_merchant_product_active`
+                        (`merchant_id`, `product_name`, `active_name_guard`) USING BTREE,
                     -- 添加外键约束
                     CONSTRAINT `fk_product_category`
                     FOREIGN KEY (`category_id`) REFERENCES `category` (`id`)

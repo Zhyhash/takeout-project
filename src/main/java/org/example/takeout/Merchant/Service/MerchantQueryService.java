@@ -3,6 +3,7 @@ package org.example.takeout.Merchant.Service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -18,7 +19,6 @@ import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.Product.VO.ProductVO;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -31,15 +31,12 @@ import java.util.stream.Collectors;
 
 //NOTE：只负责“查商家数据”（用户端也属于查询）
 @Service
+@RequiredArgsConstructor
 public class MerchantQueryService {
-    @Autowired
-    private MerchantMapper merchantMapper;
-    @Autowired
-    private ProductMapper productMapper;
-    @Autowired
-    private CategoryMapper categoryMapper;
-    @Autowired
-    private MerchantConverter merchantConverter;
+    private final MerchantMapper merchantMapper;
+    private final ProductMapper productMapper;
+    private final CategoryMapper categoryMapper;
+    private final MerchantConverter merchantConverter;
     //NOTE:抽取方法，将Merchant->MerchantListVO
     public PageInfo<MerchantListVO> toMerchantListVO(List<Merchant> merchants){
         return merchantConverter.toPageInfoVO(new PageInfo<>(merchants));

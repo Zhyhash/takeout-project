@@ -1,6 +1,7 @@
 package org.example.takeout.Cart.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
@@ -11,7 +12,6 @@ import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -19,18 +19,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 @Service
+@RequiredArgsConstructor
 public class cartDomainService {
     /**
      * 获取当前用户购物车中【可下单】的商品列表
      * 规则：商品状态上架 && 商家营业（未打烊）
      * 注意：不删除任何购物车记录，只是过滤
      */
-    @Autowired
-    private MerchantMapper merchantMapper;
-    @Autowired
-    private CartMapper cartMapper;
-    @Autowired
-    private ProductMapper productMapper;
+    private final MerchantMapper merchantMapper;
+    private final CartMapper cartMapper;
+    private final ProductMapper productMapper;
     public CartAvailableResult getAvailableCartItems(Long userId) {
         List<CartItem> allItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
                 .eq(CartItem::getUserId, userId));

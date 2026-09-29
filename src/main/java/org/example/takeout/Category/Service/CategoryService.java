@@ -2,6 +2,7 @@ package org.example.takeout.Category.Service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryConverter;
 import org.example.takeout.Category.Mapper.CategoryMapper;
@@ -14,7 +15,6 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,13 +23,11 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class CategoryService {
-    @Autowired
-    private CategoryMapper categoryMapper;
-    @Autowired
-    private ProductMapper productMapper;
-    @Autowired
-    private CategoryConverter categoryConverter;
+    private final CategoryMapper categoryMapper;
+    private final ProductMapper productMapper;
+    private final CategoryConverter categoryConverter;
 
     // NOTE:商户查自己所有可用分类（用于创建商品时的下拉框）
     //抽取方法，专注业务逻辑

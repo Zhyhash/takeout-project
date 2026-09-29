@@ -1,5 +1,6 @@
 package org.example.takeout.integration;
 
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.testsupport.RedisTestSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,10 +21,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 @ActiveProfiles("redis-test")
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 class RedisBasicIntegrationTest {
 
-    @Autowired
-    private StringRedisTemplate stringRedisTemplate;
+    private final StringRedisTemplate stringRedisTemplate;
 
     @BeforeEach
     void requireRedis() {

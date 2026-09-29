@@ -1,5 +1,8 @@
 package org.example.takeout.api;
 
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.context.WebApplicationContext;
 import com.github.pagehelper.PageInfo;
 import org.example.takeout.DeliveryTask.VO.RiderDeliveryDetailVO;
 import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
@@ -16,6 +19,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class DeliveryTaskApiTest extends AbstractMockMvcApiTest {
+
+    @Autowired
+    DeliveryTaskApiTest(JWTUtils jwtUtils, WebApplicationContext webApplicationContext) {
+        super(jwtUtils, webApplicationContext);
+    }
 
     @Test
     void availableTasksReturnsPage() throws Exception {

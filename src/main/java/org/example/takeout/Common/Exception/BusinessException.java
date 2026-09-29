@@ -6,11 +6,14 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 @Getter
 public class BusinessException extends RuntimeException {
 
-    private final Integer code;
+    private final ResultCodeEnum codeEnum;
 
     public BusinessException(ResultCodeEnum codeEnum, String message) {
         super(message);
-        this.code = codeEnum.getCode();
+        this.codeEnum = codeEnum;
     }
 
+    public Integer getCode() {
+        return codeEnum.getCode();
+    }
 }

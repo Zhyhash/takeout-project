@@ -2,6 +2,7 @@ package org.example.takeout.CacheInvalidationTask.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.CacheInvalidationTask.Entity.CacheInvalidationTask;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
 import org.example.takeout.CacheInvalidationTask.Mapper.CacheInvalidationTaskMapper;
@@ -10,42 +11,33 @@ import org.example.takeout.Product.Cache.ProductCacheService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class CacheInvalidationTaskService {
 
 
     private final CacheInvalidationTaskMapper cacheInvalidationTaskMapper;
     private final ProductCacheService productCacheService;
 
-    @Transactional(propagation = Propagation.MANDATORY)
-    public void createPending(String cacheKey) {
+
+    private void createPending(String cacheKey) {
         CacheInvalidationTask task = new CacheInvalidationTask();
         task.setCacheKey(cacheKey);
         task.setStatus(CacheInvalidationTaskStatus.PENDING.getCode());
         task.setRetryCount(0);
-        task.setNextRetryTime(LocalDateTime.now());
+        task.setNextRetryTime(LocalDateTime.now().plusSeconds(15));
 
         cacheInvalidationTaskMapper.insert(task);
 
     }
-    @Transactional(propagation = Propagation.MANDATORY)
-    public void markPendingTasksSuccess(String cacheKey) {
-        int rows = cacheInvalidationTaskMapper.updatePendingToSuccess(
-                cacheKey,
-                CacheInvalidationTaskStatus.PENDING.getCode()
-        );
-        //TODO：此处等一下处理，更新key的时候可能有多个匹配项，我们保证最终一致性，对于1~x都有可能
-        if (rows == 0) {
-            throw new IllegalStateException(
-                    "缓存失效任务状态更新失败，cacheKey=" + cacheKey + ", affectedRows=" + rows
-            );
-        }
-    }
+
 
     public void retryPendingTasks() {
         List<CacheInvalidationTask> cacheInvalidationTasks = cacheInvalidationTaskMapper.selectList(Wrappers.<CacheInvalidationTask>lambdaQuery().
@@ -110,5 +102,21 @@ public class CacheInvalidationTaskService {
                 }
             }
         }
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void requestInvalidation(String cacheKey){
+        createPending(cacheKey);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                //快速删除减少窗口
+                try {
+                    productCacheService.delete(cacheKey);
+                } catch (RedisCacheUnavailableException e) {
+                    log.error("提交后立即删除缓存失败，cacheKey={}", cacheKey, e);
+                }
+            }
+        });
     }
 }

@@ -3,6 +3,7 @@ package org.example.takeout.Order.Service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Service.cartDomainService;
@@ -22,7 +23,6 @@ import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Entity.Product;
 import org.jspecify.annotations.NonNull;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,23 +32,15 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class OrderService {
-    @Autowired
-    private OrderDomainService orderDomainService;
-    @Autowired
-    private OrderTransactionExecutor orderTransactionExecutor;
-    @Autowired
-    private OrderItemService orderItemService;
-    @Autowired
-    private OrderItemMapper orderItemMapper;
-    @Autowired
-    private OrderMapper orderMapper;
-    @Autowired
-    private OrderVOBuilder orderVOBuilder;
-    @Autowired
-    private cartDomainService cartDomainService;
-
-
+    private final OrderDomainService orderDomainService;
+    private final OrderTransactionExecutor orderTransactionExecutor;
+    private final OrderItemService orderItemService;
+    private final OrderItemMapper orderItemMapper;
+    private final OrderMapper orderMapper;
+    private final OrderVOBuilder orderVOBuilder;
+    private final cartDomainService cartDomainService;
 
     public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO) {
         Long userId = UserContextHolder.getUserId();

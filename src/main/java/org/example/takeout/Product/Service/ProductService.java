@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import jakarta.validation.constraints.NotNull;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.CacheInvalidationTask.Service.CacheInvalidationTaskService;
 import org.example.takeout.Category.Entity.Category;
@@ -29,7 +30,7 @@ import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.jspecify.annotations.NonNull;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -45,23 +46,19 @@ import java.util.stream.Collectors;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class ProductService {
 
-    @Autowired
-    private CategoryMapper categoryMapper;
-    @Autowired
-    private ProductMapper productMapper;
-    @Autowired
-    private ProductConverter productConverter;
-    @Autowired
-    private ObjectMapper objectMapper;
-    @Autowired
-    private ProductCacheService productCacheService;
-    @Autowired
-    private CacheInvalidationTaskService  cacheInvalidationTaskService;
+    private final CategoryMapper categoryMapper;
+    private final ProductMapper productMapper;
+    private final ProductConverter productConverter;
+    private final ObjectMapper objectMapper;
+    private final ProductCacheService productCacheService;
+    private final CacheInvalidationTaskService cacheInvalidationTaskService;
 
     public static final String DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.svg";
 
+    private static final String ACTIVE_PRODUCT_NAME_CONFLICT_MESSAGE = "当前店铺已存在同名商品";
     private static final String NULL_PRODUCT_CACHE = "__NULL__";
     private static final long PRODUCT_CACHE_LOCK_TTL_SECONDS = 10L;
     private static final int PRODUCT_CACHE_RETRY_COUNT = 5;
@@ -144,7 +141,14 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"种类不存在");
         }
         Product product = toProduct(createProductDTO);
-        productMapper.insert(product);
+        try {
+            productMapper.insert(product);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    ACTIVE_PRODUCT_NAME_CONFLICT_MESSAGE
+            );
+        }
         return toMerchantProductVO(product,category);
     }
 
@@ -466,30 +470,16 @@ public class ProductService {
 
     private void evictProductDetailCache(Long productId) {
         String cacheKey = buildProductDetailKey(productId);
-
-        //记录数据库持久化任务
-        //此处设计是为了保存尚未完成的业务意图，让系统恢复后知道还有什么账没收拾。
-        //如果为了删除失败补偿，应该放入log.error后面
-        cacheInvalidationTaskService.createPending(cacheKey);
+        cacheInvalidationTaskService.requestInvalidation(cacheKey);
         // TODO Outbox任务聚合优化：
         // 当前允许同一 cacheKey 创建多条 PENDING 任务，Redis 长时间不可用时可能造成任务积压。
         // 后续考虑按 cacheKey 聚合未完成任务，避免重复 INSERT / DEL。
         // 可增加 count 记录同 key 累计失效次数，用于任务权重、异常流量识别或限流/风控。
         // 注意：需要区分历史 SUCCESS 记录与当前活跃任务，不能直接对 cacheKey 做简单 UNIQUE。
-
-        try {
-            productCacheService.delete(cacheKey);
-            cacheInvalidationTaskService.markPendingTasksSuccess(cacheKey);
-        } catch (RedisCacheUnavailableException e) {
-            log.error(
-                    "商品缓存删除失败，暂时允许数据库事务继续，productId={}, cacheKey={}",
-                    productId,
-                    cacheKey,
-                    e
-            );
-
-        }
     }
+
+
+
 
     private void evictCacheIfInStockChanged(Long productId, int stockDelta) {
         // 订单退库允许更新逻辑删除商品，库存回读也必须绕过逻辑删除过滤，
@@ -585,19 +575,29 @@ public class ProductService {
                 .stream()
                 .collect(Collectors.toMap(Category::getId, Function.identity(), (first, second) -> first));
     }
-    //恢复删除的商品
+
+    // 恢复逻辑删除的商品；active 唯一键负责裁决同名冲突。
     @Transactional(rollbackFor = Exception.class)
     public void restoreProduct(@NotNull Long productId) {
         Long merchantId = MerchantContextHolder.getMerchantId();
-        Integer rows = productMapper.restoreDeletedProduct(
-                productId,
-                merchantId,
-                ProductStatusEnum.OFF_SALE.getCode());
-        //如果完全没有影响数据库
-        //NOTE:恢复商品可能触发唯一约束异常，需要统一异常处理，将数据库异常转换为业务提示。
-        if (rows == 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "商品不存在、无权限");
+        int rows;
+        try {
+            rows = productMapper.restoreDeletedProduct(
+                    productId,
+                    merchantId,
+                    ProductStatusEnum.OFF_SALE.getCode()
+            );
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    ACTIVE_PRODUCT_NAME_CONFLICT_MESSAGE
+            );
+        }
+        if (rows != 1) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "商品不存在、未删除或不属于当前商家"
+            );
         }
         evictProductDetailCache(productId);
     }

@@ -3,11 +3,11 @@ package org.example.takeout.Category.Controller;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
+import lombok.RequiredArgsConstructor;
 import org.example.takeout.Category.Service.CategoryService;
 import org.example.takeout.Category.VO.CategoryVO;
 import org.example.takeout.Category.VO.CreateCategoryVO;
 import org.example.takeout.Common.Result.Result;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,10 +20,10 @@ import java.util.List;
 @RestController
 @Validated
 @RequestMapping("/category")
+@RequiredArgsConstructor
 public class CategoryController {
 
-    @Autowired
-    private CategoryService categoryService;
+    private final CategoryService categoryService;
 
     /**
      * 获取当前商家的所有可用分类列表
