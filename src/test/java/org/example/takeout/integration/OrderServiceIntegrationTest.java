@@ -2,43 +2,61 @@ package org.example.takeout.integration;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
+import org.example.takeout.Cart.DTO.AddCartDTO;
+import org.example.takeout.Cart.DTO.DeleteDTO;
+import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.Cart.Service.CartService;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
+import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderService;
+import org.example.takeout.Order.Service.OrderTransactionExecutor;
+import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Product.Entity.Product;
+import org.example.takeout.Product.Config.ProductImageCleanupTask;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.dataFactory.TestDataFactory;
+import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
@@ -55,11 +73,14 @@ class OrderServiceIntegrationTest {
     private static final Long TEST_USER_ID = 9_001_001L;
     private static final Long TEST_OTHER_USER_ID = 9_001_002L;
     private static final Long TEST_MERCHANT_ID = 9_002_001L;
+    private static final Long TEST_OTHER_MERCHANT_ID = 9_002_002L;
     private static final Long TEST_PRODUCT_ID_CUP = 9_003_001L;
     private static final Long TEST_PRODUCT_ID_MILK = 9_003_002L;
+    private static final Long TEST_OTHER_PRODUCT_ID = 9_003_003L;
     private static final Long TEST_CART_ID_CUP = 9_004_001L;
     private static final Long TEST_CART_ID_MILK = 9_004_002L;
     private static final Long TEST_CATEGORY_ID = 9_005_001L;
+    private static final Long TEST_OTHER_CATEGORY_ID = 9_005_002L;
 
     private final OrderService orderService;
 
@@ -71,15 +92,26 @@ class OrderServiceIntegrationTest {
 
     private final CartMapper cartMapper;
 
+    private final CartService cartService;
+
     private final MerchantMapper merchantMapper;
 
     private final JdbcTemplate jdbcTemplate;
 
     private final DataSource dataSource;
 
+    @MockitoSpyBean
+    private OrderTransactionExecutor orderTransactionExecutor;
+
+    @MockitoBean
+    private ProductImageCleanupTask productImageCleanupTask;
+
     @BeforeEach
     void setUp() {
+        CartHeaderTestFixture.ensureTable(jdbcTemplate);
         deleteTestData();
+        CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_USER_ID);
+        CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_OTHER_USER_ID);
 
         UserContextHolder.setUserId(TEST_USER_ID);
     }
@@ -200,7 +232,7 @@ class OrderServiceIntegrationTest {
         insertMerchant();
 
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "极简智能水杯", 10);
-        cartMapper.insert(TestDataFactory.createCartItem(TEST_CART_ID_CUP, TEST_USER_ID, product, 15));
+        insertCartItem(product, 15);
         CreateOrderDTO orderDTO = TestDataFactory.createOrderDTO();
         assertThrows(
                 BusinessException.class,
@@ -209,6 +241,7 @@ class OrderServiceIntegrationTest {
 
         assertEquals(10, productMapper.selectById(product.getId()).getStock());
         assertEquals(1L, countTestUserCartItems());
+        assertEquals(TEST_MERCHANT_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
         assertTrue(findTestUserOrder().isEmpty());
 
 
@@ -217,6 +250,7 @@ class OrderServiceIntegrationTest {
         orderService.createOrder(orderDTO);
         assertEquals(85, productMapper.selectById(product.getId()).getStock());
         assertEquals(0L, countTestUserCartItems());
+        assertNull(CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
         assertFalse(findTestUserOrder().isEmpty());
 
     }
@@ -278,8 +312,8 @@ class OrderServiceIntegrationTest {
         insertMerchant();
         Product cup = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
         Product milk = insertProduct(TEST_PRODUCT_ID_MILK, "牛奶", 10);
-        cartMapper.insert(TestDataFactory.createCartItem(TEST_CART_ID_CUP, TEST_USER_ID, cup, 5));
-        cartMapper.insert(TestDataFactory.createCartItem(TEST_CART_ID_MILK, TEST_USER_ID, milk, 15));
+        insertCartItem(cup, 5);
+        insertCartItem(TEST_CART_ID_MILK, milk, 15);
         long orderItemCountBeforeCreation = orderItemMapper.selectCount(null);
 
         assertThrows(
@@ -291,6 +325,7 @@ class OrderServiceIntegrationTest {
         assertEquals(10, productMapper.selectById(cup.getId()).getStock());
         assertEquals(10, productMapper.selectById(milk.getId()).getStock());
         assertEquals(2L, countTestUserCartItems());
+        assertEquals(TEST_MERCHANT_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
         assertTrue(findTestUserOrder().isEmpty());
     }
 
@@ -327,6 +362,43 @@ class OrderServiceIntegrationTest {
         assertEquals(1, orderItems.size());
         assertEquals(5, orderItems.get(0).getQuantity());
         assertEquals(product.getImageUrl(), orderItems.get(0).getProductPicture());
+        assertEquals(0L, countTestUserCartItems());
+        assertNull(CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"receiverName", "receiverPhone", "receiverAddress", "remark"})
+    void createOrder_shouldRejectChangedParametersForSameRequestId(String changedField) {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        insertCartItem(product, 5);
+        CreateOrderDTO original = TestDataFactory.createOrderDTO();
+        CreateOrderVO first = orderService.createOrder(original);
+
+        // 新购物车不能因为旧 requestId 的重试而被再次消费。
+        insertCartItem(product, 1);
+        CreateOrderDTO changed = TestDataFactory.createOrderDTO();
+        changed.setRequestId(original.getRequestId());
+        switch (changedField) {
+            case "receiverName" -> changed.setReceiverName("李四");
+            case "receiverPhone" -> changed.setReceiverPhone("13912345678");
+            case "receiverAddress" -> changed.setReceiverAddress("新的收货地址");
+            case "remark" -> changed.setRemark("不要辣椒");
+            default -> throw new IllegalArgumentException(changedField);
+        }
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> orderService.createOrder(changed));
+        assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
+        assertEquals("同一 requestId 不能携带不同下单参数，请使用新的 requestId", exception.getMessage());
+        assertEquals(first.getOrderId(), orderService.createOrder(original).getOrderId());
+        assertEquals(1, findTestUserOrder().size());
+        assertEquals(5, productMapper.selectById(product.getId()).getStock());
+        assertEquals(1L, countTestUserCartItems());
+        assertEquals(1L, orderItemMapper.selectCount(Wrappers.<OrderItem>lambdaQuery()
+                .eq(OrderItem::getOrderId, first.getOrderId())));
+        assertEquals(new OrderRequestFingerprint().calculate(original),
+                orderMapper.selectById(first.getOrderId()).getRequestHash());
     }
 
     /// 临时测试：检验数据库唯一键是否真的存在
@@ -544,6 +616,66 @@ class OrderServiceIntegrationTest {
         assertEquals(1,orderItem.size());
         assertEquals(5, orderItem.get(0).getQuantity());
         assertTrue(cartItems.isEmpty(), "购物车应该为空");
+        assertNull(CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
+    }
+
+    @Test
+    void createOrder_shouldRejectDifferentParametersWhenConcurrentRequestsCollide() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        insertCartItem(product, 5);
+        CreateOrderDTO firstRequest = TestDataFactory.createOrderDTO();
+        CreateOrderDTO secondRequest = TestDataFactory.createOrderDTO();
+        secondRequest.setRequestId(firstRequest.getRequestId());
+        secondRequest.setRemark("不要辣椒");
+        CyclicBarrier bothRequestsPrepared = new CyclicBarrier(2);
+        doAnswer(invocation -> {
+            // 两次普通查单都已返回空，并各自拿到购物车，才允许争用数据库唯一键。
+            bothRequestsPrepared.await(5, TimeUnit.SECONDS);
+            return invocation.callRealMethod();
+        }).when(orderTransactionExecutor).executeOrderCreation(
+                any(OrderDataContext.class), any(CreateOrderDTO.class), eq(TEST_USER_ID), anyString());
+
+        ConcurrentTestTemplate.TwoTaskResult<CreationAttempt, CreationAttempt> results =
+                ConcurrentTestTemplate.runTwoTasks(Duration.ofSeconds(10),
+                        () -> createOrderAttempt(firstRequest), () -> createOrderAttempt(secondRequest));
+        CreationAttempt first = results.firstResult();
+        CreationAttempt second = results.secondResult();
+        assertNotEquals(first.result() != null, second.result() != null, "必须仅有一个请求成功");
+        BusinessException failure = first.failure() == null ? second.failure() : first.failure();
+        assertNotNull(failure);
+        assertEquals(ResultCodeEnum.PARAM_ERROR, failure.getCodeEnum());
+        assertEquals("同一 requestId 不能携带不同下单参数，请使用新的 requestId", failure.getMessage());
+        verify(orderTransactionExecutor, times(2)).executeOrderCreation(
+                any(OrderDataContext.class), any(CreateOrderDTO.class), eq(TEST_USER_ID), anyString());
+
+        List<Order> orders = findTestUserOrder();
+        assertEquals(1, orders.size());
+        Order persisted = orders.get(0);
+        CreateOrderDTO winningRequest = first.result() == null ? secondRequest : firstRequest;
+        assertEquals(new OrderRequestFingerprint().calculate(winningRequest), persisted.getRequestHash());
+        assertEquals(winningRequest.getRemark(), persisted.getRemark());
+        assertEquals(5, productMapper.selectById(product.getId()).getStock());
+        assertEquals(0L, countTestUserCartItems());
+        assertNull(CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
+        List<OrderItem> items = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
+                .eq(OrderItem::getOrderId, persisted.getId()));
+        assertEquals(1, items.size());
+        assertEquals(5, items.get(0).getQuantity());
+    }
+
+    private CreationAttempt createOrderAttempt(CreateOrderDTO request) {
+        UserContextHolder.setUserId(TEST_USER_ID);
+        try {
+            return new CreationAttempt(orderService.createOrder(request), null);
+        } catch (BusinessException exception) {
+            return new CreationAttempt(null, exception);
+        } finally {
+            UserContextHolder.clear();
+        }
+    }
+
+    private record CreationAttempt(CreateOrderVO result, BusinessException failure) {
     }
 
     //NOTE：测试并发创建订单时在不同requestId的情况下仅生成一份订单和订单项并清空购物车
@@ -624,6 +756,7 @@ class OrderServiceIntegrationTest {
         assertEquals(1,orderItem.size());
         assertEquals(5, orderItem.get(0).getQuantity());
         assertTrue(cartItems.isEmpty(), "购物车应该为空");
+        assertNull(CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
     }
 
     //NOTE：测试并发支付同一订单时仅一次成功并正确记录支付状态和时间
@@ -768,6 +901,196 @@ class OrderServiceIntegrationTest {
 
 
 
+    @ParameterizedTest
+    @ValueSource(strings = {"add", "increment"})
+    void createOrder_preservesSameProductAddedAfterSnapshotAndOnIdempotentRetry(String mutation) {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        CartItem originalItem = insertCartItem(product, 5);
+        CreateOrderDTO request = TestDataFactory.createOrderDTO();
+
+        CreationAttempt attempt = createOrderAfterCartMutation(request, context -> {
+            assertEquals(5, context.getAvailableItems().get(0).getQuantity());
+            if ("add".equals(mutation)) {
+                AddCartDTO add = new AddCartDTO();
+                add.setProductId(product.getId());
+                cartService.add(add);
+            } else {
+                UpdateCartDTO update = new UpdateCartDTO();
+                update.setCartItemId(originalItem.getId());
+                update.setQuantityChange(1);
+                cartService.update(update);
+            }
+            assertEquals(6, cartMapper.selectById(originalItem.getId()).getQuantity());
+        });
+
+        assertNull(attempt.failure());
+        assertNotNull(attempt.result());
+        CartItem remaining = cartMapper.selectById(originalItem.getId());
+        assertNotNull(remaining);
+        assertEquals(1, remaining.getQuantity());
+        assertEquals(2, remaining.getVersion());
+        assertEquals(5, productMapper.selectById(product.getId()).getStock());
+        assertEquals(1, findTestUserOrder().size());
+        List<OrderItem> items = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
+                .eq(OrderItem::getOrderId, attempt.result().getOrderId()));
+        assertEquals(1, items.size());
+        assertEquals(5, items.get(0).getQuantity());
+
+        assertRemainingCartRejectsOtherMerchant();
+        CreateOrderVO replay = orderService.createOrder(request);
+        assertEquals(attempt.result().getOrderId(), replay.getOrderId());
+        assertEquals(1, cartMapper.selectById(originalItem.getId()).getQuantity());
+        assertEquals(2, cartMapper.selectById(originalItem.getId()).getVersion());
+        assertEquals(5, productMapper.selectById(product.getId()).getStock());
+        assertEquals(TEST_MERCHANT_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
+    }
+
+    @Test
+    void createOrder_preservesDifferentProductAddedAfterSnapshot() {
+        insertMerchant();
+        Product cup = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        Product milk = insertProduct(TEST_PRODUCT_ID_MILK, "牛奶", 10);
+        CartItem originalItem = insertCartItem(cup, 5);
+
+        CreationAttempt attempt = createOrderAfterCartMutation(
+                TestDataFactory.createOrderDTO(), context -> {
+                    assertEquals(1, context.getAvailableItems().size());
+                    AddCartDTO add = new AddCartDTO();
+                    add.setProductId(milk.getId());
+                    cartService.add(add);
+                });
+
+        assertNull(attempt.failure());
+        assertNotNull(attempt.result());
+        assertNull(cartMapper.selectById(originalItem.getId()));
+        List<CartItem> remaining = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getUserId, TEST_USER_ID));
+        assertEquals(1, remaining.size());
+        assertEquals(milk.getId(), remaining.get(0).getProductId());
+        assertEquals(1, remaining.get(0).getQuantity());
+        assertEquals(5, productMapper.selectById(cup.getId()).getStock());
+        assertEquals(10, productMapper.selectById(milk.getId()).getStock());
+        List<OrderItem> items = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
+                .eq(OrderItem::getOrderId, attempt.result().getOrderId()));
+        assertEquals(1, items.size());
+        assertEquals(cup.getId(), items.get(0).getProductId());
+        assertEquals(5, items.get(0).getQuantity());
+        assertRemainingCartRejectsOtherMerchant();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"decrease", "delete"})
+    void createOrder_rejectsCartReductionAfterSnapshotAndRollsBackEarlierConsumption(String mutation) {
+        insertMerchant();
+        Product cup = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        Product milk = insertProduct(TEST_PRODUCT_ID_MILK, "牛奶", 10);
+        insertCartItem(cup, 5);
+        insertCartItem(TEST_CART_ID_MILK, milk, 5);
+        AtomicReference<Long> firstItemId = new AtomicReference<>();
+        AtomicReference<Long> changedItemId = new AtomicReference<>();
+
+        CreationAttempt attempt = createOrderAfterCartMutation(
+                TestDataFactory.createOrderDTO(), context -> {
+                    assertEquals(2, context.getAvailableItems().size());
+                    // 让第二个消费条目失败，确保第一个已完成的 UPDATE/DELETE 也会回滚。
+                    firstItemId.set(context.getAvailableItems().get(0).getId());
+                    changedItemId.set(context.getAvailableItems().get(1).getId());
+                    if ("decrease".equals(mutation)) {
+                        UpdateCartDTO update = new UpdateCartDTO();
+                        update.setCartItemId(changedItemId.get());
+                        update.setQuantityChange(-1);
+                        cartService.update(update);
+                    } else {
+                        DeleteDTO delete = new DeleteDTO(List.of(changedItemId.get()));
+                        cartService.delete(delete);
+                    }
+                });
+
+        assertNull(attempt.result());
+        assertNotNull(attempt.failure());
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, attempt.failure().getCodeEnum());
+        assertEquals("购物车商品数量已发生变化，请重新确认", attempt.failure().getMessage());
+        CartItem restored = cartMapper.selectById(firstItemId.get());
+        assertNotNull(restored);
+        assertEquals(5, restored.getQuantity());
+        assertEquals(0, restored.getVersion());
+        if ("decrease".equals(mutation)) {
+            CartItem changed = cartMapper.selectById(changedItemId.get());
+            assertEquals(4, changed.getQuantity());
+            assertEquals(1, changed.getVersion());
+        } else {
+            assertNull(cartMapper.selectById(changedItemId.get()));
+        }
+        assertEquals(10, productMapper.selectById(cup.getId()).getStock());
+        assertEquals(10, productMapper.selectById(milk.getId()).getStock());
+        assertEquals(TEST_MERCHANT_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
+        assertTrue(findTestUserOrder().isEmpty());
+        assertEquals(0L, orderItemMapper.selectCount(Wrappers.<OrderItem>lambdaQuery()
+                .in(OrderItem::getProductId, cup.getId(), milk.getId())));
+    }
+
+    @Test
+    void createOrder_restoresConsumedQuantitiesWhenStockDeductionFailsAfterCartAddition() {
+        insertMerchant();
+        Product cup = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        Product milk = insertProduct(TEST_PRODUCT_ID_MILK, "牛奶", 10);
+        CartItem cupItem = insertCartItem(cup, 5);
+        insertCartItem(TEST_CART_ID_MILK, milk, 15);
+
+        CreationAttempt attempt = createOrderAfterCartMutation(
+                TestDataFactory.createOrderDTO(), context -> {
+                    AddCartDTO add = new AddCartDTO();
+                    add.setProductId(cup.getId());
+                    cartService.add(add);
+                });
+
+        assertNull(attempt.result());
+        assertNotNull(attempt.failure());
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, attempt.failure().getCodeEnum());
+        assertEquals(6, cartMapper.selectById(cupItem.getId()).getQuantity());
+        assertEquals(1, cartMapper.selectById(cupItem.getId()).getVersion());
+        assertEquals(15, cartMapper.selectById(TEST_CART_ID_MILK).getQuantity());
+        assertEquals(0, cartMapper.selectById(TEST_CART_ID_MILK).getVersion());
+        assertEquals(TEST_MERCHANT_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
+        assertEquals(10, productMapper.selectById(cup.getId()).getStock());
+        assertEquals(10, productMapper.selectById(milk.getId()).getStock());
+        assertTrue(findTestUserOrder().isEmpty());
+        assertEquals(0L, orderItemMapper.selectCount(Wrappers.<OrderItem>lambdaQuery()
+                .in(OrderItem::getProductId, cup.getId(), milk.getId())));
+    }
+
+    private CreationAttempt createOrderAfterCartMutation(
+            CreateOrderDTO request, Consumer<OrderDataContext> mutation) {
+        Duration timeout = Duration.ofSeconds(15);
+        ConcurrentTestTemplate.Checkpoint snapshotPrepared =
+                ConcurrentTestTemplate.checkpoint("订单购物车快照已读取", timeout);
+        ConcurrentTestTemplate.Checkpoint cartMutationCommitted =
+                ConcurrentTestTemplate.checkpoint("购物车修改已提交", timeout);
+        AtomicReference<OrderDataContext> snapshot = new AtomicReference<>();
+        doAnswer(invocation -> {
+            snapshot.set(invocation.getArgument(0));
+            snapshotPrepared.signal();
+            cartMutationCommitted.awaitSignal();
+            return invocation.callRealMethod();
+        }).when(orderTransactionExecutor).executeOrderCreation(
+                any(OrderDataContext.class), any(CreateOrderDTO.class), eq(TEST_USER_ID), anyString());
+
+        return ConcurrentTestTemplate.runTwoTasks(timeout,
+                () -> createOrderAttempt(request),
+                () -> {
+                    snapshotPrepared.awaitSignal();
+                    try {
+                        UserContextHolder.setUserId(TEST_USER_ID);
+                        mutation.accept(snapshot.get());
+                        return true;
+                    } finally {
+                        UserContextHolder.clear();
+                        cartMutationCommitted.signal();
+                    }
+                }).firstResult();
+    }
+
     private void assertExpectedConcurrentCancelFailure(Throwable firstFailure, Throwable secondFailure) {
         Throwable failure = firstFailure == null ? secondFailure : firstFailure;
         assertInstanceOf(BusinessException.class, failure);
@@ -805,17 +1128,22 @@ class OrderServiceIntegrationTest {
                 INSERT INTO orders (
                     order_no, user_id, request_id, merchant_id, merchant_name,
                     total_amount, status, receiver_name, receiver_phone, receiver_address,
-                    original_amount, discount_amount
+                    original_amount, discount_amount, request_hash
                 )
                 VALUES (?, ?, ?, ?, 'low-level-test-merchant',
                         1.00, ?, 'test-user', '13800000000', 'test-address',
-                        1.00, 0.00)
+                        1.00, 0.00, ?)
                 """)) {
             statement.setString(1, orderNo);
             statement.setLong(2, TEST_USER_ID);
             statement.setString(3, requestId);
             statement.setLong(4, TEST_MERCHANT_ID);
             statement.setInt(5, OrderStatusEnum.WAIT_PAY.getCode());
+            CreateOrderDTO request = new CreateOrderDTO();
+            request.setReceiverName("test-user");
+            request.setReceiverPhone("13800000000");
+            request.setReceiverAddress("test-address");
+            statement.setString(6, new OrderRequestFingerprint().calculate(request));
             return statement.executeUpdate();
         }
     }
@@ -860,10 +1188,40 @@ class OrderServiceIntegrationTest {
         return order;
     }
 
-    private  CartItem insertCartItem(Product product, Integer quantity) {
-        CartItem cartItem = TestDataFactory.createCartItem(TEST_CART_ID_CUP, TEST_USER_ID, product, quantity);
+    private CartItem insertCartItem(Product product, Integer quantity) {
+        return insertCartItem(TEST_CART_ID_CUP, product, quantity);
+    }
+
+    private CartItem insertCartItem(Long cartItemId, Product product, Integer quantity) {
+        CartItem cartItem = TestDataFactory.createCartItem(cartItemId, TEST_USER_ID, product, quantity);
         cartMapper.insert(cartItem);
+        CartHeaderTestFixture.bind(jdbcTemplate, TEST_USER_ID, product.getMerchantId());
         return cartItem;
+    }
+
+    private void assertRemainingCartRejectsOtherMerchant() {
+        assertEquals(TEST_MERCHANT_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
+        long remainingCount = countTestUserCartItems();
+        merchantMapper.insert(TestDataFactory.createOpenMerchant(TEST_OTHER_MERCHANT_ID));
+        jdbcTemplate.update("""
+                INSERT INTO category (id, merchant_id, category_name, status, is_default)
+                VALUES (?, ?, 'order_service_other_category', 0, 0)
+                """, TEST_OTHER_CATEGORY_ID, TEST_OTHER_MERCHANT_ID);
+        Product otherProduct = TestDataFactory.createProduct(
+                TEST_OTHER_PRODUCT_ID, "异店商品", 10, TEST_OTHER_MERCHANT_ID);
+        otherProduct.setCategoryId(TEST_OTHER_CATEGORY_ID);
+        productMapper.insert(otherProduct);
+        AddCartDTO add = new AddCartDTO();
+        add.setProductId(otherProduct.getId());
+
+        BusinessException failure = assertThrows(BusinessException.class, () -> cartService.add(add));
+
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, failure.getCodeEnum());
+        assertEquals("只能加入同一家店的商品", failure.getMessage());
+        assertEquals(remainingCount, countTestUserCartItems());
+        assertEquals(0L, cartMapper.selectCount(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getUserId, TEST_USER_ID).eq(CartItem::getProductId, otherProduct.getId())));
+        assertEquals(TEST_MERCHANT_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
     }
 
     private Merchant insertMerchant() {
@@ -903,9 +1261,13 @@ class OrderServiceIntegrationTest {
                 .in(Order::getUserId, TEST_USER_ID, TEST_OTHER_USER_ID));
         cartMapper.delete(Wrappers.<CartItem>lambdaQuery()
                 .in(CartItem::getUserId, TEST_USER_ID, TEST_OTHER_USER_ID));
+        jdbcTemplate.update("DELETE FROM cart_header WHERE user_id IN (?, ?)", TEST_USER_ID, TEST_OTHER_USER_ID);
         // Product 使用逻辑删除；测试清理必须物理删除，才能安全复用固定主键。
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", TEST_MERCHANT_ID);
+        jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", TEST_OTHER_MERCHANT_ID);
         jdbcTemplate.update("DELETE FROM category WHERE merchant_id = ?", TEST_MERCHANT_ID);
+        jdbcTemplate.update("DELETE FROM category WHERE merchant_id = ?", TEST_OTHER_MERCHANT_ID);
         merchantMapper.deleteById(TEST_MERCHANT_ID);
+        merchantMapper.deleteById(TEST_OTHER_MERCHANT_ID);
     }
 }

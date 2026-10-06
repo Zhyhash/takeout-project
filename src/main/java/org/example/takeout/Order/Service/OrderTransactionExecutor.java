@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
@@ -19,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
@@ -28,9 +30,11 @@ public class OrderTransactionExecutor {
     private final OrderConvertor orderConvertor;
     private final OrderMapper orderMapper;
     private final CartMapper cartMapper;
+    private final CartHeaderManager cartHeaderManager;
 
     @Transactional(rollbackFor = Exception.class)
-    public Order executeOrderCreation(OrderDataContext orderDataContext, CreateOrderDTO createOrderDTO, Long userId) {
+    public Order executeOrderCreation(OrderDataContext orderDataContext, CreateOrderDTO createOrderDTO,
+                                      Long userId, String requestHash) {
         Order order;
         try {
             order = new Order();
@@ -46,6 +50,8 @@ public class OrderTransactionExecutor {
             orderConvertor.toOrder(createOrderDTO, order);
             order.setStatus(OrderStatusEnum.WAIT_PAY.getCode());
 
+            order.setRequestHash(requestHash);
+
 
             orderMapper.insert(order);
         } catch (DuplicateKeyException e) {
@@ -54,14 +60,36 @@ public class OrderTransactionExecutor {
                             eq(Order::getUserId, userId).
                             eq(Order::getRequestId, createOrderDTO.getRequestId()));
             if (commitOrder != null) {
+                if (!Objects.equals(commitOrder.getRequestHash(), requestHash)) {
+                    throw new BusinessException(
+                            ResultCodeEnum.PARAM_ERROR,
+                            "同一 requestId 不能携带不同下单参数，请使用新的 requestId"
+                    );
+                }
                 return commitOrder;
             }
             throw e;
         }
 
-        int i = cartMapper.deleteByIds(orderDataContext.getAvailableItems().stream().map(CartItem::getId).toList());
-        if (i != orderDataContext.getAvailableItems().size()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车删除失败");
+        cartHeaderManager.lock(userId);
+        for (CartItem item : orderDataContext.getAvailableItems()) {
+            int affected = cartMapper.consumeQuantity(
+                    userId,
+                    item.getId(),
+                    item.getQuantity()
+            );
+
+            if (affected != 1) {
+                throw new BusinessException(
+                        ResultCodeEnum.BUSINESS_ERROR,
+                        "购物车商品数量已发生变化，请重新确认"
+                );
+            }
+            cartMapper.deleteIfEmpty(userId, item.getId());
+        }
+        boolean exists = cartMapper.existsByUserId(userId);
+        if (!exists) {
+            cartHeaderManager.unbindMerchant(userId);
         }
 
         orderItemService.decreaseStocksOrderedByProductId(orderDataContext.getAvailableItems());

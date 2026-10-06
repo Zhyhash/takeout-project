@@ -8,6 +8,8 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password:
+  flyway:
+    enabled: false
   data:
     redis:
       host: 127.0.0.1

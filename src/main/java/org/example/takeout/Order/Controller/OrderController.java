@@ -12,7 +12,6 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
-import org.example.takeout.Order.Service.OrderItemService;
 import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;

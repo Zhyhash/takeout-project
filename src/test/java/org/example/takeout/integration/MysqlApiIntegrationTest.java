@@ -93,6 +93,12 @@ class MysqlApiIntegrationTest {
                 dto.getUsername(),
                 dto.getPhone());
         assertThat(count).isEqualTo(1);
+        Long userId = jdbcTemplate.queryForObject(
+                "SELECT id FROM `user` WHERE username = ?", Long.class, dto.getUsername());
+        Integer headerCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM cart_header WHERE user_id = ? AND merchant_id IS NULL",
+                Integer.class, userId);
+        assertThat(headerCount).isEqualTo(1);
     }
 
     @Test
@@ -170,6 +176,7 @@ class MysqlApiIntegrationTest {
                 user.id(),
                 productId);
         assertThat(count).isEqualTo(1);
+        assertThat(CartHeaderTestFixture.merchantId(jdbcTemplate, user.id())).isEqualTo(merchant.id());
     }
 
     @Test
@@ -194,6 +201,7 @@ class MysqlApiIntegrationTest {
         assertThat(orderCount).isEqualTo(1);
         assertThat(itemCount).isEqualTo(1);
         assertThat(cartCount).isZero();
+        assertThat(CartHeaderTestFixture.merchantId(jdbcTemplate, seed.userId())).isNull();
     }
 
     @Test
@@ -562,6 +570,8 @@ class MysqlApiIntegrationTest {
                 otherUser.id());
         assertThat(currentUserCartCount).isZero();
         assertThat(otherUserCartCount).isEqualTo(1);
+        assertThat(CartHeaderTestFixture.merchantId(jdbcTemplate, user.id())).isNull();
+        assertThat(CartHeaderTestFixture.merchantId(jdbcTemplate, otherUser.id())).isEqualTo(merchant.id());
     }
 
     @Test
@@ -792,6 +802,7 @@ class MysqlApiIntegrationTest {
                 "select id from `user` where username = ?",
                 Long.class,
                 username);
+        CartHeaderTestFixture.insertEmpty(jdbcTemplate, id);
         return new UserSeed(id, username);
     }
 
@@ -944,6 +955,7 @@ class MysqlApiIntegrationTest {
         jdbcTemplate.execute("drop table if exists order_item");
         jdbcTemplate.execute("drop table if exists orders");
         jdbcTemplate.execute("drop table if exists cart");
+        jdbcTemplate.execute("drop table if exists cart_header");
         jdbcTemplate.execute("drop table if exists product");
         jdbcTemplate.execute("drop table if exists category");
         jdbcTemplate.execute("drop table if exists merchant");
@@ -1016,7 +1028,7 @@ class MysqlApiIntegrationTest {
                     `active_name_guard` tinyint GENERATED ALWAYS AS (
                         CASE WHEN `is_deleted` = 0 THEN 1 ELSE NULL END
                     ) STORED COMMENT '仅用于约束未删除商品名称唯一',
-                    `status` tinyint NOT NULL DEFAULT 0 COMMENT '商品状态',
+                    `status` tinyint NOT NULL DEFAULT 1 COMMENT '商品状态',
                     `description` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品描述',
                     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -1056,12 +1068,15 @@ class MysqlApiIntegrationTest {
                   COLLATE = utf8mb4_0900_ai_ci COMMENT = '购物车表' ROW_FORMAT = Dynamic
                 """);
 
+        CartHeaderTestFixture.ensureTable(jdbcTemplate);
+
         jdbcTemplate.execute("""
                 CREATE TABLE `orders` (
                     `id` bigint NOT NULL AUTO_INCREMENT,
                     `order_no` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `user_id` bigint NOT NULL,
                     `request_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '客户端下单请求唯一标识',
+                    `request_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '下单参数SHA-256指纹',
                     `merchant_id` bigint NOT NULL,
                     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `total_amount` decimal(10, 2) NOT NULL,

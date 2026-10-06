@@ -22,6 +22,10 @@ public final class AuthPathMatcher {
         if (HttpMethod.OPTIONS.matches(method)) {
             return true;
         }
+        if (HttpMethod.GET.matches(method)
+                && PATH_MATCHER.match("/uploads/products/**", path)) {
+            return true;
+        }
 
         if (PATH_MATCHER.match("/user/login", path) && HttpMethod.POST.matches(method)) {
             return true;

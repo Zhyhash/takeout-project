@@ -35,7 +35,7 @@ Tokeout 是一个基于 Spring Boot 的外卖后端练习项目。项目围绕�
 | 基础框架 | Spring Boot 4.0.6、Spring MVC、Spring Scheduling |
 | 鉴权与校验 | Spring Security、JWT（JJWT 0.11.5）、BCrypt、Jakarta Validation |
 | 数据访问 | MyBatis-Plus 3.5.7、PageHelper 2.1.1、MySQL 8 |
-| 缓存/实验 | Spring Data Redis、Redis 7 |
+| 缓存/限流 | Spring Data Redis、Redis 7 |
 | 对象转换 | MapStruct 1.5.5、Lombok 1.18.30 |
 | 接口文档 | Knife4j 4.5.0、OpenAPI 3 |
 | 测试 | JUnit 5、Spring Boot Test、MockMvc、H2、MySQL/Redis 集成测试 |
@@ -59,11 +59,12 @@ Spring Security 的过滤链目前配置为无状态并放行请求，实际 JWT
 │  ├─ Order/                        下单、支付、取消、查询、状态流转与超时任务
 │  ├─ Rider/                        骑手账号
 │  ├─ DeliveryTask/                 配送任务创建、抢单、送达与查询
-│  ├─ Common/                       鉴权、上下文、异常、统一响应、Redis 实验和工具类
+│  ├─ Common/                       鉴权、上下文、异常、统一响应、登录限流和工具类
 │  ├─ Config/                       拦截器、Security、JWT、MyBatis-Plus 配置
 │  └─ TokeoutApplication.java       应用入口，启用定时任务
 ├─ src/main/resources/
 │  ├─ application.yaml              主配置
+│  ├─ db/migration/                 Flyway 版本化迁移脚本
 │  ├─ mapper/ProductMapper.xml      商品恢复 SQL
 │  └─ static/images/                默认商品图片
 ├─ src/test/                        API、单元和集成测试
@@ -84,7 +85,7 @@ Spring Security 的过滤链目前配置为无状态并放行请求，实际 JWT
 | `Order` | 订单创建幂等、事务下单、支付/取消/确认、订单查询、超时取消 |
 | `Rider` | 骑手注册、登录和状态校验 |
 | `DeliveryTask` | 出餐后建任务、可接任务、抢单、当前任务、详情与完成配送 |
-| `Common` | JWT 鉴权、ThreadLocal 身份上下文、异常、响应模型和 Redis 幂等实验 |
+| `Common` | JWT 鉴权、ThreadLocal 身份上下文、异常、响应模型和登录限流 |
 
 ## 4. 核心业务流程
 
@@ -110,11 +111,13 @@ Authorization: Bearer <token>
 
 `POST /order` 使用客户端提供的 `requestId` 表示一次下单意图，实际生效的链路如下：
 
-1. 按 `(userId, requestId)` 查询已有订单；命中时直接返回原订单。
+1. 按 `(userId, requestId)` 查询已有订单；命中时比较收货人、手机号、地址和备注的 SHA-256 指纹，相同则返回原订单，不同则拒绝请求并提示使用新的 `requestId`。
 2. 读取购物车并确认所有商品均可售、商家可下单且购物车只有一个商家。
 3. 使用商品当前价格计算总金额。
-4. 在事务内插入订单、删除本次消费的购物车记录、按条件扣减库存、写入订单明细。
-5. `orders(user_id, request_id)` 唯一键处理相同请求的并发竞争；事务确保订单、购物车、库存和明细一起提交或回滚。
+4. 在事务内插入订单及请求指纹、删除本次消费的购物车记录、按条件扣减库存、写入订单明细。
+5. `orders(user_id, request_id)` 唯一键处理相同请求的并发竞争；发生冲突后再次比较已提交订单的指纹，相同则返回原订单，不同则拒绝请求。事务确保订单、购物车、库存和明细一起提交或回滚。
+
+请求指纹覆盖 `CreateOrderDTO` 的收货信息和备注，备注的 `null` 与空字符串视为不同参数；购物车内容以第一次成功下单时的快照为准。
 
 库存扣减 SQL 同时校验商品未删除、处于上架状态且库存充足，从数据库层避免超卖。待支付订单创建超过 30 分钟后，定时任务会尝试取消订单并归还库存；默认每 60 秒扫描一次，每批最多处理 100 个订单。
 
@@ -268,6 +271,9 @@ docker compose down
 
 ```powershell
 mvn test
+
+# 只运行保留的 Redis 专用集成测试
+mvn test "-Dtest=RedisBasicIntegrationTest,RedisLoginAttemptStoreIntegrationTest,OrderCreateRateLimiterIntegrationTest"
 ```
 
 默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表（不含缓存失效任务表），只能对专用测试库运行。Redis 不可用时，Redis 专用测试通过 JUnit assumption 跳过；要覆盖 Redis 行为则需提供 `127.0.0.1:6379`。如需让测试连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
@@ -295,7 +301,17 @@ cache_invalidation_task
 mysql -u root -p --execute="source deploy/schema.sql"
 ```
 
-已有数据库只需要执行一次 [`deploy/migrations/20260912_cache_invalidation_task.sql`](deploy/migrations/20260912_cache_invalidation_task.sql) 来创建完整的缓存失效任务表；重试字段已经包含在该脚本中，不再需要单独的加列迁移。
+已有数据库由应用启动时的 Flyway 迁移，迁移脚本位于 `src/main/resources/db/migration`，命名格式为 `V<版本>__<描述>.sql`。当前配置会在非空旧库上先建立版本 `1` 的基线，再按版本顺序执行 `V20260820` 至 `V20261005`，并将结果写入 `takeout.flyway_schema_history`。
+
+`deploy/migrations` 保留为历史 SQL 参考；不要在 Flyway 已记录成功的版本上再次手工执行同一变更。新增数据库变更时，应在 `src/main/resources/db/migration` 增加更高版本的新脚本，保持已执行脚本不变。`schema.sql` 只负责 Compose 首次创建 MySQL 数据卷时的空库基线；修改它不会升级已有数据卷。
+
+可用下面的 SQL 检查迁移状态：
+
+```sql
+SELECT installed_rank, version, description, success
+FROM flyway_schema_history
+ORDER BY installed_rank;
+```
 
 ### 7.1 导入演示数据
 
@@ -335,8 +351,8 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 - 使用 `CREATE DATABASE IF NOT EXISTS` 和 `CREATE TABLE IF NOT EXISTS`，不会删除现有业务数据；
 - 不会升级已经存在但结构较旧的表；
 - `schema.sql` 本身不包含演示数据；Compose 通过单独挂载的 `demo-data.sql` 在首次初始化时导入；
-- 应用 JAR 不会自动执行该脚本；
-- 项目尚未接入 Flyway 或 Liquibase。
+- 应用启动时由 Flyway 执行 `src/main/resources/db/migration` 中尚未应用的版本；
+- `schema.sql` 不会被 Flyway 自动扫描，也不会重复升级已有数据卷。
 
 商家通过注册接口创建后会自动获得默认分类，不需要手工插入默认分类数据。
 
@@ -344,18 +360,19 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 
 结论：**运行当前对外主业务接口时，Redis 不是必须依赖；MySQL 才是最终一致性和并发正确性的基础。**
 
-当前 Redis 代码有两类用途：
+当前 Redis 代码有三类用途：
 
 1. `ProductService` 中实现了商品详情的 Cache-Aside 读写与修改、逻辑删除后的缓存清理。读取、写入和大部分删除失败会降级到 MySQL；商家端通过 `GET/PUT/DELETE /category/products/{id}` 使用对应能力。
-2. `RedisOrderCreationExperiment` 实现了 `PROCESSING -> SUCCEEDED:{orderId}` 的下单幂等实验，但 `OrderController` 仍直接调用 `OrderService`，生产请求链路未接入该实验。
+2. `RedisLoginAttemptStore` 与 `LoginAttemptLimiter` 记录三角色的登录失败次数并限制连续失败；Redis 不可用时放行登录检查。
+3. `OrderCreateRateLimiter` 在下单入口按用户执行滑动窗口限流，10 秒内最多放行 5 次；Redis 故障或返回空结果时放行。订单幂等由 `OrderService` 的 MySQL 唯一键、请求指纹和事务保证。
 
 因此：
 
 - 应用通常可以在 Redis 未启动时启动；
-- 当前下单幂等由 MySQL 唯一键 `uk_orders_user_request_id` 和事务保证；
+- 当前下单幂等由 MySQL 唯一键 `uk_orders_user_request_id`、请求指纹比较和事务保证；
 - 当前已暴露的主业务流程不因 Redis 缺失而失去正确性；
-- 运行 Redis 集成测试或继续接入商品缓存/Redis 幂等时，需要 Redis；
-- Docker Compose 为了提供完整实验环境仍会同时启动 Redis。
+- 验证商品缓存、登录限流、下单限流及 Redis 专用集成测试时，需要 Redis；
+- Docker Compose 会同时启动 Redis，为缓存和限流提供依赖。
 
 ## 9. 接口文档入口
 
@@ -388,7 +405,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 
 ## 10. 项目亮点
 
-- **数据库级订单幂等**：`requestId` 与用户 ID 组成唯一键，相同业务请求并发执行时最终只生成一张订单。
+- **数据库级订单幂等**：`requestId` 与用户 ID 组成唯一键，相同业务请求并发执行时最终只生成一张订单；收货信息或备注不同的重复请求会被拒绝。
 - **事务化下单**：订单、购物车消费、条件扣库存和订单明细处于同一事务，任一失败则整体回滚。
 - **并发控制**：库存使用带库存下限和商品状态的条件更新；购物车、商家、商品使用唯一约束、版本列或条件更新避免常见竞态。
 - **完整履约状态机**：订单状态与配送任务状态分离，并在出餐、抢单、送达等关键动作中保持事务一致。
@@ -401,8 +418,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 ## 11. 已知限制
 
 - `PATCH /order/{id}/pay` 是本地模拟支付，没有接入支付网关、回调验签、退款、对账或消息投递。
-- Redis 下单幂等仍是实验服务，没有接入 `OrderController`。
-- 项目没有 Flyway/Liquibase，`deploy/schema.sql` 只能初始化空库，不能承担版本升级和 schema 漂移校验。
+- Flyway 迁移使用应用启动时的数据库连接；`deploy/schema.sql` 只能初始化空库，不能替代版本迁移。
 - 核心关联大多没有数据库外键，部分关联 ID 的有符号/无符号定义也不完全一致，完整问题见数据库设计检查报告。
 - “单商家购物车”主要由“先查冲突再写入”保证；空购物车并发加入不同商家商品时仍存在竞态，下单阶段会识别并拒绝多商家购物车。
 - 购物车 `+1/-1` 是数量指令，没有请求幂等键；客户端重复发送会重复累计。
@@ -418,7 +434,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 | 文档 | 作用 |
 |---|---|
 | [`HELP.md`](HELP.md) | 开发快速入口、常用命令和官方资料链接 |
-| [`IdempotencyDesign.md`](IdempotencyDesign.md) | 订单及其他接口的幂等、重复请求和 Redis 实验设计 |
+| [`IdempotencyDesign.md`](IdempotencyDesign.md) | 订单及其他接口的幂等、重复请求与业务边界 |
 | [`数据库结构.md`](数据库结构.md) | 十张业务及基础设施表的字段、索引、外键和关系说明 |
 | [`数据库设计检查报告.md`](数据库设计检查报告.md) | 数据库约束、索引、迁移和完整性问题检查 |
 | [`状态流转表.md`](状态流转表.md) | 订单与配送任务状态、动作契约和最小履约闭环 |

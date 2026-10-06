@@ -20,6 +20,7 @@ public interface ProductConverter {
     @Mapping(source = "category.categoryName", target = "categoryName") // 直接把分类名映射过去
     @Mapping(source = "product.status",target = "status")
     @Mapping(source = "product.status", target = "statusDesc", qualifiedByName = "productStatusDescription")
+    @Mapping(source = "product.version", target = "version")
     MerchantProductVO toMerchantProductVO(Product product, Category category);
 
     @Mapping(target = "status", expression = "java(ProductStatusEnum.OFF_SALE.getCode())") //  执行 java 表达式赋值枚举

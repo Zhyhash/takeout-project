@@ -37,11 +37,13 @@ services:
     image: tokeout:0.0.1
     ports:
       - "${APP_PORT:-8080}:8080"
+    volumes:
+      - product-images:/app/uploads/products
     environment:
       JWT_SECRET: abc123def456ghi789jkl012mno345pq
-      DB_URL: jdbc:mysql://mysql:3306/takeout?serverTimezone=Asia%2FShanghai&useSSL=false&allowPublicKeyRetrieval=true
-      DB_USERNAME: root
-      DB_PASSWORD: root
+      DB_URL: "${DB_URL:-jdbc:mysql://mysql:3306/takeout?serverTimezone=Asia%2FShanghai&useSSL=false&allowPublicKeyRetrieval=true}"
+      DB_USERNAME: "${DB_USERNAME:-root}"
+      DB_PASSWORD: "${DB_PASSWORD:-root}"
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       TZ: Asia/Shanghai
@@ -53,3 +55,4 @@ services:
 
 volumes:
   mysql-data:
+  product-images:

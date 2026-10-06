@@ -7,8 +7,13 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.example.takeout.Product.Entity.Product;
 
+import java.util.Collection;
+import java.util.List;
+
 @Mapper
 public interface ProductMapper extends BaseMapper<Product> {
+    List<String> selectReferencedImageUrls(@Param("candidates") Collection<String> candidates);
+
     // 只需要声明方法，入参用 @Param 标记，方便 XML 引用
     Integer restoreDeletedProduct(@Param("id") Long id,
                                   @Param("merchantId") Long merchantId,

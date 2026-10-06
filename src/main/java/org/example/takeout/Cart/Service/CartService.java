@@ -10,6 +10,8 @@ import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.VO.CartListVO;
 import org.example.takeout.Cart.VO.CartVO;
+import org.example.takeout.CartHeader.Entity.CartHeader;
+import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
@@ -34,6 +36,7 @@ public class CartService {
     private final CartMapper cartMapper;
     private final ProductMapper productMapper;
     private final MerchantMapper merchantMapper;
+    private final CartHeaderManager  cartHeaderManager;
     //添加
     @Transactional(rollbackFor = Exception.class)
     public CartVO add(AddCartDTO addCartDTO) {
@@ -61,24 +64,24 @@ public class CartService {
 
         Long userId = UserContextHolder.getUserId();
 
-        // 查询该用户的购物车中是否已存在该商品
-        // 这里不允许不同商家的order在一个购物车里面
-        // 让数据库只数一下：有多少条记录的商家，和当前商品的商家不一样
-        Long customConflictCount = cartMapper.selectCount(
-                Wrappers.<CartItem>lambdaQuery()
-                        .eq(CartItem::getUserId, userId)
-                        .ne(CartItem::getMerchantId, product.getMerchantId())
-        );
+        //总表锁定
+        CartHeader header = cartHeaderManager.lock(userId);
 
-        // 只要有一个不一样的，直接拦截
-        if (customConflictCount > 0) {
-            //NOTE：这里先抛出异常，到时候换成pay接口
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "只能加入同一家店的商品");
+        if (header.getMerchantId() == null) {
+            cartHeaderManager.bindMerchant(userId, merchantId);
+        } else if (!header.getMerchantId().equals(merchantId)) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "只能加入同一家店的商品"
+            );
         }
 
-        CartItem cartItem = cartMapper.selectOne(Wrappers.<CartItem>lambdaQuery()
-                .eq(CartItem::getUserId, userId)
-                .eq(CartItem::getProductId, addCartDTO.getProductId()));
+        CartItem cartItem =
+                cartMapper.selectByUserIdAndProductIdForUpdate(
+                        userId,
+                        addCartDTO.getProductId()
+                );
+
 
         if (cartItem == null) {
             // 1. 如果不存在，创建新对象并完整赋值
@@ -127,16 +130,19 @@ public class CartService {
     //修改某一个商品的数量
     @Transactional(rollbackFor = Exception.class)
     public CartVO update(UpdateCartDTO updateCartDTO) {
+        Long userId = UserContextHolder.getUserId();
         // 1. 参数校验：只允许 +1 或 -1
         Integer quantityChange = updateCartDTO.getQuantityChange();
         if (!Integer.valueOf(1).equals(quantityChange) && !Integer.valueOf(-1).equals(quantityChange)) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "修改的数量只能为-1或1");
         }
 
+        cartHeaderManager.lock(userId);
+
         // 2. 查询购物车记录（带用户ID，防止越权）
         CartItem cartItem = cartMapper.selectOne(Wrappers.<CartItem>lambdaQuery()
                 .eq(CartItem::getId, updateCartDTO.getCartItemId())
-                .eq(CartItem::getUserId, UserContextHolder.getUserId()));
+                .eq(CartItem::getUserId, userId).last("FOR UPDATE"));
         if (cartItem == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车商品不存在");
         }
@@ -170,6 +176,11 @@ public class CartService {
             if (rows != 1) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                         "购物车删除失败");
+            }
+            Long count = cartMapper.selectCount(Wrappers.<CartItem>lambdaQuery().
+                    eq(CartItem::getUserId, userId).last("FOR UPDATE"));
+            if (count<=0) {
+                cartHeaderManager.unbindMerchant(userId);
             }
             // 返回一个数量为0的VO，让前端做删除动画
             CartVO emptyVO = getCartVO(cartItem);
@@ -275,12 +286,15 @@ public class CartService {
     }
     @Transactional(rollbackFor = Exception.class)
     public void delete(DeleteDTO deleteDTO) {
+        Long userId = UserContextHolder.getUserId();
         if (deleteDTO.getCartItemIds() == null || deleteDTO.getCartItemIds().isEmpty()) {
             return;
         }
+        cartHeaderManager.lock(userId);
+
         int deletedRows = cartMapper.delete(Wrappers.<CartItem>lambdaQuery().
                 in(CartItem::getId, deleteDTO.getCartItemIds()).
-                eq(CartItem::getUserId, UserContextHolder.getUserId()));
+                eq(CartItem::getUserId, userId));
 
 
         if(deletedRows != deleteDTO.getCartItemIds().size()) {
@@ -288,11 +302,18 @@ public class CartService {
                     ResultCodeEnum.BUSINESS_ERROR,"购物车清理失败"
             );
         }
+
+        boolean exists = cartMapper.existsByUserId(userId);
+        if (!exists) {
+            cartHeaderManager.unbindMerchant(userId);
+        }
     }
     @Transactional(rollbackFor = Exception.class)
     public void clear(){
-        //通过从 ThreadLocal 获取当前请求上下文里的 userId
+        Long userId = UserContextHolder.getUserId();
+        cartHeaderManager.lock(userId);
+        cartHeaderManager.unbindMerchant(userId);
         cartMapper.delete(Wrappers.<CartItem>lambdaQuery().
-                eq(CartItem::getUserId, UserContextHolder.getUserId()));
+                eq(CartItem::getUserId, userId));
     }
 }

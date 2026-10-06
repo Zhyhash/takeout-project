@@ -16,4 +16,5 @@ public class MerchantProductVO {
     private String statusDesc;
     private String description;
     private String imageUrl;
+    private Integer version;
 }

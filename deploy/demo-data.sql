@@ -206,16 +206,20 @@ ON DUPLICATE KEY UPDATE
 --
 -- These orders provide entry points for merchant accept, rider claim,
 -- rider complete and user confirm operations.
+-- Each request_hash below is the SHA-256 of the four receiver/remark fields
+-- encoded with the same Java UTF-16 length prefixes as OrderRequestFingerprint.
+-- Update the corresponding hash when changing a demo order's request fields.
 -- ---------------------------------------------------------------------------
 
 INSERT INTO orders (
-    order_no, user_id, request_id, merchant_id, merchant_name,
+    order_no, user_id, request_id, request_hash, merchant_id, merchant_name,
     total_amount, status, receiver_name, receiver_phone,
     receiver_address, remark, create_time, update_time,
     finish_time, original_amount, discount_amount, pay_time
 )
 VALUES (
     'DEMO-PAID-0001', @demo_user_id, 'demo-paid-order',
+    'aa075342bc1f67322d0920874196c0590695fdeb02b08f8e3329a1f4e1808ef9',
     @demo_merchant_id, '演示餐厅', 28.80, 2,
     '演示用户', '13900000001', '上海市浦东新区调试路 1 号',
     '等待商家接单', DATE_SUB(NOW(), INTERVAL 20 MINUTE),
@@ -224,6 +228,7 @@ VALUES (
 )
 ON DUPLICATE KEY UPDATE
     id = LAST_INSERT_ID(id),
+    request_hash = 'aa075342bc1f67322d0920874196c0590695fdeb02b08f8e3329a1f4e1808ef9',
     merchant_id = @demo_merchant_id,
     merchant_name = '演示餐厅',
     total_amount = 28.80,
@@ -241,13 +246,14 @@ ON DUPLICATE KEY UPDATE
 SET @demo_paid_order_id = LAST_INSERT_ID();
 
 INSERT INTO orders (
-    order_no, user_id, request_id, merchant_id, merchant_name,
+    order_no, user_id, request_id, request_hash, merchant_id, merchant_name,
     total_amount, status, receiver_name, receiver_phone,
     receiver_address, remark, create_time, update_time,
     finish_time, original_amount, discount_amount, pay_time
 )
 VALUES (
     'DEMO-READY-0001', @demo_user_id, 'demo-ready-order',
+    '61eda7f9007bec2e8b7ae344d6498b22c0d1c79e32918384a1435f6fbf21edfe',
     @demo_merchant_id, '演示餐厅', 25.80, 6,
     '演示用户', '13900000001', '上海市浦东新区调试路 2 号',
     '等待骑手抢单', DATE_SUB(NOW(), INTERVAL 15 MINUTE),
@@ -256,6 +262,7 @@ VALUES (
 )
 ON DUPLICATE KEY UPDATE
     id = LAST_INSERT_ID(id),
+    request_hash = '61eda7f9007bec2e8b7ae344d6498b22c0d1c79e32918384a1435f6fbf21edfe',
     merchant_id = @demo_merchant_id,
     merchant_name = '演示餐厅',
     total_amount = 25.80,
@@ -273,13 +280,14 @@ ON DUPLICATE KEY UPDATE
 SET @demo_ready_order_id = LAST_INSERT_ID();
 
 INSERT INTO orders (
-    order_no, user_id, request_id, merchant_id, merchant_name,
+    order_no, user_id, request_id, request_hash, merchant_id, merchant_name,
     total_amount, status, receiver_name, receiver_phone,
     receiver_address, remark, create_time, update_time,
     finish_time, original_amount, discount_amount, pay_time
 )
 VALUES (
     'DEMO-DELIVERING-0001', @demo_user_id, 'demo-delivering-order',
+    '174fb53ef8575f39d57585281e450e6155d4c3645d45f8a31775a0dbbe9365ac',
     @demo_merchant_id, '演示餐厅', 28.80, 7,
     '演示用户', '13900000001', '上海市浦东新区调试路 3 号',
     '由演示骑手配送中', DATE_SUB(NOW(), INTERVAL 10 MINUTE),
@@ -288,6 +296,7 @@ VALUES (
 )
 ON DUPLICATE KEY UPDATE
     id = LAST_INSERT_ID(id),
+    request_hash = '174fb53ef8575f39d57585281e450e6155d4c3645d45f8a31775a0dbbe9365ac',
     merchant_id = @demo_merchant_id,
     merchant_name = '演示餐厅',
     total_amount = 28.80,
@@ -305,13 +314,14 @@ ON DUPLICATE KEY UPDATE
 SET @demo_delivering_order_id = LAST_INSERT_ID();
 
 INSERT INTO orders (
-    order_no, user_id, request_id, merchant_id, merchant_name,
+    order_no, user_id, request_id, request_hash, merchant_id, merchant_name,
     total_amount, status, receiver_name, receiver_phone,
     receiver_address, remark, create_time, update_time,
     finish_time, original_amount, discount_amount, pay_time
 )
 VALUES (
     'DEMO-DELIVERED-0001', @demo_user_id, 'demo-delivered-order',
+    '6ec7cbe68e3d6ccd9442f8f8e3461a2b0801633a953abac1ab7f3568b41dbc1f',
     @demo_merchant_id, '演示餐厅', 10.00, 8,
     '演示用户', '13900000001', '上海市浦东新区调试路 4 号',
     '等待用户确认收货', DATE_SUB(NOW(), INTERVAL 8 MINUTE),
@@ -320,6 +330,7 @@ VALUES (
 )
 ON DUPLICATE KEY UPDATE
     id = LAST_INSERT_ID(id),
+    request_hash = '6ec7cbe68e3d6ccd9442f8f8e3461a2b0801633a953abac1ab7f3568b41dbc1f',
     merchant_id = @demo_merchant_id,
     merchant_name = '演示餐厅',
     total_amount = 10.00,

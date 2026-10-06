@@ -1,13 +1,13 @@
 package org.example.takeout.api;
 
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.context.WebApplicationContext;
 import org.example.takeout.Rider.DTO.RiderLoginDTO;
 import org.example.takeout.Rider.DTO.RiderRegisterDTO;
 import org.example.takeout.Rider.VO.RiderLoginVO;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.web.context.WebApplicationContext;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;

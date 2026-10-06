@@ -1,6 +1,10 @@
 spring:
   application:
     name: tokeout
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: ${DB_URL}
@@ -8,6 +12,18 @@ spring:
     password: ${DB_PASSWORD}
   jackson:
     time-zone: Asia/Shanghai
+  flyway:
+    enabled: true
+    # Flyway 使用与应用相同的连接参数，DB_URL/DB_USERNAME/DB_PASSWORD 是唯一配置来源。
+    url: ${DB_URL}
+    user: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 1
+    validate-on-migrate: true
+    connect-retries: 10
+    connect-retries-interval: 5
 
 mybatis-plus:
   mapper-locations: classpath:mapper/*.xml

@@ -18,6 +18,7 @@ import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
+import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
@@ -41,28 +42,36 @@ public class OrderService {
     private final OrderMapper orderMapper;
     private final OrderVOBuilder orderVOBuilder;
     private final cartDomainService cartDomainService;
+    private final OrderRequestFingerprint orderRequestFingerprint;
 
     public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO) {
         Long userId = UserContextHolder.getUserId();
+        String requestHash = orderRequestFingerprint.calculate(createOrderDTO);
 
         Order existing = orderMapper.selectOne(
                 Wrappers.<Order>lambdaQuery().
                         eq(Order::getUserId, userId).
                         eq(Order::getRequestId, createOrderDTO.getRequestId()));
         if (existing != null) {
+            if (!Objects.equals(existing.getRequestHash(), requestHash)) {
+                throw new BusinessException(
+                        ResultCodeEnum.PARAM_ERROR,
+                        "同一 requestId 不能携带不同下单参数，请使用新的 requestId"
+                );
+            }
             return orderVOBuilder.toCreateOrderVO(existing);
         }
 
 
-        OrderDataContext orderDataContext = prepareOrderDataContext(createOrderDTO, userId);
+        OrderDataContext orderDataContext = prepareOrderDataContext(userId);
 
 
         /// 修改数据库层面
-        Order order = orderTransactionExecutor.executeOrderCreation(orderDataContext, createOrderDTO, userId);
+        Order order = orderTransactionExecutor.executeOrderCreation(orderDataContext, createOrderDTO, userId, requestHash);
 
         return orderVOBuilder.toCreateOrderVO(order);
     }
-    private OrderDataContext prepareOrderDataContext(CreateOrderDTO createOrderDTO, Long userId) {
+    private OrderDataContext prepareOrderDataContext(Long userId) {
         // 获取可用购物车（内部已校验商品/商家状态）
         CartAvailableResult result = cartDomainService.getAvailableCartItems(userId);
 

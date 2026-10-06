@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `order_no` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `user_id` bigint NOT NULL,
     `request_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '客户端下单请求唯一标识',
+    `request_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '收货信息和备注的SHA-256请求指纹',
     `merchant_id` bigint NOT NULL,
     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `total_amount` decimal(10, 2) NOT NULL,

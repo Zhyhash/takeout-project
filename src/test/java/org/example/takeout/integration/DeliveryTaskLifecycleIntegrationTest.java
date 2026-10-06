@@ -9,7 +9,9 @@ import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
+import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
+import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.example.takeout.Rider.Enums.RiderStatusEnum;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.AfterEach;
@@ -41,6 +43,7 @@ class DeliveryTaskLifecycleIntegrationTest {
     private static final long ORDER_ID = 601L;
     private static final long RIDER_A_ID = 301L;
     private static final long RIDER_B_ID = 302L;
+    private static final String REQUEST_HASH = new OrderRequestFingerprint().calculate(new CreateOrderDTO());
     private static final Duration CONCURRENT_TIMEOUT = Duration.ofSeconds(10);
 
     private final WebApplicationContext webApplicationContext;
@@ -250,7 +253,7 @@ class DeliveryTaskLifecycleIntegrationTest {
     }
 
     private void seedWaitingTask(int orderStatus) {
-        jdbcTemplate.update("INSERT INTO orders (id, status) VALUES (?, ?)", ORDER_ID, orderStatus);
+        jdbcTemplate.update("INSERT INTO orders (id, status, request_hash) VALUES (?, ?, ?)", ORDER_ID, orderStatus, REQUEST_HASH);
         jdbcTemplate.update("""
                 INSERT INTO delivery_task (
                     id, order_id, rider_id, merchant_name, delivery_reward, status, create_time,
@@ -261,7 +264,7 @@ class DeliveryTaskLifecycleIntegrationTest {
     }
 
     private void seedDeliveringTask(long riderId, int orderStatus) {
-        jdbcTemplate.update("INSERT INTO orders (id, status) VALUES (?, ?)", ORDER_ID, orderStatus);
+        jdbcTemplate.update("INSERT INTO orders (id, status, request_hash) VALUES (?, ?, ?)", ORDER_ID, orderStatus, REQUEST_HASH);
         jdbcTemplate.update("""
                 INSERT INTO delivery_task (
                     id, order_id, rider_id, merchant_name, delivery_reward, status, create_time, accepted_time,
@@ -272,7 +275,7 @@ class DeliveryTaskLifecycleIntegrationTest {
     }
 
     private void seedCompletedTask(long riderId, int orderStatus) {
-        jdbcTemplate.update("INSERT INTO orders (id, status) VALUES (?, ?)", ORDER_ID, orderStatus);
+        jdbcTemplate.update("INSERT INTO orders (id, status, request_hash) VALUES (?, ?, ?)", ORDER_ID, orderStatus, REQUEST_HASH);
         jdbcTemplate.update("""
                 INSERT INTO delivery_task (
                     id, order_id, rider_id, merchant_name, delivery_reward, status, create_time, accepted_time, delivered_time,
@@ -350,6 +353,7 @@ class DeliveryTaskLifecycleIntegrationTest {
                     order_no VARCHAR(64) NULL,
                     user_id BIGINT NULL,
                     request_id VARCHAR(64) NULL,
+                    request_hash CHAR(64) NOT NULL,
                     merchant_id BIGINT NULL,
                     merchant_name VARCHAR(255) NULL,
                     total_amount DECIMAL(10, 2) NULL,

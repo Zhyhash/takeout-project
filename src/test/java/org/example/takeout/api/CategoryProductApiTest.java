@@ -1,23 +1,21 @@
 package org.example.takeout.api;
 
-import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.context.WebApplicationContext;
 import com.github.pagehelper.PageInfo;
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -149,6 +147,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         MerchantProductVO createdProduct = merchantProductVO(301L, "Rice");
         createdProduct.setStatus(1);
         createdProduct.setStatusDesc("已经下架");
+        createdProduct.setVersion(0);
         when(productService.createProduct(any(CreateProductDTO.class))).thenReturn(createdProduct);
 
         mockMvc.perform(post("/category/products")
@@ -159,7 +158,8 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data.productName").value("Rice"))
                 .andExpect(jsonPath("$.data.status").value(1))
-                .andExpect(jsonPath("$.data.statusDesc").value("已经下架"));
+                .andExpect(jsonPath("$.data.statusDesc").value("已经下架"))
+                .andExpect(jsonPath("$.data.version").value(0));
     }
 
     @Test
@@ -270,8 +270,10 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
 
     @Test
     void listProductsReturnsPage() throws Exception {
+        MerchantProductVO listedProduct = merchantProductVO(301L, "Rice");
+        listedProduct.setVersion(2);
         when(productService.listProducts(1, 10, null, null))
-                .thenReturn(new PageInfo<>(List.of(merchantProductVO(301L, "Rice"))));
+                .thenReturn(new PageInfo<>(List.of(listedProduct)));
 
         mockMvc.perform(get("/category/products")
                         .header("Authorization", merchantBearer()))
@@ -279,7 +281,8 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data.list[0].productName").value("Rice"))
                 .andExpect(jsonPath("$.data.list[0].status").value(0))
-                .andExpect(jsonPath("$.data.list[0].statusDesc").value("正在销售"));
+                .andExpect(jsonPath("$.data.list[0].statusDesc").value("正在销售"))
+                .andExpect(jsonPath("$.data.list[0].version").value(2));
     }
 
     @Test
@@ -329,10 +332,26 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
+    void getEditDetailReturnsCurrentVersion() throws Exception {
+        MerchantProductVO productVO = merchantProductVO(301L, "Rice");
+        productVO.setVersion(4);
+        when(productService.getMerchantProductDetail(301L)).thenReturn(productVO);
+
+        mockMvc.perform(get("/category/products/301/edit")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data.productName").value("Rice"))
+                .andExpect(jsonPath("$.data.version").value(4));
+    }
+
+    @Test
     void updateProductReturnsUpdatedProduct() throws Exception {
         UpdateProductDTO dto = updateProductDTO();
+        MerchantProductVO updatedProduct = merchantProductVO(301L, "Updated Rice");
+        updatedProduct.setVersion(1);
         when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
-                .thenReturn(merchantProductVO(301L, "Updated Rice"));
+                .thenReturn(updatedProduct);
 
         mockMvc.perform(put("/category/products/301")
                         .header("Authorization", merchantBearer())
@@ -340,7 +359,8 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         .content(json(dto)))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.productName").value("Updated Rice"));
+                .andExpect(jsonPath("$.data.productName").value("Updated Rice"))
+                .andExpect(jsonPath("$.data.version").value(1));
     }
 
     @Test

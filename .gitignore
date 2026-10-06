@@ -9,12 +9,17 @@ target/
 logs/
 *.log
 
+# Runtime uploads and local environment configuration
+/uploads/
+/.env
+/.env.*
+!/.env.example
+
 # OS
 .DS_Store
 Thumbs.db
 
 # Local Codex mentoring context
-/AGENTS.md
 /REDIS_LEARNING_LOG.md
 /Java后端实习面试题库.md
 /项目面试准备报告.md

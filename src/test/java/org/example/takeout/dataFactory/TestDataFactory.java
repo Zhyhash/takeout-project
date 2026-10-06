@@ -7,6 +7,7 @@ import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
+import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 
@@ -95,6 +96,12 @@ public final class TestDataFactory {
         order.setReceiverName("张三");
         order.setReceiverPhone("13800138000");
         order.setReceiverAddress("测试地址");
+        CreateOrderDTO request = new CreateOrderDTO();
+        request.setReceiverName(order.getReceiverName());
+        request.setReceiverPhone(order.getReceiverPhone());
+        request.setReceiverAddress(order.getReceiverAddress());
+        request.setRemark(order.getRemark());
+        order.setRequestHash(new OrderRequestFingerprint().calculate(request));
         order.setCreateTime(now);
         order.setUpdateTime(now);
         return order;

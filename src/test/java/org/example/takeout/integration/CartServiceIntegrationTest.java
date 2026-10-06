@@ -1,9 +1,9 @@
 package org.example.takeout.integration;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.DTO.AddCartDTO;
+import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.Service.CartService;
@@ -12,6 +12,8 @@ import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
+import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
@@ -22,6 +24,7 @@ import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.dataFactory.TestDataFactory;
+import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,11 +32,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
@@ -46,66 +48,55 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 })
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class CartServiceIntegrationTest {
-    public static final Long MERCHANT_A_ID = 1001L;  // 商家A
-    public static final Long MERCHANT_B_ID = 1002L;  // 商家B
+    public static final Long MERCHANT_A_ID = 1001L;
+    public static final Long MERCHANT_B_ID = 1002L;
     public static final Long CATEGORY_A_ID = 4001L;
     public static final Long CATEGORY_B_ID = 4002L;
-
-    // ==================== 商品常量 ====================
-    public static final Long PRODUCT_A1_ID = 2001L;  // 商家A的商品1
-    public static final Long PRODUCT_A2_ID = 2002L;  // 商家A的商品2
-    public static final Long PRODUCT_B1_ID = 3001L;  // 商家B的商品1
-    public static final Long PRODUCT_B2_ID = 3002L;  // 商家B的商品2
-
+    public static final Long PRODUCT_A1_ID = 2001L;
+    public static final Long PRODUCT_A2_ID = 2002L;
+    public static final Long PRODUCT_B1_ID = 3001L;
+    public static final Long PRODUCT_B2_ID = 3002L;
     public static final String PRODUCT_A1_NAME = "iPhone 15 Pro";
     public static final String PRODUCT_A2_NAME = "MacBook Air M3";
     public static final String PRODUCT_B1_NAME = "小米14 Ultra";
     public static final String PRODUCT_B2_NAME = "华为Mate 60 Pro";
-
-    // ==================== 用户常量 ====================
-    public static final Long USER_1_ID = 5001L;  // 用户1
-    public static final Long USER_2_ID = 5002L;  // 用户2
-
-    // ==================== 购物车常量 ====================
+    public static final Long USER_1_ID = 5001L;
+    public static final Long USER_2_ID = 5002L;
     public static final Long CART_ITEM_1_ID = 6001L;
     public static final Long CART_ITEM_2_ID = 6002L;
     public static final Long CART_ITEM_3_ID = 6003L;
     public static final Long CART_ITEM_4_ID = 6004L;
 
-    final CartService cartService;
-    final CartMapper cartMapper;
-    final ProductMapper productMapper;
+    private final CartService cartService;
+    private final CartMapper cartMapper;
+    private final ProductMapper productMapper;
     private final MerchantMapper merchantMapper;
-
     private final CategoryMapper categoryMapper;
-
     private final OrderMapper orderMapper;
-
     private final OrderItemMapper orderItemMapper;
-
     private final JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void setUp() {
+        CartHeaderTestFixture.ensureTable(jdbcTemplate);
         deleteTestData();
-
+        CartHeaderTestFixture.insertEmpty(jdbcTemplate, USER_1_ID);
+        CartHeaderTestFixture.insertEmpty(jdbcTemplate, USER_2_ID);
         UserContextHolder.setUserId(USER_1_ID);
     }
 
     private void deleteTestData() {
         List<Long> orderIds = orderMapper.selectList(Wrappers.<Order>lambdaQuery()
                         .eq(Order::getUserId, USER_1_ID))
-                .stream()
-                .map(Order::getId)
-                .toList();
+                .stream().map(Order::getId).toList();
         if (!orderIds.isEmpty()) {
             orderItemMapper.delete(Wrappers.<OrderItem>lambdaQuery()
                     .in(OrderItem::getOrderId, orderIds));
         }
-        orderMapper.delete(Wrappers.<Order>lambdaQuery()
-                .eq(Order::getUserId, USER_1_ID));
+        orderMapper.delete(Wrappers.<Order>lambdaQuery().eq(Order::getUserId, USER_1_ID));
         cartMapper.delete(Wrappers.<CartItem>lambdaQuery()
-                .eq(CartItem::getUserId, USER_1_ID));
+                .in(CartItem::getUserId, USER_1_ID, USER_2_ID));
+        jdbcTemplate.update("DELETE FROM cart_header WHERE user_id IN (?, ?)", USER_1_ID, USER_2_ID);
         // Product 使用逻辑删除；测试清理必须物理删除，才能安全复用固定主键。
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", MERCHANT_A_ID);
         jdbcTemplate.update("DELETE FROM product WHERE merchant_id = ?", MERCHANT_B_ID);
@@ -124,186 +115,129 @@ public class CartServiceIntegrationTest {
         }
     }
 
-    //NOTE：测试重复添加同一商品时购物车仅保留一条记录并正确累加数量
     @Test
-    public void shouldIncreaseQuantityWhenSameProductIsAddedTwice(){
-        CartTestData cartTestData = createProductsAndSameMerchant();
-        AddCartDTO iphoneDTO = cartTestData.iphoneDTO();
+    public void shouldIncreaseQuantityWhenSameProductIsAddedTwice() {
+        AddCartDTO dto = createProductsAndSameMerchant().iphoneDTO();
 
-        cartService.add(iphoneDTO);
-        cartService.add(iphoneDTO);
+        cartService.add(dto);
+        cartService.add(dto);
 
-        List<CartItem> cartItems = cartMapper.selectList(
-                new QueryWrapper<CartItem>()
-                        .eq("user_id", USER_1_ID)
-                        .eq("product_id", PRODUCT_A1_ID)
-        );
-        assert(cartItems.size() == 1);
-
-        assert(cartItems.get(0).getQuantity().equals(2));
+        List<CartItem> items = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getUserId, USER_1_ID));
+        assertEquals(1, items.size());
+        assertEquals(2, items.get(0).getQuantity());
+        assertEquals(MERCHANT_A_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, USER_1_ID));
     }
 
-    //NOTE：测试并发添加同一商品时购物车数量能够正确累加且仍可购买
     @Test
-    public void shouldHandleConcurrentAddsOfSameProduct() throws InterruptedException {
-        CartTestData cartTestData = createProductsAndSameMerchant();
-        AddCartDTO iphoneDTO = cartTestData.iphoneDTO();
+    public void shouldHandleConcurrentAddsOfSameProduct() {
+        AddCartDTO dto = createProductsAndSameMerchant().iphoneDTO();
 
-        CountDownLatch latch = new CountDownLatch(1);  // 创建一个门闩，计数器=1
+        addConcurrently(dto);
 
-        Thread t1 = new Thread(() -> {
-            try {
-                UserContextHolder.setUserId(USER_1_ID);
-                latch.await();              // t1 在这里阻塞，等待 latch 打开
-                cartService.add(iphoneDTO);  // 门闩打开后，t1 执行添加操作
-            } catch (Exception e) {
-                e.printStackTrace();
-            }finally {
-                UserContextHolder.clear();
-            }
-
-        });
-
-        Thread t2 = new Thread(() -> {
-            try {
-                UserContextHolder.setUserId(USER_1_ID);
-                latch.await();              // t2 也在这里阻塞，等待 latch 打开
-                cartService.add(iphoneDTO);  // 门闩打开后，t2 执行添加操作
-            } catch (Exception e) {
-                e.printStackTrace();
-            }finally {
-                UserContextHolder.clear();
-            }
-
-        });
-
-        t1.start();   // 启动 t1，t1 运行到 await() 处阻塞
-        t2.start();   // 启动 t2，t2 运行到 await() 处阻塞
-        // 此时两个线程都卡在 await，都没执行 add()
-
-        latch.countDown();  // 计数器减到 0，门闩打开！
-        // t1 和 t2 同时被唤醒，几乎同时执行 add()
-
-        t1.join();  // 主线程等待 t1 执行完
-        t2.join();  // 主线程等待 t2 执行完
-        List<CartItem> cartItems = cartMapper.selectList(
-                new QueryWrapper<CartItem>()
-                        .eq("user_id", USER_1_ID)
-                        .eq("product_id", PRODUCT_A1_ID)
-        );
-        assertEquals(1, cartItems.size());
-        assertEquals(2, cartItems.get(0).getQuantity());  // 数量应该是 2，不是 1
-
+        List<CartItem> items = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getUserId, USER_1_ID));
+        assertEquals(1, items.size());
+        assertEquals(2, items.get(0).getQuantity());
+        assertEquals(MERCHANT_A_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, USER_1_ID));
         CartListVO list = cartService.list();
-        assertEquals(true, list.getCanBuy());
+        assertTrue(list.getCanBuy());
         assertEquals("", list.getInvalidReason());
     }
 
-    //NOTE：测试并发添加不同商家的商品后购物车能够识别多商家并禁止购买
     @Test
-    public void list_shouldDetectMultipleMerchantAfterConcurrentAdd() throws InterruptedException {
-        CartTestData cartTestData = createProductsAndDifferentMerchants();
-        AddCartDTO iphoneDTO = cartTestData.iphoneDTO();
-        AddCartDTO macbookDTO = cartTestData.macbookDTO();
+    public void concurrentAddsFromDifferentMerchantsAllowOnlyOneMerchant() {
+        CartTestData data = createProductsAndDifferentMerchants();
 
-        CountDownLatch latch = new CountDownLatch(1);  // 创建一个门闩，计数器=1
+        ConcurrentTestTemplate.TwoTaskResult<BusinessException, BusinessException> attempts =
+                ConcurrentTestTemplate.runTwoTasks(Duration.ofSeconds(10),
+                        () -> addAttempt(data.iphoneDTO()), () -> addAttempt(data.macbookDTO()));
 
-        Thread t1 = new Thread(() -> {
-            try {
-                UserContextHolder.setUserId(USER_1_ID);
-                latch.await();              // t1 在这里阻塞，等待 latch 打开
-                cartService.add(iphoneDTO);  // 门闩打开后，t1 执行添加操作
-            } catch (Exception e) {
-                e.printStackTrace();
-            }finally {
-                UserContextHolder.clear();
-            }
-
-        });
-
-        Thread t2 = new Thread(() -> {
-            try {
-                UserContextHolder.setUserId(USER_1_ID);
-                latch.await();              // t2 也在这里阻塞，等待 latch 打开
-                cartService.add(macbookDTO);  // 门闩打开后，t2 执行添加操作
-            } catch (Exception e) {
-                e.printStackTrace();
-            }finally {
-                UserContextHolder.clear();
-            }
-
-        });
-
-        t1.start();   // 启动 t1，t1 运行到 await() 处阻塞
-        t2.start();   // 启动 t2，t2 运行到 await() 处阻塞
-        // 此时两个线程都卡在 await，都没执行 add()
-
-        latch.countDown();  // 计数器减到 0，门闩打开！
-        // t1 和 t2 同时被唤醒，几乎同时执行 add()
-
-        t1.join();  // 主线程等待 t1 执行完
-        t2.join();  // 主线程等待 t2 执行完
-        List<CartItem> cartItems = cartMapper.selectList(
-                new QueryWrapper<CartItem>()
-                        .eq("user_id", USER_1_ID)
-        );
-        assertEquals(2, cartItems.size());
-        assertEquals(1, cartItems.get(0).getQuantity());
-        assertEquals(1, cartItems.get(1).getQuantity());
-
+        assertNotEquals(attempts.firstResult() == null, attempts.secondResult() == null,
+                "并发添加不同商家的商品必须只有一个请求成功");
+        BusinessException failure = attempts.firstResult() == null
+                ? attempts.secondResult() : attempts.firstResult();
+        assertNotNull(failure);
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, failure.getCodeEnum());
+        assertEquals("只能加入同一家店的商品", failure.getMessage());
+        List<CartItem> items = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getUserId, USER_1_ID));
+        assertEquals(1, items.size());
+        assertEquals(1, items.get(0).getQuantity());
+        assertEquals(items.get(0).getMerchantId(), CartHeaderTestFixture.merchantId(jdbcTemplate, USER_1_ID));
         CartListVO list = cartService.list();
-        assertEquals(false, list.getCanBuy());
-        assertTrue(list.getInvalidReason().contains("用户购物车有多商家"));
+        assertTrue(list.getCanBuy());
+        assertEquals("", list.getInvalidReason());
     }
 
-    //NOTE：测试购物车已有商品时并发添加两次能够正确累加数量
     @Test
-    public void shouldAddOnceConcurrentAddsOfSameProduct() throws InterruptedException {
+    public void shouldAddOnceConcurrentAddsOfSameProduct() {
         createCartAndProductFromSameMerchant();
-        AddCartDTO addCartDto = createAddCartDto(PRODUCT_A1_ID);
 
-        CountDownLatch latch = new CountDownLatch(1);  // 创建一个门闩，计数器=1
+        addConcurrently(createAddCartDto(PRODUCT_A1_ID));
 
-        Thread t1 = new Thread(() -> {
+        CartItem item = cartMapper.selectOne(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getUserId, USER_1_ID));
+        assertEquals(12, item.getQuantity());
+        assertEquals(MERCHANT_A_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, USER_1_ID));
+    }
+
+    private void addConcurrently(AddCartDTO dto) {
+        ConcurrentTestTemplate.runConcurrently(2, Duration.ofSeconds(10), workerIndex -> {
             try {
                 UserContextHolder.setUserId(USER_1_ID);
-                latch.await();              // t1 在这里阻塞，等待 latch 打开
-                cartService.add(addCartDto);  // 门闩打开后，t1 执行添加操作
-            } catch (Exception e) {
-                e.printStackTrace();
-            }finally {
+                cartService.add(dto);
+            } finally {
                 UserContextHolder.clear();
             }
-
         });
+    }
 
-        Thread t2 = new Thread(() -> {
-            try {
-                UserContextHolder.setUserId(USER_1_ID);
-                latch.await();              // t2 也在这里阻塞，等待 latch 打开
-                cartService.add(addCartDto);  // 门闩打开后，t2 执行添加操作
-            } catch (Exception e) {
-                e.printStackTrace();
-            }finally {
-                UserContextHolder.clear();
-            }
+    @Test
+    void decreasingLastItemToZeroUnbindsMerchantAndAllowsAnotherStore() {
+        CartTestData products = createProductsAndDifferentMerchants();
+        Long itemId = cartService.add(products.iphoneDTO()).getId();
+        UpdateCartDTO decrease = new UpdateCartDTO();
+        decrease.setCartItemId(itemId);
+        decrease.setQuantityChange(-1);
 
-        });
+        assertEquals(0, cartService.update(decrease).getQuantity());
 
-        t1.start();   // 启动 t1，t1 运行到 await() 处阻塞
-        t2.start();   // 启动 t2，t2 运行到 await() 处阻塞
-        // 此时两个线程都卡在 await，都没执行 add()
+        assertFalse(cartMapper.existsByUserId(USER_1_ID));
+        assertNull(CartHeaderTestFixture.merchantId(jdbcTemplate, USER_1_ID));
+        cartService.add(products.macbookDTO());
+        assertEquals(MERCHANT_B_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, USER_1_ID));
+        assertEquals(1L, cartMapper.selectCount(Wrappers.<CartItem>lambdaQuery()
+                .eq(CartItem::getUserId, USER_1_ID).eq(CartItem::getProductId, PRODUCT_B1_ID)));
+    }
 
-        latch.countDown();  // 计数器减到 0，门闩打开！
-        // t1 和 t2 同时被唤醒，几乎同时执行 add()
+    @Test
+    void decreasingOneItemToZeroKeepsBindingForRemainingItems() {
+        CartTestData products = createProductsAndSameMerchant();
+        Long removedId = cartService.add(products.iphoneDTO()).getId();
+        Long remainingId = cartService.add(products.macbookDTO()).getId();
+        UpdateCartDTO decrease = new UpdateCartDTO();
+        decrease.setCartItemId(removedId);
+        decrease.setQuantityChange(-1);
 
-        t1.join();  // 主线程等待 t1 执行完
-        t2.join();  // 主线程等待 t2 执行完
-        CartItem cartItems= cartMapper.selectOne(
-                new QueryWrapper<CartItem>()
-                        .eq("user_id", USER_1_ID)
-        );
-        assertEquals(12, cartItems.getQuantity());
+        assertEquals(0, cartService.update(decrease).getQuantity());
+
+        assertNull(cartMapper.selectById(removedId));
+        assertEquals(1, cartMapper.selectById(remainingId).getQuantity());
+        assertEquals(MERCHANT_A_ID, CartHeaderTestFixture.merchantId(jdbcTemplate, USER_1_ID));
+        assertTrue(cartService.list().getCanBuy());
+    }
+
+    private BusinessException addAttempt(AddCartDTO dto) {
+        try {
+            UserContextHolder.setUserId(USER_1_ID);
+            cartService.add(dto);
+            return null;
+        } catch (BusinessException failure) {
+            return failure;
+        } finally {
+            UserContextHolder.clear();
+        }
     }
 
     private CartTestData createProductsAndSameMerchant() {
@@ -312,16 +246,11 @@ public class CartServiceIntegrationTest {
         Merchant merchant = TestDataFactory.createOpenMerchant(MERCHANT_A_ID);
         iphone.setCategoryId(CATEGORY_A_ID);
         macbook.setCategoryId(CATEGORY_A_ID);
-
         merchantMapper.insert(merchant);
         categoryMapper.insert(createCategory(CATEGORY_A_ID, MERCHANT_A_ID));
         productMapper.insert(iphone);
         productMapper.insert(macbook);
-
-        return new CartTestData(
-                createAddCartDto(PRODUCT_A1_ID),
-                createAddCartDto(PRODUCT_A2_ID)
-        );
+        return new CartTestData(createAddCartDto(PRODUCT_A1_ID), createAddCartDto(PRODUCT_A2_ID));
     }
 
     private CartTestData createProductsAndDifferentMerchants() {
@@ -331,35 +260,30 @@ public class CartServiceIntegrationTest {
         Merchant merchant2 = TestDataFactory.createOpenMerchant(MERCHANT_B_ID);
         iphone.setCategoryId(CATEGORY_A_ID);
         macbook.setCategoryId(CATEGORY_B_ID);
-
         merchantMapper.insert(merchant1);
         merchantMapper.insert(merchant2);
         categoryMapper.insert(createCategory(CATEGORY_A_ID, MERCHANT_A_ID));
         categoryMapper.insert(createCategory(CATEGORY_B_ID, MERCHANT_B_ID));
         productMapper.insert(iphone);
         productMapper.insert(macbook);
-
-        return new CartTestData(
-                createAddCartDto(PRODUCT_A1_ID),
-                createAddCartDto(PRODUCT_B1_ID)
-        );
+        return new CartTestData(createAddCartDto(PRODUCT_A1_ID), createAddCartDto(PRODUCT_B1_ID));
     }
 
     private AddCartDTO createAddCartDto(Long productId) {
-        AddCartDTO addCartDTO = new AddCartDTO();
-        addCartDTO.setProductId(productId);
-        return addCartDTO;
+        AddCartDTO dto = new AddCartDTO();
+        dto.setProductId(productId);
+        return dto;
     }
 
     private void createCartAndProductFromSameMerchant() {
         Product iphone = TestDataFactory.createProduct(PRODUCT_A1_ID, PRODUCT_A1_NAME, 100, MERCHANT_A_ID);
-        CartItem cartItem = TestDataFactory.createCartItem(CART_ITEM_1_ID, USER_1_ID, iphone, 10);
-        Merchant openMerchant = TestDataFactory.createOpenMerchant(MERCHANT_A_ID);
+        CartItem item = TestDataFactory.createCartItem(CART_ITEM_1_ID, USER_1_ID, iphone, 10);
         iphone.setCategoryId(CATEGORY_A_ID);
-        merchantMapper.insert(openMerchant);
+        merchantMapper.insert(TestDataFactory.createOpenMerchant(MERCHANT_A_ID));
         categoryMapper.insert(createCategory(CATEGORY_A_ID, MERCHANT_A_ID));
         productMapper.insert(iphone);
-        cartMapper.insert(cartItem);
+        cartMapper.insert(item);
+        CartHeaderTestFixture.bind(jdbcTemplate, USER_1_ID, MERCHANT_A_ID);
     }
 
     private Category createCategory(Long id, Long merchantId) {
@@ -374,5 +298,4 @@ public class CartServiceIntegrationTest {
 
     private record CartTestData(AddCartDTO iphoneDTO, AddCartDTO macbookDTO) {
     }
-
 }

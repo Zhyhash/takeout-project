@@ -14,6 +14,7 @@ import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @Validated
@@ -26,6 +27,12 @@ public class MerchantProductController {
     public Result<?> create(@RequestBody @Valid CreateProductDTO createProductDTO) {
         MerchantProductVO productVO = productService.createProduct(createProductDTO);
         return Result.success(productVO);
+    }
+
+    @PostMapping("/image")
+    public Result<String> uploadImage(@RequestParam("file") MultipartFile file) {
+        String s = productService.uploadImage(file);
+        return Result.success(s);
     }
 
     @GetMapping
@@ -42,6 +49,11 @@ public class MerchantProductController {
     @GetMapping("/{id}")
     public Result<ProductVO> getDetail(@PathVariable("id") @Positive Long id) {
         return Result.success(productService.getProductDetail(id));
+    }
+
+    @GetMapping("/{id}/edit")
+    public Result<MerchantProductVO> getEditDetail(@PathVariable("id") @Positive Long id) {
+        return Result.success(productService.getMerchantProductDetail(id));
     }
 
     @PutMapping("/{id}")

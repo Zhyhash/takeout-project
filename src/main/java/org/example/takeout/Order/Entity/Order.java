@@ -98,4 +98,9 @@ public class Order {
 
     private LocalDateTime payTime;
 
+    /**
+     * 订单DTO hash
+     */
+    private String requestHash;
+
 }

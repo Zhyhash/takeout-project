@@ -15,6 +15,7 @@ import org.example.takeout.Category.Mapper.CategoryMapper;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.FileStorageException;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
@@ -34,10 +35,18 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -49,6 +58,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ProductService {
 
+    private static final long MAX_PRODUCT_IMAGE_SIZE = 5 * 1024 * 1024;
+    private static final Set<String> ALLOWED_IMAGE_CONTENT_TYPES =
+            Set.of("image/jpeg", "image/png");
+
+    private static final Set<String> ALLOWED_IMAGE_EXTENSIONS =
+            Set.of("jpg", "jpeg", "png");
     private final CategoryMapper categoryMapper;
     private final ProductMapper productMapper;
     private final ProductConverter productConverter;
@@ -141,6 +156,7 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"种类不存在");
         }
         Product product = toProduct(createProductDTO);
+        product.setVersion(0);
         try {
             productMapper.insert(product);
         } catch (DuplicateKeyException e) {
@@ -150,6 +166,15 @@ public class ProductService {
             );
         }
         return toMerchantProductVO(product,category);
+    }
+
+    public MerchantProductVO getMerchantProductDetail(Long productId) {
+        Product product = getProduct(productId);
+        if (product == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "商品不存在或不属于当前商家");
+        }
+        return toMerchantProductVO(product, getCategory(product.getCategoryId()));
     }
 
     //NOTE:上架商品
@@ -600,5 +625,55 @@ public class ProductService {
             );
         }
         evictProductDetailCache(productId);
+    }
+
+    public String uploadImage(MultipartFile file) {
+        if (file.isEmpty()) {
+            return null;
+        }
+        if (file.getSize() > MAX_PRODUCT_IMAGE_SIZE){
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "图片大小不得超过5MB");
+        }
+        if (!ALLOWED_IMAGE_CONTENT_TYPES.contains(file.getContentType())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "不支持的类型");
+        }
+        String extension = extractExtension(file.getOriginalFilename());
+        if (!ALLOWED_IMAGE_EXTENSIONS.contains(extension)) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "不支持的类型");
+        }
+
+        BufferedImage image;
+
+        try (InputStream inputStream = file.getInputStream()) {
+            image = ImageIO.read(inputStream);
+        } catch (IOException e) {
+            throw new FileStorageException(e.getMessage(),e);
+        }
+
+        if (image == null) {
+            throw new FileStorageException("上传格式不支持");
+        }
+
+        String filename = UUID.randomUUID()+ "." + extension;
+
+        Path uploadDir = Paths.get("./uploads/products");
+        try {
+            Files.createDirectories(uploadDir);
+            Path targetPath = uploadDir.resolve(filename);
+
+            file.transferTo(targetPath);
+        } catch (IOException e) {
+            throw new FileStorageException(e.getMessage(),e);
+        }
+
+        return "/uploads/products/" + filename;
+    }
+    private String extractExtension(String filename) {
+        if (filename == null) return "";
+        int dot = filename.lastIndexOf('.');
+        if (dot < 0 || dot == filename.length() - 1) return "";
+        return filename.substring(dot + 1).toLowerCase();
     }
 }

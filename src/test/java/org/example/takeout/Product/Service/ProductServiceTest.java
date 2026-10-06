@@ -14,11 +14,13 @@ import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductConverter;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
+import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -32,20 +34,9 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class ProductServiceTest {
@@ -138,6 +129,46 @@ class ProductServiceTest {
 
         assertEquals("当前店铺已存在同名商品", exception.getMessage());
         verify(productMapper).insert(product);
+    }
+
+    @Test
+    void createProductReturnsInitialVersion() {
+        Category category = new Category();
+        category.setId(1L);
+        category.setCategoryName("主食");
+        CreateProductDTO dto = new CreateProductDTO();
+        dto.setCategoryId(1L);
+        dto.setProductName("米饭");
+        ReflectionTestUtils.setField(productService, "productConverter",
+                Mappers.getMapper(ProductConverter.class));
+        when(categoryMapper.selectOne(any())).thenReturn(category);
+        when(productMapper.insert(any(Product.class))).thenAnswer(invocation -> {
+            Product product = invocation.getArgument(0);
+            product.setId(PRODUCT_ID);
+            return 1;
+        });
+
+        MerchantProductVO created = productService.createProduct(dto);
+
+        assertEquals(PRODUCT_ID, created.getId());
+        assertEquals(0, created.getVersion());
+    }
+
+    @Test
+    void merchantDetailReadsCurrentVersionFromDatabase() {
+        Product product = product(ProductStatusEnum.OFF_SALE.getCode(), 3, 4);
+        Category category = new Category();
+        category.setId(1L);
+        category.setCategoryName("主食");
+        ReflectionTestUtils.setField(productService, "productConverter",
+                Mappers.getMapper(ProductConverter.class));
+        when(productMapper.selectOne(any())).thenReturn(product);
+        when(categoryMapper.selectById(1L)).thenReturn(category);
+
+        MerchantProductVO detail = productService.getMerchantProductDetail(PRODUCT_ID);
+
+        assertEquals(4, detail.getVersion());
+        verifyNoInteractions(productCacheService);
     }
 
     @Test

@@ -13,6 +13,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.util.Objects;
 @Slf4j
@@ -104,6 +105,17 @@ public class GlobalExceptionHandle {
     }
 
 
+    @ExceptionHandler(value = MaxUploadSizeExceededException.class)
+    public Result<?> handleMaxUploadSizeExceededException(MaxUploadSizeExceededException e) {
+        log.warn("上传图片超过大小限制：{}", e.getMessage());
+        return Result.error(ResultCodeEnum.PARAM_ERROR, "图片大小不得超过5MB");
+    }
+
+    @ExceptionHandler(value = FileStorageException.class)
+    public Result<?> handleFileStorageException(FileStorageException e) {
+        log.warn("文件上传失败{}",e.getMessage());
+        return Result.error(ResultCodeEnum.FILE_UPLOAD_ERROR,"文件上传异常，请稍后再试");
+    }
     @ExceptionHandler(value = Exception.class)
     public  Result<?> GloballyExceptionHandle(Exception e) {
         log.error("未明确异常：", e);

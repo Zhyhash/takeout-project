@@ -1,12 +1,12 @@
 package org.example.takeout.api;
 
-import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.context.WebApplicationContext;
 import com.github.pagehelper.PageInfo;
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.DeliveryTask.VO.RiderDeliveryDetailVO;
 import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
 import java.util.List;

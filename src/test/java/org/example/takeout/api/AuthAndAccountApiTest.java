@@ -1,9 +1,7 @@
 package org.example.takeout.api;
 
-import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.context.WebApplicationContext;
 import com.github.pagehelper.PageInfo;
+import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
@@ -14,7 +12,9 @@ import org.example.takeout.Product.VO.ProductVO;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.web.context.WebApplicationContext;
 
 import java.util.List;
 

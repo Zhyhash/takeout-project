@@ -11,12 +11,14 @@ import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
+import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
@@ -40,6 +42,8 @@ class OrderServiceValidationTest {
     private OrderVOBuilder orderVOBuilder;
     @Mock
     private cartDomainService cartDomainService;
+    @Spy
+    private OrderRequestFingerprint orderRequestFingerprint = new OrderRequestFingerprint();
     @InjectMocks
     private OrderService orderService;
 
@@ -64,7 +68,7 @@ class OrderServiceValidationTest {
         when(cartDomainService.getAvailableCartItems(21L)).thenReturn(result);
 
         assertThrows(BusinessException.class, () -> orderService.createOrder(dto));
-        verify(orderTransactionExecutor, never()).executeOrderCreation(any(), any(), any());
+        verify(orderTransactionExecutor, never()).executeOrderCreation(any(), any(), any(), anyString());
     }
 
     @Test

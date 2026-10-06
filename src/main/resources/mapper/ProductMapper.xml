@@ -4,6 +4,16 @@
 
 <!-- namespace 必须指向你的 Mapper 接口全类名 -->
 <mapper namespace="org.example.takeout.Product.Mapper.ProductMapper">
+    <select id="selectReferencedImageUrls" resultType="java.lang.String">
+        SELECT image_url
+        FROM product
+        WHERE is_deleted = 0
+          AND image_url IN
+        <foreach collection="candidates" item="imageUrl" open="(" separator="," close=")">
+            #{imageUrl}
+        </foreach>
+    </select>
+
     <update id="restoreDeletedProduct">
         UPDATE product
         SET is_deleted = 0,

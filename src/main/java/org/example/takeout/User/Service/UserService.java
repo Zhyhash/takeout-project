@@ -2,6 +2,7 @@ package org.example.takeout.User.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
+import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.AuthException;
@@ -28,6 +29,7 @@ public class UserService {
     private final UserMapper userMapper;
     private final JWTUtils jwtUtils;
     private final LoginAttemptLimiter loginAttemptLimiter;
+    private final CartHeaderManager cartHeaderManager;
 
     @Transactional(rollbackFor =  Exception.class)
     public void register(RegisterDTO dto){
@@ -49,6 +51,9 @@ public class UserService {
         user.setStatus(UserStatusEnum.NORMAL.getCode());
         user.setNickname("用户_" + random.nextInt(10000));
         userMapper.insert(user);
+
+        //创建购物车总表
+        cartHeaderManager.insertCartHeader(user.getId());
     }
 
     public LoginVO login(@NonNull LoginDTO loginDTO){
