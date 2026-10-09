@@ -8,28 +8,29 @@ import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
-import org.example.takeout.Merchant.Mapper.MerchantMapper;
+import org.example.takeout.Merchant.Service.MerchantQueryService;
 import org.example.takeout.Product.Entity.Product;
-import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductQueryService;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
-public class cartDomainService {
+public class CartCheckoutService {
     /**
      * 获取当前用户购物车中【可下单】的商品列表
      * 规则：商品状态上架 && 商家营业（未打烊）
      * 注意：不删除任何购物车记录，只是过滤
      */
-    private final MerchantMapper merchantMapper;
+    private final MerchantQueryService merchantQueryService;
     private final CartMapper cartMapper;
-    private final ProductMapper productMapper;
-    public CartAvailableResult getAvailableCartItems(Long userId) {
+    private final ProductQueryService productQueryService;
+    public CartAvailableResult prepareCheckout(Long userId) {
         List<CartItem> allItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
                 .eq(CartItem::getUserId, userId));
         if (allItems.isEmpty()) return new CartAvailableResult();
@@ -38,25 +39,15 @@ public class cartDomainService {
         List<Long> productIds = allItems.stream().map(CartItem::getProductId).toList();
         List<Long> merchantIds = allItems.stream().map(CartItem::getMerchantId).collect(Collectors.toList());
 
-        Map<Long, Product> productMap = productMapper.selectList(Wrappers.<Product>lambdaQuery().in(Product::getId, productIds)
-                .eq(Product::getStatus, ProductStatusEnum.ON_SALE.getCode())
-                .eq(Product::getIsDeleted, DeleteConstant.NOT_DELETED))
-                .stream()
-                .collect(Collectors.toMap(Product::getId, p -> p));
+        Map<Long, Product> productMap = productQueryService.selectProductsByIds(productIds);
 
-        Map<Long, Merchant> merchantMap = merchantMapper.selectList(
-                        Wrappers.<Merchant>lambdaQuery()
-                                .in(Merchant::getId, merchantIds)
-                                .ne(Merchant::getStatus, MerchantStatusEnum.BUSINESS_CLOSED.getCode()))
-                .stream()
-                .collect(Collectors.toMap(Merchant::getId, m -> m));
+        Map<Long, Merchant> merchantMap = merchantQueryService.selectMerchantsByIds(merchantIds);
 
         List<CartItem> available = new ArrayList<>();
         for (CartItem item : allItems) {
             Product product = productMap.get(item.getProductId());
             Merchant merchant = merchantMap.get(item.getMerchantId());
-            if (product != null && ProductStatusEnum.ON_SALE.getCode().equals(product.getStatus())
-                    && merchant != null && !MerchantStatusEnum.BUSINESS_CLOSED.getCode().equals(merchant.getStatus())) {
+            if (isAvailable(product, merchant)) {
                 available.add(item);
             }
         }
@@ -66,5 +57,19 @@ public class cartDomainService {
         cartAvailableResult.setProductMap(productMap);
         cartAvailableResult.setMerchantMap(merchantMap);
         return cartAvailableResult;
+    }
+
+    private boolean isAvailable(Product product, Merchant merchant) {
+        return product != null
+                && Objects.equals(
+                        product.getStatus(),
+                        ProductStatusEnum.ON_SALE.getCode())
+                && Objects.equals(
+                        product.getIsDeleted(),
+                        DeleteConstant.NOT_DELETED)
+                && merchant != null
+                && !Objects.equals(
+                        merchant.getStatus(),
+                        MerchantStatusEnum.BUSINESS_CLOSED.getCode());
     }
 }

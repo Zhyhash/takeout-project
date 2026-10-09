@@ -6,7 +6,6 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 import org.example.takeout.Common.CustomAnnotation.PasswordMatchable;
 import org.example.takeout.Common.CustomAnnotation.PasswordMatches;
-import org.example.takeout.Common.CustomAnnotation.UniquePhone;
 
 @Data
 @PasswordMatches
@@ -24,7 +23,6 @@ public class RegisterDTO implements PasswordMatchable {
     private String confirmPassword;
 
     @NotBlank(message = "手机号不能为空")
-    @UniquePhone(targetTable = "user", message = "该商家手机号已被注册")
     @Pattern(regexp = "^(?:(?:\\+|00)86)?1[3-9]\\d{9}$",message ="手机格式不正确，请重新输入" )
     private String phone;
 }

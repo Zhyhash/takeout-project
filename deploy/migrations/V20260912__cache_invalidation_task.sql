@@ -1,7 +1,3 @@
--- Existing databases are not changed by CREATE TABLE IF NOT EXISTS in schema.sql.
--- This consolidated migration creates the complete cache invalidation task table;
--- no follow-up retry-field migration is required.
--- Run this once when deploying the persistent cache invalidation task change.
 CREATE TABLE IF NOT EXISTS `cache_invalidation_task` (
     `id` bigint NOT NULL AUTO_INCREMENT,
     `cache_key` varchar(255) NOT NULL,

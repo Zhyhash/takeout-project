@@ -6,16 +6,18 @@ import com.github.pagehelper.PageInfo;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
-import org.example.takeout.Cart.Service.cartDomainService;
+import org.example.takeout.Cart.Service.CartCheckoutService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
+import org.example.takeout.Order.Assembler.OrderVOAssembler;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
+import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Support.OrderRequestFingerprint;
@@ -35,13 +37,13 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class OrderService {
-    private final OrderDomainService orderDomainService;
     private final OrderTransactionExecutor orderTransactionExecutor;
     private final OrderItemService orderItemService;
     private final OrderItemMapper orderItemMapper;
     private final OrderMapper orderMapper;
-    private final OrderVOBuilder orderVOBuilder;
-    private final cartDomainService cartDomainService;
+    private final OrderVOAssembler orderVOAssembler;
+    private final OrderConvertor orderConvertor;
+    private final CartCheckoutService CartCheckoutService;
     private final OrderRequestFingerprint orderRequestFingerprint;
 
     public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO) {
@@ -59,7 +61,7 @@ public class OrderService {
                         "同一 requestId 不能携带不同下单参数，请使用新的 requestId"
                 );
             }
-            return orderVOBuilder.toCreateOrderVO(existing);
+            return orderConvertor.toCreateOrderVO(existing);
         }
 
 
@@ -69,11 +71,11 @@ public class OrderService {
         /// 修改数据库层面
         Order order = orderTransactionExecutor.executeOrderCreation(orderDataContext, createOrderDTO, userId, requestHash);
 
-        return orderVOBuilder.toCreateOrderVO(order);
+        return orderConvertor.toCreateOrderVO(order);
     }
     private OrderDataContext prepareOrderDataContext(Long userId) {
         // 获取可用购物车（内部已校验商品/商家状态）
-        CartAvailableResult result = cartDomainService.getAvailableCartItems(userId);
+        CartAvailableResult result = CartCheckoutService.prepareCheckout(userId);
 
         List<CartItem> allCartItems = result.getAllItems();
         List<CartItem> availableCartItems = result.getAvailableItems();
@@ -104,7 +106,7 @@ public class OrderService {
         Map<Long, Product> productMap = result.getProductMap();
 
 
-        BigDecimal totalAmount = orderDomainService.calculateTotalAmount(availableCartItems, productMap);
+        BigDecimal totalAmount = calculateTotalAmount(availableCartItems, productMap);
 
         OrderDataContext orderDataContext = new OrderDataContext();
         orderDataContext.setTotalAmount(totalAmount);
@@ -112,6 +114,27 @@ public class OrderService {
         orderDataContext.setProductMap(productMap);
         orderDataContext.setAvailableItems(availableCartItems);
         return orderDataContext;
+    }
+    //NOTE:计算金额方法
+    private BigDecimal calculateTotalAmount(@NonNull List<CartItem> cartItems, Map<Long, Product> productMap) {
+        return cartItems.stream().
+                //peek 的语义是“检查/观察”：它的设计初衷是在不改变流中元素的情况下，对元素进行某种动作
+                //换句话说，这里只是在做防御性校验，数据本身不会在这里被转换
+                        peek(cartItem -> {
+                    if (cartItem.getProductId()==null||cartItem.getQuantity()==null||cartItem.getQuantity()<=0){
+                        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"计价失败：购物车明细数据不完整");
+                    }
+                })
+                .map(item -> {
+                    Product product = productMap.get(item.getProductId());
+                    if (product==null){
+                        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "计价失败：商品信息不存在或已下架");
+                    }
+                    if (product.getPrice()==null){
+                        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "计价失败：系统检测到异常商品价格，请联系客服");
+                    }
+                    return product.getPrice().multiply(BigDecimal.valueOf(item.getQuantity()));
+                }).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
 
@@ -124,7 +147,7 @@ public class OrderService {
     public OrderDetailVO searchOrderDetailById(@NonNull Long orderId){
         Long userId = UserContextHolder.getUserId();
         //只查询订单，不需要状态机
-        Order order = orderDomainService.getOrder(orderId, userId);
+        Order order = getUserOrder(orderId, userId);
 
         //查询item
         List<OrderItem> orderItems = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
@@ -136,7 +159,16 @@ public class OrderService {
         }
 
         //返回组装好的详情对象
-        return orderVOBuilder.toOrderDetailVO(order, orderItems);
+        return orderVOAssembler.toOrderDetailVO(order, orderItems);
+    }
+    private Order getUserOrder(Long orderId, Long userId) {
+        Order order = orderMapper.selectOne(Wrappers.<Order>lambdaQuery()
+                .eq(Order::getId, orderId)
+                .eq(Order::getUserId, userId));
+        if (order == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或状态不符");
+        }
+        return order;
     }
 
 
@@ -163,7 +195,7 @@ public class OrderService {
         PageInfo<Order> pageInfo = new PageInfo<>(orders);
 
 
-        return pageInfo.convert(order -> orderVOBuilder.toOrderVO(order, itemsMap));
+        return pageInfo.convert(order -> orderVOAssembler.toOrderVO(order, itemsMap));
 
     }
     //NOTE:取消订单，统一返回result

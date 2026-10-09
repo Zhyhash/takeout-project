@@ -13,36 +13,30 @@ import org.example.takeout.Category.VO.CreateCategoryVO;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
-import org.example.takeout.Product.Entity.Product;
-import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductCommandService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class CategoryService {
     private final CategoryMapper categoryMapper;
-    private final ProductMapper productMapper;
     private final CategoryConverter categoryConverter;
+    private final ProductCommandService productCommandService;
 
     // NOTE:商户查自己所有可用分类（用于创建商品时的下拉框）
-    //抽取方法，专注业务逻辑
-    private List<CategoryVO> toCategoryVOList(List<Category> categoryList) {
-        return categoryList.stream()
-                .map(category -> {
-                    return  categoryConverter.toCategoryVO(category);
-                })
-                .collect(Collectors.toList());
-    }
     public List<CategoryVO> listByMerchant(){
         List<Category> categories = categoryMapper.selectList(Wrappers.<Category>lambdaQuery().
                 eq(Category::getMerchantId, MerchantContextHolder.getMerchantId()).
                 eq(Category::getStatus, CategoryStatusEnum.ACTIVE.getCode()));
-        return toCategoryVOList(categories);
+        return categoryConverter.toCategoryVOList(categories);
     };
 
     // NOTE：按 code + merchantId 查单个分类，不存在抛 BusinessException
@@ -83,13 +77,7 @@ public class CategoryService {
         if(defaultCategory == null){
             throw new BusinessException(ResultCodeEnum.DATABASE_ERROR,"默认分类不存在");
         }
-        productMapper.update(
-                null,
-                Wrappers.<Product>lambdaUpdate()
-                        .set(Product::getCategoryId, defaultCategory.getId())
-                        .eq(Product::getCategoryId, categoryId)
-                        .eq(Product::getMerchantId, merchantId)
-        );
+        productCommandService.migrateProductsToCategory(merchantId,categoryId,defaultCategory.getId());
         categoryMapper.deleteById(categoryId);
     }
 
@@ -104,7 +92,6 @@ public class CategoryService {
         }
 
 
-        CreateCategoryVO createCategoryVO = new CreateCategoryVO();
         Category category = new Category();
 
         category.setMerchantId(MerchantContextHolder.getMerchantId());
@@ -114,10 +101,40 @@ public class CategoryService {
         //数据库的category_name的唯一的,重复会直接回滚
         categoryMapper.insert(category);
 
-        createCategoryVO.setId(category.getId());
-        createCategoryVO.setCategoryName(categoryName);
-        createCategoryVO.setStatusDesc(CategoryStatusEnum.ACTIVE.getDesc());
+        return categoryConverter.toCreateCategoryVO(category);
+    }
 
-        return  createCategoryVO;
+    //对外product的暂时接口
+    public Category lockActiveCategory(Long categoryId, Long merchantId) {
+        return categoryMapper.selectOne(
+                Wrappers.<Category>lambdaQuery()
+                        .eq(Category::getId, categoryId)
+                        .eq(Category::getMerchantId, merchantId)
+                        .eq(Category::getStatus, CategoryStatusEnum.ACTIVE.getCode())
+                        .last("FOR UPDATE")) ;
+    }
+    public Category getCategory(Long categoryId){
+        Category category = categoryMapper.selectById(categoryId);
+
+        if (category == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"分类不存在");
+        }
+
+        return category;
+    }
+    public Map<Long, Category> getCategoryMap(List<Long> categoryIds,Long merchantId) {
+        return categoryMapper.selectList(Wrappers.<Category>lambdaQuery()
+                        .eq(Category::getMerchantId, merchantId)
+                        .in(Category::getId, categoryIds))
+                .stream()
+                .collect(Collectors.toMap(Category::getId, Function.identity(), (first, second) -> first));
+    }
+
+    //对merchant的暂时接口
+    public List<Category> getCategoriesByIds(Collection<Long> categoryIds) {
+        return categoryMapper.selectList(
+                Wrappers.<Category>lambdaQuery()
+                        .in(Category::getId, categoryIds)
+        );
     }
 }

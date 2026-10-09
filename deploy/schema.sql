@@ -4,6 +4,9 @@
 -- Purpose: initialize a new deployment database without deleting existing data.
 -- Note: CREATE TABLE IF NOT EXISTS does not migrate an existing table. Use a
 -- versioned migration when an already deployed schema needs to be changed.
+-- Flyway also supplies B20261008__initial_schema.sql for completely empty schemas.
+-- Keep the old create_time order index out of this initializer: the immutable
+-- V20261007 migration creates it when adopting a Compose-initialized database.
 
 CREATE DATABASE IF NOT EXISTS `takeout`
     CHARACTER SET utf8mb4
@@ -20,7 +23,7 @@ CREATE TABLE IF NOT EXISTS `user` (
     `status` tinyint NOT NULL DEFAULT 1,
     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+    `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL,
     PRIMARY KEY (`id`) USING BTREE,
     UNIQUE INDEX `uk_user_phone` (`phone` ASC) USING BTREE,
     UNIQUE INDEX `uk_user_username` (`username` ASC) USING BTREE
@@ -65,7 +68,7 @@ CREATE TABLE IF NOT EXISTS `product` (
     `product_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '商品名称',
     `image_url` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品图片URL',
     `price` decimal(10, 2) NOT NULL COMMENT '商品价格',
-    `stock` int NOT NULL COMMENT '库存数量',
+    `stock` int NOT NULL DEFAULT 0 COMMENT '库存数量',
     `merchant_id` bigint NOT NULL COMMENT '所属商家ID',
     `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除: 0-未删除, 1-已删除',
     `active_name_guard` tinyint GENERATED ALWAYS AS (
@@ -107,6 +110,13 @@ CREATE TABLE IF NOT EXISTS `cart` (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4
   COLLATE = utf8mb4_0900_ai_ci COMMENT = '购物车表' ROW_FORMAT = Dynamic;
 
+CREATE TABLE IF NOT EXISTS `cart_header` (
+    `user_id` bigint UNSIGNED NOT NULL,
+    `merchant_id` bigint UNSIGNED DEFAULT NULL,
+    PRIMARY KEY (`user_id`)
+) ENGINE = InnoDB CHARACTER SET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci;
+
 CREATE TABLE IF NOT EXISTS `orders` (
     `id` bigint NOT NULL AUTO_INCREMENT,
     `order_no` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
@@ -122,6 +132,9 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `receiver_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `remark` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `timeout_cancel_available_at` datetime NOT NULL
+        DEFAULT (CURRENT_TIMESTAMP + INTERVAL 30 MINUTE)
+        COMMENT '下次允许超时取消扫描的时间',
     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     `finish_time` datetime NULL DEFAULT NULL,
     `original_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
@@ -131,7 +144,9 @@ CREATE TABLE IF NOT EXISTS `orders` (
     UNIQUE INDEX `uk_order_no` (`order_no` ASC) USING BTREE,
     UNIQUE INDEX `uk_orders_user_request_id` (`user_id` ASC, `request_id` ASC) USING BTREE,
     INDEX `idx_order_user` (`user_id` ASC) USING BTREE,
-    INDEX `idx_order_merchant` (`merchant_id` ASC) USING BTREE
+    INDEX `idx_order_merchant` (`merchant_id` ASC) USING BTREE,
+    INDEX `idx_order_status_timeout_cancel_time_id`
+        (`status` ASC, `timeout_cancel_available_at` ASC, `id` ASC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4
   COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 

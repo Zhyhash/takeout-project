@@ -4,6 +4,7 @@ import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.LoginRateLimitException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Rider.DTO.RiderLoginDTO;
@@ -18,6 +19,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,7 +45,7 @@ class RiderServiceTest {
     @Test
     void registerEncryptsPasswordAndInitializesRider() {
         RiderRegisterDTO dto = registerDTO();
-        when(riderMapper.selectOne(any())).thenReturn(null);
+        when(riderMapper.selectList(any())).thenReturn(List.of());
 
         riderService.register(dto);
 
@@ -59,11 +63,47 @@ class RiderServiceTest {
     @Test
     void registerRejectsDuplicateName() {
         RiderRegisterDTO dto = registerDTO();
-        when(riderMapper.selectOne(any())).thenReturn(new Rider());
+        Rider conflict = new Rider();
+        conflict.setName(dto.getName());
+        conflict.setPhone("13800138009");
+        when(riderMapper.selectList(any())).thenReturn(List.of(conflict));
 
-        assertThrows(BusinessException.class, () -> riderService.register(dto));
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> riderService.register(dto));
 
+        assertEquals("骑手名称已存在", exception.getMessage());
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, exception.getCodeEnum());
         verify(riderMapper, never()).insert(any(Rider.class));
+    }
+
+    @Test
+    void registerRejectsDuplicatePhone() {
+        RiderRegisterDTO dto = registerDTO();
+        Rider conflict = new Rider();
+        conflict.setName("another-rider");
+        conflict.setPhone(dto.getPhone());
+        when(riderMapper.selectList(any())).thenReturn(List.of(conflict));
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> riderService.register(dto));
+
+        assertEquals("手机号已存在", exception.getMessage());
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, exception.getCodeEnum());
+        verify(riderMapper, never()).insert(any(Rider.class));
+    }
+
+    @Test
+    void registerTranslatesConcurrentDuplicateIntoBusinessError() {
+        RiderRegisterDTO dto = registerDTO();
+        when(riderMapper.selectList(any())).thenReturn(List.of());
+        when(riderMapper.insert(any(Rider.class)))
+                .thenThrow(new DuplicateKeyException("duplicate phone"));
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> riderService.register(dto));
+
+        assertEquals("骑手名称或手机号已存在", exception.getMessage());
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, exception.getCodeEnum());
     }
 
     @Test

@@ -181,6 +181,10 @@ SET @demo_product_drink_id = LAST_INSERT_ID();
 -- after logging in and supplying a new requestId.
 -- ---------------------------------------------------------------------------
 
+INSERT INTO cart_header (user_id, merchant_id)
+VALUES (@demo_user_id, @demo_merchant_id)
+ON DUPLICATE KEY UPDATE merchant_id = @demo_merchant_id;
+
 INSERT INTO cart (
     user_id, product_id, product_name, quantity, price,
     create_time, update_time, merchant_id, product_image, version

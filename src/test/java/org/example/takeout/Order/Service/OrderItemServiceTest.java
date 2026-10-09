@@ -3,7 +3,7 @@ package org.example.takeout.Order.Service;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
-import org.example.takeout.Product.Service.ProductService;
+import org.example.takeout.Product.Service.ProductCommandService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
@@ -21,7 +21,7 @@ import static org.mockito.Mockito.inOrder;
 class OrderItemServiceTest {
 
     @Mock
-    private ProductService productService;
+    private ProductCommandService productCommandService;
     @Mock
     private OrderItemMapper orderItemMapper;
     @InjectMocks
@@ -37,10 +37,10 @@ class OrderItemServiceTest {
 
         orderItemService.decreaseStocksOrderedByProductId(cartItems);
 
-        InOrder calls = inOrder(productService);
-        calls.verify(productService).decreaseStock(10L, 1);
-        calls.verify(productService).decreaseStock(20L, 2);
-        calls.verify(productService).decreaseStock(30L, 3);
+        InOrder calls = inOrder(productCommandService);
+        calls.verify(productCommandService).decreaseStock(10L, 1);
+        calls.verify(productCommandService).decreaseStock(20L, 2);
+        calls.verify(productCommandService).decreaseStock(30L, 3);
         assertEquals(List.of(30L, 10L, 20L),
                 cartItems.stream().map(CartItem::getProductId).toList());
     }
@@ -55,10 +55,10 @@ class OrderItemServiceTest {
 
         orderItemService.increaseStocksOrderedByProductId(orderItems);
 
-        InOrder calls = inOrder(productService);
-        calls.verify(productService).increaseStock(10L, 1);
-        calls.verify(productService).increaseStock(20L, 2);
-        calls.verify(productService).increaseStock(30L, 3);
+        InOrder calls = inOrder(productCommandService);
+        calls.verify(productCommandService).increaseStock(10L, 1);
+        calls.verify(productCommandService).increaseStock(20L, 2);
+        calls.verify(productCommandService).increaseStock(30L, 3);
         assertEquals(List.of(30L, 10L, 20L),
                 orderItems.stream().map(OrderItem::getProductId).toList());
     }

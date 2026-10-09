@@ -7,6 +7,7 @@ import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
+import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Rider.DTO.RiderLoginDTO;
@@ -15,8 +16,11 @@ import org.example.takeout.Rider.Entity.Rider;
 import org.example.takeout.Rider.Enums.RiderStatusEnum;
 import org.example.takeout.Rider.Mapper.RiderMapper;
 import org.example.takeout.Rider.VO.RiderLoginVO;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -28,11 +32,22 @@ public class RiderService {
 
     @Transactional(rollbackFor = Exception.class)
     public void register(RiderRegisterDTO dto) {
-        Rider existingRider = riderMapper.selectOne(
-                Wrappers.<Rider>lambdaQuery().eq(Rider::getName, dto.getName())
+        List<Rider> conflicts = riderMapper.selectList(
+                Wrappers.<Rider>lambdaQuery()
+                        .and(wrapper -> wrapper
+                                .eq(Rider::getName, dto.getName())
+                                .or()
+                                .eq(Rider::getPhone, dto.getPhone())
+                        )
         );
-        if (existingRider != null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手名称已存在");
+
+        for (Rider conflict : conflicts) {
+            if (dto.getName().equals(conflict.getName())) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手名称已存在");
+            }
+            if (dto.getPhone().equals(conflict.getPhone())) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "手机号已存在");
+            }
         }
 
         Rider rider = new Rider();
@@ -41,7 +56,14 @@ public class RiderService {
         rider.setPassword(BCrypt.encode(dto.getPassword()));
         rider.setStatus(RiderStatusEnum.NORMAL.getCode());
         rider.setIsDelete(DeleteConstant.NOT_DELETED);
-        riderMapper.insert(rider);
+        try {
+            riderMapper.insert(rider);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "骑手名称或手机号已存在"
+            );
+        }
     }
 
     public RiderLoginVO login(RiderLoginDTO dto) {
@@ -67,5 +89,18 @@ public class RiderService {
         loginVO.setToken(jwtUtils.createToken(rider.getId(), AuthRole.RIDER));
 
         return loginVO;
+    }
+
+    public Long requireActiveRiderId() {
+        Long riderId = RiderContextHolder.getRiderId();
+        if (riderId == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手身份无效");
+        }
+
+        Rider rider = riderMapper.selectById(riderId);
+        if (rider == null || !RiderStatusEnum.NORMAL.getCode().equals(rider.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手账号已禁用或不存在");
+        }
+        return riderId;
     }
 }

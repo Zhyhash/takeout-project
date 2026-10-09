@@ -103,4 +103,9 @@ public class Order {
      */
     private String requestHash;
 
+    /**
+     * 定时任务下一次执行时间
+     */
+    private LocalDateTime timeoutCancelAvailableAt;
+
 }

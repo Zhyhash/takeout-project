@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
@@ -12,11 +13,8 @@ import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Entity.Order;
-import org.example.takeout.Order.Enums.OrderStatusEnum;
-import org.example.takeout.Order.Mapper.OrderMapper;
-import org.example.takeout.Rider.Entity.Rider;
-import org.example.takeout.Rider.Enums.RiderStatusEnum;
-import org.example.takeout.Rider.Mapper.RiderMapper;
+import org.example.takeout.Order.Service.OrderCommandService;
+import org.example.takeout.Rider.Service.RiderService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -47,10 +45,10 @@ class DeliveryTaskServiceTest {
     private DeliveryTaskMapper deliveryTaskMapper;
 
     @Mock
-    private OrderMapper orderMapper;
+    private OrderCommandService orderCommandService;
 
     @Mock
-    private RiderMapper riderMapper;
+    private RiderService riderService;
 
     @Mock
     private DeliveryFeeCalculator deliveryFeeCalculator;
@@ -69,7 +67,8 @@ class DeliveryTaskServiceTest {
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
 
-        verifyNoInteractions(deliveryTaskMapper, orderMapper);
+        verify(riderService).requireActiveRiderId();
+        verifyNoInteractions(deliveryTaskMapper, orderCommandService);
     }
 
     @Test
@@ -78,7 +77,8 @@ class DeliveryTaskServiceTest {
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.completeDelivery(501L));
 
-        verifyNoInteractions(deliveryTaskMapper, orderMapper);
+        verify(riderService).requireActiveRiderId();
+        verifyNoInteractions(deliveryTaskMapper, orderCommandService);
     }
 
     @Test
@@ -87,10 +87,9 @@ class DeliveryTaskServiceTest {
         mockTaskUpdateMiss();
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
-        when(orderMapper.selectById(601L))
-                .thenReturn(order(OrderStatusEnum.DELIVERING.getCode()));
 
         assertDoesNotThrow(() -> deliveryTaskService.claimTask(501L));
+        verify(orderCommandService).assertDelivering(601L);
     }
 
     @Test
@@ -99,8 +98,7 @@ class DeliveryTaskServiceTest {
         mockTaskUpdateMiss();
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
-        when(orderMapper.selectById(601L))
-                .thenReturn(order(OrderStatusEnum.READY.getCode()));
+        doThrow(businessFailure()).when(orderCommandService).assertDelivering(601L);
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
     }
@@ -111,8 +109,8 @@ class DeliveryTaskServiceTest {
         mockTaskUpdate(1);
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
-        when(orderMapper.selectById(601L))
-                .thenReturn(order(OrderStatusEnum.DELIVERING.getCode()));
+        doThrow(businessFailure()).when(orderCommandService)
+                .updateOrderStatusToDelivering(601L);
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
     }
@@ -123,10 +121,9 @@ class DeliveryTaskServiceTest {
         mockTaskUpdateMiss();
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
-        when(orderMapper.selectById(601L))
-                .thenReturn(order(OrderStatusEnum.DELIVERED.getCode()));
 
         assertDoesNotThrow(() -> deliveryTaskService.completeDelivery(501L));
+        verify(orderCommandService).assertOrderReachedDeliveryCompletion(601L);
     }
 
     @Test
@@ -135,10 +132,9 @@ class DeliveryTaskServiceTest {
         mockTaskUpdateMiss();
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
-        when(orderMapper.selectById(601L))
-                .thenReturn(order(OrderStatusEnum.FINISHED.getCode()));
 
         assertDoesNotThrow(() -> deliveryTaskService.completeDelivery(501L));
+        verify(orderCommandService).assertOrderReachedDeliveryCompletion(601L);
     }
 
     @Test
@@ -147,8 +143,8 @@ class DeliveryTaskServiceTest {
         mockTaskUpdateMiss();
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
-        when(orderMapper.selectById(601L))
-                .thenReturn(order(OrderStatusEnum.DELIVERING.getCode()));
+        doThrow(businessFailure()).when(orderCommandService)
+                .assertOrderReachedDeliveryCompletion(601L);
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.completeDelivery(501L));
     }
@@ -159,8 +155,8 @@ class DeliveryTaskServiceTest {
         mockTaskUpdate(1);
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
-        when(orderMapper.selectById(601L))
-                .thenReturn(order(OrderStatusEnum.DELIVERED.getCode()));
+        doThrow(businessFailure()).when(orderCommandService)
+                .updateOrderStatusToDelivered(any(DeliveryTask.class));
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.completeDelivery(501L));
     }
@@ -241,18 +237,14 @@ class DeliveryTaskServiceTest {
 
     private void mockDisabledRider() {
         RiderContextHolder.setRiderId(301L);
-        Rider rider = new Rider();
-        rider.setId(301L);
-        rider.setStatus(RiderStatusEnum.DISABLED.getCode());
-        when(riderMapper.selectById(301L)).thenReturn(rider);
+        when(riderService.requireActiveRiderId()).thenThrow(new BusinessException(
+                ResultCodeEnum.BUSINESS_ERROR,
+                "骑手账号已禁用或不存在"));
     }
 
     private void mockActiveRider() {
         RiderContextHolder.setRiderId(301L);
-        Rider rider = new Rider();
-        rider.setId(301L);
-        rider.setStatus(RiderStatusEnum.NORMAL.getCode());
-        when(riderMapper.selectById(301L)).thenReturn(rider);
+        when(riderService.requireActiveRiderId()).thenReturn(301L);
     }
 
     private void mockTaskUpdateMiss() {
@@ -274,10 +266,9 @@ class DeliveryTaskServiceTest {
         return task;
     }
 
-    private Order order(Integer status) {
-        Order order = new Order();
-        order.setId(601L);
-        order.setStatus(status);
-        return order;
+    private BusinessException businessFailure() {
+        return new BusinessException(
+                ResultCodeEnum.BUSINESS_ERROR,
+                "订单状态不匹配");
     }
 }

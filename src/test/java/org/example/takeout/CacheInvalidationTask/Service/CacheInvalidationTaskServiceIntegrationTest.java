@@ -4,7 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
-import org.example.takeout.Product.Cache.ProductCacheService;
+import org.example.takeout.Product.Cache.RedisCacheClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,7 +35,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
     private final PlatformTransactionManager transactionManager;
 
     @MockitoBean
-    private ProductCacheService productCacheService;
+    private RedisCacheClient redisCacheClient;
 
     @MockitoBean
     private CacheInvalidationTaskScheduler cacheInvalidationTaskScheduler;
@@ -70,7 +70,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
         );
 
         assertEquals(0, taskCount());
-        verify(productCacheService, never()).delete(anyString());
+        verify(redisCacheClient, never()).delete(anyString());
     }
 
     @Test
@@ -84,10 +84,10 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
             assertEquals(1, taskCount());
             assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
-            verify(productCacheService, never()).delete(CACHE_KEY);
+            verify(redisCacheClient, never()).delete(CACHE_KEY);
         });
 
-        verify(productCacheService).delete(CACHE_KEY);
+        verify(redisCacheClient).delete(CACHE_KEY);
         assertEquals(1, taskCount());
         assertEquals(
                 CACHE_KEY,
@@ -126,12 +126,12 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
         transactionTemplate.executeWithoutResult(status -> {
             taskService.requestInvalidation(CACHE_KEY);
-            verify(productCacheService, never()).delete(CACHE_KEY);
+            verify(redisCacheClient, never()).delete(CACHE_KEY);
             status.setRollbackOnly();
         });
 
         assertEquals(0, taskCount());
-        verify(productCacheService, never()).delete(anyString());
+        verify(redisCacheClient, never()).delete(anyString());
     }
 
     @Test
@@ -151,14 +151,14 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
         assertEquals(0, businessWriteCount());
         assertEquals(0, taskCount());
-        verify(productCacheService, never()).delete(anyString());
+        verify(redisCacheClient, never()).delete(anyString());
     }
 
     @Test
     void requestInvalidationKeepsCommittedTaskPendingWhenFastDeleteFails() {
         RedisCacheUnavailableException redisFailure =
                 new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
-        doThrow(redisFailure).when(productCacheService).delete(CACHE_KEY);
+        doThrow(redisFailure).when(redisCacheClient).delete(CACHE_KEY);
         TransactionTemplate transactionTemplate =
                 new TransactionTemplate(transactionManager);
 
@@ -171,7 +171,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
             taskService.requestInvalidation(CACHE_KEY);
         }));
 
-        verify(productCacheService).delete(CACHE_KEY);
+        verify(redisCacheClient).delete(CACHE_KEY);
         assertEquals(1, businessWriteCount());
         assertEquals(1, taskCount());
         assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
@@ -186,7 +186,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
                 ignored -> taskService.requestInvalidation(CACHE_KEY)
         );
 
-        verify(productCacheService).delete(CACHE_KEY);
+        verify(redisCacheClient).delete(CACHE_KEY);
         assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
 
         jdbcTemplate.update(
@@ -196,7 +196,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
         );
         taskService.retryPendingTasks();
 
-        verify(productCacheService, times(2)).delete(CACHE_KEY);
+        verify(redisCacheClient, times(2)).delete(CACHE_KEY);
         assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus());
         assertEquals(0, retryCount());
     }
@@ -211,7 +211,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
         taskService.retryPendingTasks();
 
-        verify(productCacheService).delete(CACHE_KEY);
+        verify(redisCacheClient).delete(CACHE_KEY);
         assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus());
         assertEquals(0, retryCount());
     }
@@ -227,7 +227,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
         taskService.retryPendingTasks();
 
-        verify(productCacheService, never()).delete(CACHE_KEY);
+        verify(redisCacheClient, never()).delete(CACHE_KEY);
         assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus());
         assertEquals(0, retryCount());
         assertTrue(nextRetryTime().isAfter(LocalDateTime.now()));
@@ -252,7 +252,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
         taskService.retryPendingTasks();
 
-        verify(productCacheService, never()).delete(anyString());
+        verify(redisCacheClient, never()).delete(anyString());
         assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus(successKey));
         assertEquals(3, retryCount(successKey));
         assertEquals(CacheInvalidationTaskStatus.FAILED.getCode(), taskStatus(failedKey));
@@ -276,7 +276,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
                     CACHE_KEY
             );
             return null;
-        }).when(productCacheService).delete(CACHE_KEY);
+        }).when(redisCacheClient).delete(CACHE_KEY);
 
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
@@ -299,7 +299,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
                 throw redisFailure;
             }
             return null;
-        }).when(productCacheService).delete(anyString());
+        }).when(redisCacheClient).delete(anyString());
 
         insertTask(
                 failedKey,
@@ -316,8 +316,8 @@ class CacheInvalidationTaskServiceIntegrationTest {
 
         taskService.retryPendingTasks();
 
-        verify(productCacheService).delete(failedKey);
-        verify(productCacheService).delete(succeedingKey);
+        verify(redisCacheClient).delete(failedKey);
+        verify(redisCacheClient).delete(succeedingKey);
         assertEquals(CacheInvalidationTaskStatus.PENDING.getCode(), taskStatus(failedKey));
         assertEquals(1, retryCount(failedKey));
         assertEquals(CacheInvalidationTaskStatus.SUCCESS.getCode(), taskStatus(succeedingKey));
@@ -328,7 +328,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
     void retryPendingTasksUsesExpectedShortPeriodBackoffSequenceAndKeepsTimeOnSixthFailure() {
         RedisCacheUnavailableException redisFailure =
                 new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
-        doThrow(redisFailure).when(productCacheService).delete(CACHE_KEY);
+        doThrow(redisFailure).when(redisCacheClient).delete(CACHE_KEY);
         insertTask(
                 CacheInvalidationTaskStatus.PENDING.getCode(),
                 0,
@@ -383,7 +383,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
     void retryPendingTasksRecordsFailuresAndMarksTaskFailedAfterSixthAttempt() {
         RedisCacheUnavailableException redisFailure =
                 new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
-        doThrow(redisFailure).when(productCacheService).delete(CACHE_KEY);
+        doThrow(redisFailure).when(redisCacheClient).delete(CACHE_KEY);
 
         insertTask(
                 CacheInvalidationTaskStatus.PENDING.getCode(),
@@ -426,7 +426,7 @@ class CacheInvalidationTaskServiceIntegrationTest {
     void retryFailedTasksIncrementsRetryCountWhenRedisDeleteFails() {
         RedisCacheUnavailableException redisFailure =
                 new RedisCacheUnavailableException("test Redis failure", new RuntimeException());
-        doThrow(redisFailure).when(productCacheService).delete(CACHE_KEY);
+        doThrow(redisFailure).when(redisCacheClient).delete(CACHE_KEY);
         insertTask(
                 CacheInvalidationTaskStatus.FAILED.getCode(),
                 5,

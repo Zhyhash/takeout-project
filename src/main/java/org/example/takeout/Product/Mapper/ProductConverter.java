@@ -23,8 +23,7 @@ public interface ProductConverter {
     @Mapping(source = "product.version", target = "version")
     MerchantProductVO toMerchantProductVO(Product product, Category category);
 
-    @Mapping(target = "status", expression = "java(ProductStatusEnum.OFF_SALE.getCode())") //  执行 java 表达式赋值枚举
-    @Mapping(target = "isDeleted", expression = "java(DeleteConstant.NOT_DELETED)")
+
     @Mapping(target = "merchantId", source = "merchantId")
     Product toProduct(CreateProductDTO createProductDTO,Long merchantId);
 

@@ -1,10 +1,9 @@
 -- Existing databases are not changed by CREATE TABLE IF NOT EXISTS in schema.sql.
--- Run this once when deploying the product status lifecycle change.
+-- Normalize the product status lifecycle before the later product migrations.
 ALTER TABLE product
     MODIFY COLUMN status tinyint NOT NULL DEFAULT 1
         COMMENT '商品状态: 0-在售, 1-下架, 2-售罄';
 
--- Normalize active products to the new state invariants.
 UPDATE product
 SET status = 2,
     version = version + 1

@@ -16,6 +16,7 @@ import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
+import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.User.DTO.LoginDTO;
@@ -41,6 +42,8 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -68,6 +71,10 @@ class MysqlApiIntegrationTest {
     @MockitoBean
     private CacheInvalidationTaskScheduler cacheInvalidationTaskScheduler;
 
+    // This suite covers API behavior; the Redis rate limiter has its own integration tests.
+    @MockitoBean
+    private OrderCreateRateLimiter orderCreateRateLimiter;
+
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     private MockMvc mockMvc;
@@ -75,6 +82,7 @@ class MysqlApiIntegrationTest {
     @BeforeEach
     void resetMysqlSchema() {
         this.mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
+        when(orderCreateRateLimiter.tryAcquire(anyLong())).thenReturn(true);
         recreateSchema();
     }
 
@@ -1086,6 +1094,8 @@ class MysqlApiIntegrationTest {
                     `receiver_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `remark` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
                     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `timeout_cancel_available_at` datetime NOT NULL
+                        DEFAULT (CURRENT_TIMESTAMP + INTERVAL 30 MINUTE),
                     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     `finish_time` datetime NULL DEFAULT NULL,
                     `original_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,

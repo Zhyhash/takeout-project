@@ -21,6 +21,8 @@ import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 import static org.example.takeout.Common.Utils.Tool.Random.random;
 
 @Service
@@ -33,18 +35,35 @@ public class UserService {
 
     @Transactional(rollbackFor =  Exception.class)
     public void register(RegisterDTO dto){
+
         // 查询用户名是否已存在
-        User user = userMapper.selectOne(
+        List<User> conflicts = userMapper.selectList(
                 Wrappers.<User>lambdaQuery()
-                        .eq(User::getUsername, dto.getUsername())
+                        .and(wrapper -> wrapper
+                                .eq(User::getUsername, dto.getUsername())
+                                .or()
+                                .eq(User::getPhone, dto.getPhone())
+                        )
         );
-        
-        if(user != null){
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名已经存在");
+
+        for (User conflict : conflicts) {
+            if (dto.getUsername().equals(conflict.getUsername())) {
+                throw new BusinessException(
+                        ResultCodeEnum.BUSINESS_ERROR,
+                        "用户名已经存在"
+                );
+            }
+
+            if (dto.getPhone().equals(conflict.getPhone())) {
+                throw new BusinessException(
+                        ResultCodeEnum.BUSINESS_ERROR,
+                        "手机号已经存在"
+                );
+            }
         }
 
         // 创建新用户
-        user = new User();
+        User user = new User();
         user.setUsername(dto.getUsername());
         user.setPassword(BCrypt.encode(dto.getPassword()));
         user.setPhone(dto.getPhone());

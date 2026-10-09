@@ -55,7 +55,7 @@ class OrderCommandServiceTest {
                 BusinessException.class,
                 () -> orderCommandService.acceptOrderByMerchant(501L, 101L));
 
-        assertEquals("订单不存在或不属于当前商家", exception.getMessage());
+        assertEquals("订单不存在或无权操作该订单", exception.getMessage());
     }
 
     @Test
@@ -97,7 +97,7 @@ class OrderCommandServiceTest {
                 () -> orderCommandService.markReadyByMerchant(501L, 101L));
 
         assertEquals(
-                "订单当前状态为：" + OrderStatusEnum.PAID.getCode() + "，无法出餐",
+                "订单未处于制作中状态，当前状态码：" + OrderStatusEnum.PAID.getCode(),
                 exception.getMessage());
     }
 

@@ -17,7 +17,7 @@ import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
-import org.example.takeout.Order.Service.OrderDomainService;
+import org.example.takeout.Order.Support.OrderProductSummaryBuilder;
 import org.example.takeout.Order.VO.OrderItemVO;
 import org.springframework.stereotype.Service;
 
@@ -37,7 +37,7 @@ public class MerchantOrderQueryService {
     private final OrderItemMapper orderItemMapper;
     private final MerchantOrderConverter merchantOrderConverter;
     private final OrderConvertor orderConvertor;
-    private final OrderDomainService orderDomainService;
+    private final OrderProductSummaryBuilder orderProductSummaryBuilder;
 
     public PageInfo<MerchantOrderListVO> listOrders(MerchantOrderListType type,
                                                      Integer pageNum,
@@ -55,7 +55,7 @@ public class MerchantOrderQueryService {
         }
         PageInfo<Order> pageInfo = new PageInfo<>(orders);
         if (orders.isEmpty()) {
-            return pageInfo.convert(order -> merchantOrderConverter.toMerchantOrderListVO(order));
+            return pageInfo.convert(merchantOrderConverter::toMerchantOrderListVO);
         }
 
         List<Long> orderIds = orders.stream().map(Order::getId).toList();
@@ -67,7 +67,7 @@ public class MerchantOrderQueryService {
 
         return pageInfo.convert(order -> {
             MerchantOrderListVO vo = merchantOrderConverter.toMerchantOrderListVO(order);
-            vo.setProductSummary(orderDomainService.buildProductSummary(
+            vo.setProductSummary(orderProductSummaryBuilder.buildProductSummary(
                     itemsByOrderId.getOrDefault(order.getId(), Collections.emptyList())));
             return vo;
         });

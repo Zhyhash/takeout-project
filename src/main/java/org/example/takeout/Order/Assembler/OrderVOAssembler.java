@@ -1,10 +1,10 @@
-package org.example.takeout.Order.Service;
+package org.example.takeout.Order.Assembler;
 
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Mapper.OrderConvertor;
-import org.example.takeout.Order.VO.CreateOrderVO;
+import org.example.takeout.Order.Support.OrderProductSummaryBuilder;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderItemVO;
 import org.example.takeout.Order.VO.OrderVO;
@@ -19,15 +19,9 @@ import java.util.stream.Collectors;
 //NOTE:构建类，构建对象（Order/OrderItem组装），事实上，这个类可能是多余的，就像我下面写的t odo一样
 @Service
 @RequiredArgsConstructor
-public class OrderVOBuilder {
-    private final OrderDomainService domain;
+public class OrderVOAssembler {
     private final OrderConvertor orderConvertor;
-    public CreateOrderVO toCreateOrderVO(Order order) {
-        CreateOrderVO vo = new CreateOrderVO();
-        vo.setOrderNo(order.getOrderNo());
-        vo.setOrderId(order.getId());
-        return vo;
-    }
+    private final OrderProductSummaryBuilder orderProductSummaryBuilder;
 
     public OrderDetailVO toOrderDetailVO(Order order,List<OrderItem> orderItems) {
         OrderDetailVO orderDetailVO = orderConvertor.toOrderDetailVO(order);
@@ -36,7 +30,7 @@ public class OrderVOBuilder {
         // List<OrderItemVO> toOrderItemVOList(List<OrderItem> orderItems);
         if (!CollectionUtils.isEmpty(orderItems)){
             List<OrderItemVO> itemVOs = orderItems.stream().
-                    map(item -> orderConvertor.toOrderItemVO(item)).
+                    map(orderConvertor::toOrderItemVO).
                     collect(Collectors.toList());
             // 设置商品列表
             orderDetailVO.setItems(itemVOs);
@@ -49,7 +43,7 @@ public class OrderVOBuilder {
     public OrderVO toOrderVO(Order order, Map<Long, List<OrderItem>> itemsMap) {
         OrderVO orderVO = orderConvertor.toOrderVO(order);
         List<OrderItem> items = itemsMap.getOrDefault(order.getId(), Collections.emptyList());
-        orderVO.setProductSummary(domain.buildProductSummary(items));
+        orderVO.setProductSummary(orderProductSummaryBuilder.buildProductSummary(items));
         return orderVO;
     }
 }

@@ -28,7 +28,7 @@ import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
-class ProductImageCleanupServiceTest {
+class ProductImageServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-09-30T08:00:00Z");
     private static final String IMAGE_URL_PREFIX = "/uploads/products/";
@@ -40,12 +40,12 @@ class ProductImageCleanupServiceTest {
     private ProductMapper productMapper;
 
     private Path uploadDir;
-    private ProductImageCleanupService cleanupService;
+    private ProductImageService cleanupService;
 
     @BeforeEach
     void setUp() throws IOException {
         uploadDir = Files.createDirectory(tempDir.resolve("products"));
-        cleanupService = new ProductImageCleanupService(productMapper);
+        cleanupService = new ProductImageService(productMapper);
     }
 
     @Test

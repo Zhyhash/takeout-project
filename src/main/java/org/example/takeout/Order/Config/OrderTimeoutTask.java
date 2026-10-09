@@ -25,10 +25,11 @@ public class OrderTimeoutTask {
             initialDelayString = "${order.timeout.initial-delay-ms:60000}"
     )
     public void cancelTimeoutOrders() {
-        LocalDateTime expiredBefore = LocalDateTime.now().minusMinutes(30);
+        LocalDateTime scanNow = LocalDateTime.now();
+        LocalDateTime expiredBefore = scanNow.minusMinutes(30);
         List<Long> orderIds = orderMapper.selectTimeoutOrderIds(
                 OrderStatusEnum.WAIT_PAY.getCode(),
-                expiredBefore,
+                scanNow,
                 100
         );
 
@@ -39,6 +40,18 @@ public class OrderTimeoutTask {
                 }
             } catch (Exception exception) {
                 log.error("自动取消超时订单失败，orderId={}", orderId, exception);
+                try {
+                    orderMapper.delayTimeoutCancellation(
+                            orderId,
+                            OrderStatusEnum.WAIT_PAY.getCode()
+                    );
+                } catch (Exception delayException) {
+                    log.error(
+                            "记录超时订单退避失败，orderId={}",
+                            orderId,
+                            delayException
+                    );
+                }
             }
         }
     }

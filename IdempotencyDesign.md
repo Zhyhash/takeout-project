@@ -39,7 +39,7 @@
 
 因此同一用户重复使用同一个 `requestId` 会命中同一订单，不同用户可以使用相同值。客户端只有在明确发起一笔新订单时才应生成新的 `requestId`；超时重试必须复用原值。
 
-`orders.request_hash` 保存姓名、电话、地址、备注四个字段的 SHA-256 指纹，使用 `CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL`，无空默认值。字段按 Java UTF-16 长度加前缀后，以 UTF-8 编码计算；null 与空字符串分别处理。旧库先执行 `deploy/migrations/20261003_order_request_fingerprint.sql`，补列并回填缺失或无效指纹。指纹不加入唯一键。
+`orders.request_hash` 保存姓名、电话、地址、备注四个字段的 SHA-256 指纹，使用 `CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL`，无空默认值。字段按 Java UTF-16 长度加前缀后，以 UTF-8 编码计算；null 与空字符串分别处理。旧库由 Flyway 执行 `src/main/resources/db/migration/V20261003__order_request_fingerprint.sql`，补列并回填缺失或无效指纹；部署镜像为 `deploy/migrations/V20261003__order_request_fingerprint.sql`，已成功记录的版本不要再次手工执行。指纹不加入唯一键。
 
 ### 3.2 执行链路
 

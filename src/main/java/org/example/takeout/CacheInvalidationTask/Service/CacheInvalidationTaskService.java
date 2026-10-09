@@ -7,7 +7,7 @@ import org.example.takeout.CacheInvalidationTask.Entity.CacheInvalidationTask;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
 import org.example.takeout.CacheInvalidationTask.Mapper.CacheInvalidationTaskMapper;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
-import org.example.takeout.Product.Cache.ProductCacheService;
+import org.example.takeout.Product.Cache.RedisCacheClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,7 +24,7 @@ public class CacheInvalidationTaskService {
 
 
     private final CacheInvalidationTaskMapper cacheInvalidationTaskMapper;
-    private final ProductCacheService productCacheService;
+    private final RedisCacheClient redisCacheClient;
 
 
     private void createPending(String cacheKey) {
@@ -46,7 +46,7 @@ public class CacheInvalidationTaskService {
                 last("limit 100"));
         for (CacheInvalidationTask task : cacheInvalidationTasks) {
             try {
-                productCacheService.delete(task.getCacheKey());
+                redisCacheClient.delete(task.getCacheKey());
 
                 int rows = cacheInvalidationTaskMapper.markSuccess(
                         task.getId(),
@@ -81,7 +81,7 @@ public class CacheInvalidationTaskService {
                 last("limit 100"));
         for (CacheInvalidationTask task : cacheInvalidationTasks) {
             try {
-                productCacheService.delete(task.getCacheKey());
+                redisCacheClient.delete(task.getCacheKey());
                 int rows = cacheInvalidationTaskMapper.markSuccess(
                         task.getId(),
                         CacheInvalidationTaskStatus.FAILED.getCode()
@@ -112,7 +112,7 @@ public class CacheInvalidationTaskService {
             public void afterCommit() {
                 //快速删除减少窗口
                 try {
-                    productCacheService.delete(cacheKey);
+                    redisCacheClient.delete(cacheKey);
                 } catch (RedisCacheUnavailableException e) {
                     log.error("提交后立即删除缓存失败，cacheKey={}", cacheKey, e);
                 }

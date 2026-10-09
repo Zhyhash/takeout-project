@@ -24,8 +24,8 @@ import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Order.Service.OrderTransactionExecutor;
 import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.example.takeout.Order.VO.CreateOrderVO;
+import org.example.takeout.Product.Config.ProductImageCleanupService;
 import org.example.takeout.Product.Entity.Product;
-import org.example.takeout.Product.Config.ProductImageCleanupTask;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.dataFactory.TestDataFactory;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
@@ -38,8 +38,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -49,10 +49,10 @@ import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.function.Consumer;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -104,11 +104,12 @@ class OrderServiceIntegrationTest {
     private OrderTransactionExecutor orderTransactionExecutor;
 
     @MockitoBean
-    private ProductImageCleanupTask productImageCleanupTask;
+    private ProductImageCleanupService productImageCleanupService;
 
     @BeforeEach
     void setUp() {
         CartHeaderTestFixture.ensureTable(jdbcTemplate);
+        OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
         deleteTestData();
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_USER_ID);
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_OTHER_USER_ID);

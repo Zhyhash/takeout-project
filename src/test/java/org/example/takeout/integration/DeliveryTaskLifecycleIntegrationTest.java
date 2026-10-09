@@ -363,6 +363,7 @@ class DeliveryTaskLifecycleIntegrationTest {
                     receiver_address VARCHAR(255) NULL,
                     remark VARCHAR(255) NULL,
                     create_time TIMESTAMP NULL,
+                    timeout_cancel_available_at TIMESTAMP NULL,
                     update_time TIMESTAMP NULL,
                     finish_time TIMESTAMP NULL,
                     original_amount DECIMAL(10, 2) NULL,

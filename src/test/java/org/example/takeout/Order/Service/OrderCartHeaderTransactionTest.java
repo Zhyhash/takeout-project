@@ -1,7 +1,7 @@
 package org.example.takeout.Order.Service;
 
-import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.Cart.Service.CartCommandService;
 import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.CartHeader.Mapper.CartHeaderMapper;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -99,6 +99,7 @@ class OrderCartHeaderTransactionTest {
                     receiver_address VARCHAR(255),
                     remark VARCHAR(200),
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    timeout_cancel_available_at TIMESTAMP,
                     update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     finish_time TIMESTAMP,
                     pay_time TIMESTAMP,
@@ -267,7 +268,8 @@ class OrderCartHeaderTransactionTest {
 
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement
-    @Import({MybatisPlusConfig.class, CartHeaderManager.class, OrderTransactionExecutor.class})
+    @Import({MybatisPlusConfig.class, CartHeaderManager.class, CartCommandService.class,
+            OrderTransactionExecutor.class})
     @MapperScan(basePackageClasses = {CartMapper.class, CartHeaderMapper.class, OrderMapper.class},
             annotationClass = org.apache.ibatis.annotations.Mapper.class)
     static class TestConfig {
@@ -285,11 +287,6 @@ class OrderCartHeaderTransactionTest {
         @Bean
         PlatformTransactionManager transactionManager(DataSource dataSource) {
             return new DataSourceTransactionManager(dataSource);
-        }
-
-        @Bean
-        OrderDomainService orderDomainService(OrderMapper orderMapper) {
-            return new OrderDomainService(orderMapper);
         }
 
         @Bean

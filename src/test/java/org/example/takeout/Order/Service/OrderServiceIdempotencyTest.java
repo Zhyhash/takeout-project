@@ -5,12 +5,14 @@ import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
-import org.example.takeout.Cart.Service.cartDomainService;
+import org.example.takeout.Cart.Service.CartCheckoutService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.Order.Assembler.OrderVOAssembler;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Entity.Order;
+import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Support.OrderRequestFingerprint;
@@ -37,13 +39,13 @@ import static org.mockito.Mockito.*;
 class OrderServiceIdempotencyTest {
     private static final Long USER_ID = 21L;
 
-    @Mock private OrderDomainService orderDomainService;
     @Mock private OrderTransactionExecutor orderTransactionExecutor;
     @Mock private OrderItemService orderItemService;
     @Mock private OrderItemMapper orderItemMapper;
     @Mock private OrderMapper orderMapper;
-    @Mock private OrderVOBuilder orderVOBuilder;
-    @Mock private cartDomainService cartDomainService;
+    @Mock private OrderVOAssembler orderVOAssembler;
+    @Mock private OrderConvertor orderConvertor;
+    @Mock private CartCheckoutService CartCheckoutService;
     @Spy private OrderRequestFingerprint fingerprint = new OrderRequestFingerprint();
     @InjectMocks private OrderService orderService;
 
@@ -72,8 +74,8 @@ class OrderServiceIdempotencyTest {
         assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
         assertEquals("同一 requestId 不能携带不同下单参数，请使用新的 requestId", exception.getMessage());
         assertLookupUsesOriginalUniqueKey(original.getRequestId());
-        verifyNoInteractions(cartDomainService, orderDomainService, orderTransactionExecutor,
-                orderItemService, orderItemMapper, orderVOBuilder);
+        verifyNoInteractions(CartCheckoutService, orderTransactionExecutor,
+                orderItemService, orderItemMapper, orderVOAssembler, orderConvertor);
         verify(orderMapper, never()).insert(any(Order.class));
     }
 
@@ -85,14 +87,14 @@ class OrderServiceIdempotencyTest {
         CreateOrderVO expected = new CreateOrderVO();
         expected.setOrderId(existing.getId());
         when(orderMapper.selectOne(any())).thenReturn(existing);
-        when(orderVOBuilder.toCreateOrderVO(existing)).thenReturn(expected);
+        when(orderConvertor.toCreateOrderVO(existing)).thenReturn(expected);
         CreateOrderDTO retry = TestDataFactory.createOrderDTO();
         retry.setRequestId(original.getRequestId());
 
         assertSame(expected, orderService.createOrder(retry));
 
         assertLookupUsesOriginalUniqueKey(original.getRequestId());
-        verifyNoInteractions(cartDomainService, orderDomainService, orderTransactionExecutor,
+        verifyNoInteractions(CartCheckoutService, orderTransactionExecutor,
                 orderItemService, orderItemMapper);
         verify(orderMapper, never()).insert(any(Order.class));
     }

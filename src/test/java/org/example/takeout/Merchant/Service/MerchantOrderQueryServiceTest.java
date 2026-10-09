@@ -13,13 +13,14 @@ import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
-import org.example.takeout.Order.Service.OrderDomainService;
+import org.example.takeout.Order.Support.OrderProductSummaryBuilder;
 import org.example.takeout.Order.VO.OrderItemVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
@@ -42,8 +43,8 @@ class MerchantOrderQueryServiceTest {
     private MerchantOrderConverter merchantOrderConverter;
     @Mock
     private OrderConvertor orderConvertor;
-    @Mock
-    private OrderDomainService orderDomainService;
+    @Spy
+    private OrderProductSummaryBuilder orderProductSummaryBuilder = new OrderProductSummaryBuilder();
 
     @InjectMocks
     private MerchantOrderQueryService merchantOrderQueryService;
@@ -62,7 +63,6 @@ class MerchantOrderQueryServiceTest {
         when(orderMapper.selectList(any())).thenReturn(List.of(order));
         when(orderItemMapper.selectList(any())).thenReturn(List.of(orderItem(101L)));
         when(merchantOrderConverter.toMerchantOrderListVO(order)).thenReturn(new MerchantOrderListVO());
-        when(orderDomainService.buildProductSummary(any())).thenReturn("宫保鸡丁");
 
         PageInfo<MerchantOrderListVO> result = merchantOrderQueryService.listOrders(
                 MerchantOrderListType.PENDING, 1, 10);

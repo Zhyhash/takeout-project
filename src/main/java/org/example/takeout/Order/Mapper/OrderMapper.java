@@ -17,12 +17,12 @@ public interface OrderMapper extends BaseMapper<Order> {
         SELECT id
         FROM orders
         WHERE status = #{status}
-          AND create_time <= #{expiredBefore}
-        ORDER BY create_time ASC, id ASC
+          AND timeout_cancel_available_at <= #{scanNow}
+        ORDER BY timeout_cancel_available_at ASC, id ASC
         LIMIT #{limit}
         """)
     List<Long> selectTimeoutOrderIds(@Param("status") Integer status,
-                                     @Param("expiredBefore") LocalDateTime expiredBefore,
+                                     @Param("scanNow") LocalDateTime scanNow,
                                      @Param("limit") Integer limit);
 
     @Update("""
@@ -36,6 +36,19 @@ public interface OrderMapper extends BaseMapper<Order> {
                                       @Param("oldStatus") Integer oldStatus,
                                       @Param("newStatus") Integer newStatus,
                                       @Param("expiredBefore") LocalDateTime expiredBefore);
+
+    @Update("""
+        UPDATE orders
+        SET timeout_cancel_available_at = DATE_ADD(NOW(), INTERVAL 30 MINUTE)
+        WHERE id = #{orderId}
+          AND status = #{status};
+    """)
+    int delayTimeoutCancellation(
+            @Param("orderId") Long orderId,
+            @Param("status") Integer status
+    );
+
+
 
     @Update("""
         <script>

@@ -1,6 +1,5 @@
 package org.example.takeout.Product.Service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -9,19 +8,15 @@ import com.github.pagehelper.PageInfo;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.example.takeout.CacheInvalidationTask.Service.CacheInvalidationTaskService;
 import org.example.takeout.Category.Entity.Category;
-import org.example.takeout.Category.Mapper.CategoryMapper;
-import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
+import org.example.takeout.Category.Service.CategoryService;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.FileStorageException;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
-import org.example.takeout.Product.Cache.ProductCacheService;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
-import org.example.takeout.Product.Cache.RedisKeyConstant;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.Entity.Product;
@@ -34,10 +29,7 @@ import org.jspecify.annotations.NonNull;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.ObjectMapper;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -48,9 +40,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -64,33 +53,23 @@ public class ProductService {
 
     private static final Set<String> ALLOWED_IMAGE_EXTENSIONS =
             Set.of("jpg", "jpeg", "png");
-    private final CategoryMapper categoryMapper;
     private final ProductMapper productMapper;
+    private final CategoryService  categoryService;
     private final ProductConverter productConverter;
-    private final ObjectMapper objectMapper;
-    private final ProductCacheService productCacheService;
-    private final CacheInvalidationTaskService cacheInvalidationTaskService;
+    private final ProductDetailCacheService productDetailCacheService;
 
     public static final String DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.svg";
 
     private static final String ACTIVE_PRODUCT_NAME_CONFLICT_MESSAGE = "当前店铺已存在同名商品";
-    private static final String NULL_PRODUCT_CACHE = "__NULL__";
-    private static final long PRODUCT_CACHE_LOCK_TTL_SECONDS = 10L;
-    private static final int PRODUCT_CACHE_RETRY_COUNT = 5;
-    private static final long PRODUCT_CACHE_RETRY_INTERVAL_MILLIS = 100L;
-
-    //NOTE:抽取方法，转换VO
-    public MerchantProductVO toMerchantProductVO(Product product, Category category) {
-        // 从 product 实体中拷贝基础属性（此时 product 已经被回填了 id）
-        return productConverter.toMerchantProductVO(product,category);
-    }
 
 
 
     //NOTE:抽取方法，转换Product
-    public Product toProduct(CreateProductDTO createProductDTO){
+    public Product createProductEntity(CreateProductDTO createProductDTO){
         Product product = productConverter.toProduct(createProductDTO, MerchantContextHolder.getMerchantId());
         product.setImageUrl(resolveImageUrl(product.getImageUrl()));
+        product.setStatus(ProductStatusEnum.OFF_SALE.getCode());
+        product.setIsDeleted(DeleteConstant.NOT_DELETED);
         return product;
     }
 
@@ -101,61 +80,17 @@ public class ProductService {
         return imageUrl.trim();
     }
 
-    //NOTE:抽取方法，扣减库存，目前只用于orderService
-    @Transactional(rollbackFor = Exception.class)
-    public void decreaseStock(Long productId, Integer quantity){
-        if (productId == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品信息不能为空");
-        }
 
-        if (quantity == null || quantity <= 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "扣减数量必须大于0");
-        }
-        UpdateWrapper<Product> wrapper = new UpdateWrapper<>();
-        wrapper.eq("id", productId).
-                eq("is_deleted",DeleteConstant.NOT_DELETED).
-                eq("status",ProductStatusEnum.ON_SALE.getCode())
-                .ge("stock", quantity)
-                .setSql("status = CASE WHEN stock = " + quantity
-                        + " THEN " + ProductStatusEnum.SALE_OUT.getCode()
-                        + " ELSE status END, stock = stock - " + quantity
-                        + ", version = version + 1");
-        int row= productMapper.update(null,wrapper);
-        if (row != 1)
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"创建订单失败");
-        evictCacheIfInStockChanged(productId, -quantity);
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public void increaseStock(Long productId, Integer quantity) {
-        if (productId == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品信息不能为空");
-        }
-        if (quantity == null || quantity <= 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"归还数量必须大于0");
-        }
-        if (productMapper.increaseStock(
-                productId,
-                quantity,
-                ProductStatusEnum.SALE_OUT.getCode(),
-                ProductStatusEnum.ON_SALE.getCode()) != 1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"归还库存失败，商品可能处于异常状态");
-        }
-        evictCacheIfInStockChanged(productId, quantity);
-    }
     //NOTE:创建商品
     @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO createProduct(@NonNull CreateProductDTO createProductDTO) {
-        LambdaQueryWrapper<Category> categoryWrapper = new LambdaQueryWrapper<>();
-        categoryWrapper.eq(Category::getId, createProductDTO.getCategoryId())
-                .eq(Category::getMerchantId, MerchantContextHolder.getMerchantId())
-                .eq(Category::getStatus, CategoryStatusEnum.ACTIVE.getCode())
-                .last("FOR UPDATE");
-        Category category = categoryMapper.selectOne(categoryWrapper);
+        Long merchantId = MerchantContextHolder.getMerchantId();
+        Category category = categoryService.lockActiveCategory(createProductDTO.getCategoryId(),
+                merchantId);
         if (category == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"种类不存在");
         }
-        Product product = toProduct(createProductDTO);
+        Product product = createProductEntity(createProductDTO);
         product.setVersion(0);
         try {
             productMapper.insert(product);
@@ -165,7 +100,7 @@ public class ProductService {
                     ACTIVE_PRODUCT_NAME_CONFLICT_MESSAGE
             );
         }
-        return toMerchantProductVO(product,category);
+        return productConverter.toMerchantProductVO(product, category);
     }
 
     public MerchantProductVO getMerchantProductDetail(Long productId) {
@@ -174,7 +109,7 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "商品不存在或不属于当前商家");
         }
-        return toMerchantProductVO(product, getCategory(product.getCategoryId()));
+        return productConverter.toMerchantProductVO(product, categoryService.getCategory(product.getCategoryId()));
     }
 
     //NOTE:上架商品
@@ -182,7 +117,7 @@ public class ProductService {
     public MerchantProductVO onShelf(Long productId){
         Product product = getProduct(productId);
         validateShelfChangeLegal(product, ProductStatusEnum.ON_SALE);
-        Category category = getCategory(product.getCategoryId());
+        Category category = categoryService.getCategory(product.getCategoryId());
         if (product.getStock() == null || product.getStock() < 0) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存异常，无法上架");
         }
@@ -193,9 +128,9 @@ public class ProductService {
         if (!targetStatus.getCode().equals(product.getStatus())) {
             changeProductStatus(product, targetStatus);
         }
-        evictProductDetailCache(productId);
+        productDetailCacheService.evictProductDetailCache(productId);
 
-        return toMerchantProductVO(product,category);
+        return productConverter.toMerchantProductVO(product, category);
     }
 
     //NOTE:下架商品
@@ -203,20 +138,21 @@ public class ProductService {
     public MerchantProductVO offShelf(Long productId){
         Product product = getProduct(productId);
         validateShelfChangeLegal(product, ProductStatusEnum.OFF_SALE);
-        Category category = getCategory(product.getCategoryId());
+        Category category = categoryService.getCategory(product.getCategoryId());
 
         if (!ProductStatusEnum.OFF_SALE.getCode().equals(product.getStatus())) {
             changeProductStatus(product, ProductStatusEnum.OFF_SALE);
         }
-        evictProductDetailCache(productId);
+        productDetailCacheService.evictProductDetailCache(productId);
 
-        return toMerchantProductVO(product,category);
+        return productConverter.toMerchantProductVO(product, category);
     }
 
     public ProductVO getProductDetail(Long productId){
         ProductDetailCacheDTO productDetailCache;
         try {
-            productDetailCache = getProductDetailCache(productId);
+            productDetailCache = productDetailCacheService.getProductDetailCache(productId,
+                    ()->loadProductDetailFromMysqlOnly(productId));
         } catch (RedisCacheUnavailableException e) {
             log.warn(
                     "Redis不可用，商品详情降级查询MySQL，productId={}",
@@ -227,169 +163,24 @@ public class ProductService {
                     loadProductDetailFromMysqlOnly(productId);
         }
 
-        if (!Objects.equals(productDetailCache.getMerchantId(), MerchantContextHolder.getMerchantId())) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "商品不存在或不属于当前商家");
+        if (productDetailCache == null ||
+                !Objects.equals(
+                        productDetailCache.getMerchantId(),
+                        MerchantContextHolder.getMerchantId())) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "商品不存在或不属于当前商家"
+            );
         }
         return productConverter.toProductVO(productDetailCache);
     }
 
-    private ProductDetailCacheDTO getProductDetailCache(Long id){
-        String cacheKey = buildProductDetailKey(id);
-        ProductDetailCacheDTO cachedProduct = readProductDetailCache(cacheKey);
-        if (cachedProduct != null) {
-            return cachedProduct;
-        }
 
-        String lockKey = buildProductLockKey(id);
-        String lockToken = UUID.randomUUID().toString();
-        boolean locked;
-
-        locked = productCacheService.tryLock(
-                lockKey,
-                lockToken,
-                PRODUCT_CACHE_LOCK_TTL_SECONDS,
-                TimeUnit.SECONDS
-        );
-
-        if (!locked) {
-            return retryReadProductDetailCache(id, cacheKey,lockKey,lockToken);
-        }
-
-        try {
-            // 获得锁后再次查询，避免其他请求已经完成缓存重建。
-            cachedProduct = readProductDetailCache(cacheKey);
-            if (cachedProduct != null) {
-                return cachedProduct;
-            }
-            return loadProductDetailAndCache(id, cacheKey);
-        } finally {
-            // Lua 会先比对 lockToken，只释放当前请求持有的锁。
-            productCacheService.unlock(lockKey, lockToken);
-        }
-    }
-
-
-    private ProductDetailCacheDTO readProductDetailCache(String cacheKey) {
-        String cachedJson = productCacheService.get(cacheKey);
-
-        if (!StringUtils.hasText(cachedJson)) {
-            return null;
-        }
-        if (NULL_PRODUCT_CACHE.equals(cachedJson)) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
-        }
-
-        try {
-            // StringRedisTemplate 读取的是 JSON 字符串：在这里反序列化为 DTO。
-            ProductDetailCacheDTO cachedProduct = objectMapper.readValue(
-                    cachedJson,
-                    ProductDetailCacheDTO.class
-            );
-            if (cachedProduct != null && cachedProduct.getInStock() != null) {
-                return cachedProduct;
-            }
-            log.info("商品缓存缺少 inStock 字段，重新加载 key={}", cacheKey);
-        } catch (JacksonException e) {
-            log.warn("商品缓存解析失败，删除缓存 key={}", cacheKey, e);
-        }
-
-        productCacheService.delete(cacheKey);
-        return null;
-    }
-
-    //NOTE:降级数据库查询并写入缓存
-    private ProductDetailCacheDTO loadProductDetailAndCache(Long id, String cacheKey) {
-        Product product = productMapper.selectById(id);
-        if (product == null) {
-            productCacheService.set(
-                    cacheKey,
-                    NULL_PRODUCT_CACHE,
-                    randomCacheTtlMinutes(2, 5),
-                    TimeUnit.MINUTES
-            );
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
-        }
-
-        ProductDetailCacheDTO dto = productConverter.toProductDetailCacheDTO(product);
-        // StringRedisTemplate 只能写字符串：在这里把 DTO 序列化为 JSON。
-        String cacheJson = objectMapper.writeValueAsString(dto);
-        productCacheService.set(
-                cacheKey,
-                cacheJson,
-                randomCacheTtlMinutes(50, 70),
-                TimeUnit.MINUTES
-        );
-        return dto;
-    }
-
-    //NOTE：没有抢到锁的时候的等待重试
-    private ProductDetailCacheDTO retryReadProductDetailCache(Long id, String cacheKey,String lockKey,String lockToken) {
-        for (int attempt = 0; attempt < PRODUCT_CACHE_RETRY_COUNT; attempt++) {
-
-            try {
-                Thread.sleep(PRODUCT_CACHE_RETRY_INTERVAL_MILLIS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new BusinessException(
-                        ResultCodeEnum.BUSINESS_ERROR,
-                        "商品缓存等待被中断"
-                );
-            }
-
-            //读取缓存并抢锁
-            ProductDetailCacheDTO cachedProduct = readProductDetailCache(cacheKey);
-            if (cachedProduct != null) {
-                return cachedProduct;
-            }
-
-            boolean locked = productCacheService.tryLock(
-                    lockKey,
-                    lockToken,
-                    PRODUCT_CACHE_LOCK_TTL_SECONDS,
-                    TimeUnit.SECONDS
-            );
-
-            if (!locked) {
-                continue;
-            }
-
-            try {
-                // 获得锁后再次确认，防止竞争期间其他请求已经完成重建。
-                cachedProduct = readProductDetailCache(cacheKey);
-                if (cachedProduct != null) {
-                    return cachedProduct;
-                }
-
-                return loadProductDetailAndCache(id, cacheKey);
-            } finally {
-                productCacheService.unlock(lockKey, lockToken);
-            }
-
-        }
-        log.warn("等待商品缓存重建超时，拒绝继续回源数据库，productId={}", id);
-        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                "请求超时，请稍后重试");
-    }
-
-
-    private ProductDetailCacheDTO loadProductDetailFromMysqlOnly(Long productId) {
-        Product product = productMapper.selectById(productId);
-
-        if (product == null) {
-            throw new BusinessException(
-                    ResultCodeEnum.BUSINESS_ERROR,
-                    "查询的商品不存在"
-            );
-        }
-
-        return productConverter.toProductDetailCacheDTO(product);
-    }
 
     @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO updateProduct(Long productId,@NonNull UpdateProductDTO updateProductDTO) {
         Product updatedProduct = updateProductAndEvictCache(productId, updateProductDTO);
-        return toMerchantProductVO(updatedProduct, getCategory(updatedProduct.getCategoryId()));
+        return productConverter.toMerchantProductVO(updatedProduct, categoryService.getCategory(updatedProduct.getCategoryId()));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -402,16 +193,16 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "商品不存在、已删除或不属于当前商家");
         }
-        evictProductDetailCache(productId);
+        productDetailCacheService.evictProductDetailCache(productId);
     }
 
     private Product updateProductAndEvictCache(Long productId, UpdateProductDTO updateProductDTO){
+        Long merchantId = MerchantContextHolder.getMerchantId();
         if (updateProductDTO.getCategoryId() != null) {
-            LambdaQueryWrapper<Category> categoryWrapper = new LambdaQueryWrapper<>();
-            categoryWrapper.eq(Category::getId, updateProductDTO.getCategoryId())
-                    .eq(Category::getMerchantId, MerchantContextHolder.getMerchantId())
-                    .eq(Category::getStatus, CategoryStatusEnum.ACTIVE.getCode());
-            if (categoryMapper.selectOne(categoryWrapper) == null) {
+            Category category = categoryService.lockActiveCategory(updateProductDTO.getCategoryId(),
+                    merchantId);
+
+            if (category == null) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                         "分类不存在或不可用");
             }
@@ -441,7 +232,7 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "商品修改失败");
         }
-        evictProductDetailCache(productId);
+        productDetailCacheService.evictProductDetailCache(productId);
         return getProduct(productId);
     }
 
@@ -476,51 +267,16 @@ public class ProductService {
         }
     }
 
-    private String buildProductDetailKey(Long id){
-        return RedisKeyConstant.PRODUCT_DETAIL + id;
-    }
+    private ProductDetailCacheDTO loadProductDetailFromMysqlOnly(Long productId) {
+        Product product = productMapper.selectById(productId);
 
-    private String buildProductLockKey(Long id){
-        return "Lock:"+RedisKeyConstant.PRODUCT_DETAIL + id;
-    }
-
-    private long randomCacheTtlMinutes(long minMinutes, long maxMinutes) {
-        if (minMinutes <= 0 || maxMinutes < minMinutes) {
-            throw new IllegalArgumentException("缓存TTL范围不正确");
+        if (product == null) {
+            return null;
         }
 
-        return ThreadLocalRandom.current()
-                .nextLong(minMinutes, maxMinutes + 1);
+        return productConverter.toProductDetailCacheDTO(product);
     }
 
-    private void evictProductDetailCache(Long productId) {
-        String cacheKey = buildProductDetailKey(productId);
-        cacheInvalidationTaskService.requestInvalidation(cacheKey);
-        // TODO Outbox任务聚合优化：
-        // 当前允许同一 cacheKey 创建多条 PENDING 任务，Redis 长时间不可用时可能造成任务积压。
-        // 后续考虑按 cacheKey 聚合未完成任务，避免重复 INSERT / DEL。
-        // 可增加 count 记录同 key 累计失效次数，用于任务权重、异常流量识别或限流/风控。
-        // 注意：需要区分历史 SUCCESS 记录与当前活跃任务，不能直接对 cacheKey 做简单 UNIQUE。
-    }
-
-
-
-
-    private void evictCacheIfInStockChanged(Long productId, int stockDelta) {
-        // 订单退库允许更新逻辑删除商品，库存回读也必须绕过逻辑删除过滤，
-        // 否则回读为空会抛异常并回滚已经完成的库存归还。
-        Product updatedProduct = productMapper.selectStockByIdIncludingDeleted(productId);
-        if (updatedProduct == null || updatedProduct.getStock() == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"库存更新后商品信息异常");
-        }
-
-        long newStock = updatedProduct.getStock();
-        long oldStock = newStock - stockDelta;
-        if ((oldStock > 0) == (newStock > 0)) {
-            return;
-        }
-        evictProductDetailCache(productId);
-    }
     private void changeProductStatus(Product product, ProductStatusEnum targetStatus) {
         LambdaUpdateWrapper<Product> wrapper = new LambdaUpdateWrapper<>();
         wrapper.eq(Product::getId, product.getId());
@@ -553,15 +309,7 @@ public class ProductService {
                 : ProductStatusEnum.SALE_OUT.getCode();
     }
 
-    private Category getCategory(Long categoryId){
-        Category category = categoryMapper.selectById(categoryId);
 
-        if (category == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"分类不存在");
-        }
-
-        return category;
-    }
     private Product getProduct(Long productId) {
         return productMapper.selectOne(Wrappers.<Product>lambdaQuery().
                 eq(Product::getId, productId).
@@ -581,7 +329,7 @@ public class ProductService {
                 .eq(categoryId != null, Product::getCategoryId, categoryId));
         PageInfo<Product> productPage = new PageInfo<>(products);
         Map<Long, Category> categoryMap = getCategoryMap(products);
-        return productPage.convert(product -> toMerchantProductVO(product, categoryMap.get(product.getCategoryId())));
+        return productPage.convert(product -> productConverter.toMerchantProductVO(product, categoryMap.get(product.getCategoryId())));
     }
 
     private Map<Long, Category> getCategoryMap(List<Product> products) {
@@ -594,11 +342,8 @@ public class ProductService {
             return Collections.emptyMap();
         }
 
-        return categoryMapper.selectList(Wrappers.<Category>lambdaQuery()
-                        .eq(Category::getMerchantId, MerchantContextHolder.getMerchantId())
-                        .in(Category::getId, categoryIds))
-                .stream()
-                .collect(Collectors.toMap(Category::getId, Function.identity(), (first, second) -> first));
+        return categoryService.getCategoryMap(categoryIds,
+                MerchantContextHolder.getMerchantId());
     }
 
     // 恢复逻辑删除的商品；active 唯一键负责裁决同名冲突。
@@ -624,7 +369,7 @@ public class ProductService {
                     "商品不存在、未删除或不属于当前商家"
             );
         }
-        evictProductDetailCache(productId);
+        productDetailCacheService.evictProductDetailCache(productId);
     }
 
     public String uploadImage(MultipartFile file) {

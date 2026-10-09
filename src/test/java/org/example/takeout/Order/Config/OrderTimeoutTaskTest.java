@@ -15,8 +15,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class OrderTimeoutTaskTest {
@@ -39,8 +38,19 @@ class OrderTimeoutTaskTest {
                 .thenThrow(new RuntimeException("restore stock failed"));
         when(orderService.cancelTimeoutOrder(eq(2L), any(LocalDateTime.class)))
                 .thenReturn(true);
+        when(orderMapper.delayTimeoutCancellation(
+                1L,
+                OrderStatusEnum.WAIT_PAY.getCode()
+        )).thenThrow(new RuntimeException("record backoff failed"));
 
         assertDoesNotThrow(orderTimeoutTask::cancelTimeoutOrders);
+        verify(orderMapper).selectTimeoutOrderIds(
+                eq(OrderStatusEnum.WAIT_PAY.getCode()),
+                any(LocalDateTime.class),
+                eq(100)
+        );
+        verify(orderMapper).delayTimeoutCancellation(1L, OrderStatusEnum.WAIT_PAY.getCode());
+        verify(orderMapper, never()).delayTimeoutCancellation(2L, OrderStatusEnum.WAIT_PAY.getCode());
         verify(orderService).cancelTimeoutOrder(eq(2L), any(LocalDateTime.class));
     }
 }

@@ -11,11 +11,9 @@ import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Config.MybatisPlusConfig;
-import org.example.takeout.Merchant.Entity.Merchant;
-import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
-import org.example.takeout.Merchant.Mapper.MerchantMapper;
+import org.example.takeout.Merchant.Service.MerchantQueryService;
 import org.example.takeout.Product.Entity.Product;
-import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductQueryService;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,23 +33,11 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @SpringJUnitConfig(CartHeaderServiceRegressionTest.TestConfig.class)
 class CartHeaderServiceRegressionTest {
@@ -82,10 +68,10 @@ class CartHeaderServiceRegressionTest {
     private CartHeaderMapper cartHeaderMapper;
 
     @Autowired
-    private ProductMapper productMapper;
+    private ProductQueryService productQueryService;
 
     @Autowired
-    private MerchantMapper merchantMapper;
+    private MerchantQueryService merchantQueryService;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -119,10 +105,11 @@ class CartHeaderServiceRegressionTest {
         jdbcTemplate.update("INSERT INTO cart_header (user_id) VALUES (?), (?)",
                 USER_ID, OTHER_USER_ID);
 
-        reset(productMapper, merchantMapper);
-        when(productMapper.selectOne(any())).thenAnswer(invocation -> requestedProduct.get());
-        when(merchantMapper.selectById(MERCHANT_A_ID)).thenReturn(openMerchant(MERCHANT_A_ID));
-        when(merchantMapper.selectById(MERCHANT_B_ID)).thenReturn(openMerchant(MERCHANT_B_ID));
+        reset(productQueryService, merchantQueryService);
+        when(productQueryService.findOnSaleProduct(any()))
+                .thenAnswer(invocation -> requestedProduct.get());
+        when(merchantQueryService.checkMerchantOpen(MERCHANT_A_ID)).thenReturn(false);
+        when(merchantQueryService.checkMerchantOpen(MERCHANT_B_ID)).thenReturn(false);
         UserContextHolder.setUserId(USER_ID);
     }
 
@@ -198,7 +185,7 @@ class CartHeaderServiceRegressionTest {
     @Test
     void concurrentAddsFromDifferentStoresToEmptyCartAllowOnlyOneStore() throws Exception {
         CyclicBarrier bothRequestsValidated = new CyclicBarrier(2);
-        when(productMapper.selectOne(any())).thenAnswer(invocation -> {
+        when(productQueryService.findOnSaleProduct(any())).thenAnswer(invocation -> {
             bothRequestsValidated.await(5, TimeUnit.SECONDS);
             return requestedProduct.get();
         });
@@ -284,13 +271,6 @@ class CartHeaderServiceRegressionTest {
         return product;
     }
 
-    private static Merchant openMerchant(long merchantId) {
-        Merchant merchant = new Merchant();
-        merchant.setId(merchantId);
-        merchant.setStatus(MerchantStatusEnum.BUSINESS_OPEN.getCode());
-        return merchant;
-    }
-
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement
     @Import({MybatisPlusConfig.class, CartService.class, CartHeaderManager.class})
@@ -315,13 +295,13 @@ class CartHeaderServiceRegressionTest {
         }
 
         @Bean
-        ProductMapper productMapper() {
-            return mock(ProductMapper.class);
+        ProductQueryService productQueryService() {
+            return mock(ProductQueryService.class);
         }
 
         @Bean
-        MerchantMapper merchantMapper() {
-            return mock(MerchantMapper.class);
+        MerchantQueryService merchantQueryService() {
+            return mock(MerchantQueryService.class);
         }
     }
 }

@@ -2,10 +2,7 @@ package org.example.takeout.Merchant.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
-import org.example.takeout.Category.Entity.Category;
-import org.example.takeout.Category.Mapper.CategoryMapper;
-import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
-import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
+import org.example.takeout.Category.Service.CategoryCommandService;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -26,8 +23,11 @@ import org.example.takeout.Merchant.VO.loginVO;
 import org.example.takeout.Order.Record.MarkReadyResult;
 import org.example.takeout.Order.Service.OrderCommandService;
 import org.jspecify.annotations.NonNull;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 /**
  * 商家服务类
@@ -40,9 +40,9 @@ public class MerchantService {
     private final MerchantConverter merchantConverter;
     private final JWTUtils jwtUtils;
     private final LoginAttemptLimiter loginAttemptLimiter;
-    private final CategoryMapper categoryMapper;
     private final OrderCommandService orderCommandService;
     private final DeliveryTaskService deliveryTaskService;
+    private final CategoryCommandService categoryCommendService;
 
     /**
      * 商家登录
@@ -81,25 +81,38 @@ public class MerchantService {
     //NOTE:商家注册
     @Transactional(rollbackFor = Exception.class)
     public void register(@NonNull MerchantRegisterDTO dto) {
-        Merchant tempMerchant = merchantMapper.selectOne(Wrappers.<Merchant>lambdaQuery().
-                eq(Merchant::getUsername, dto.getUsername()));
-        if (tempMerchant != null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"已经存在改用户名");
+        List<Merchant> conflicts = merchantMapper.selectList(
+                Wrappers.<Merchant>lambdaQuery()
+                        .and(wrapper -> wrapper
+                                .eq(Merchant::getUsername, dto.getUsername())
+                                .or()
+                                .eq(Merchant::getPhone, dto.getPhone())
+                        )
+        );
+
+        for (Merchant conflict : conflicts) {
+            if (dto.getUsername().equals(conflict.getUsername())) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "用户名已经存在");
+            }
+            if (dto.getPhone().equals(conflict.getPhone())) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "手机号已经存在");
+            }
         }
+
         Merchant merchant= merchantConverter.toMerchant(dto);
         merchant.setPassword(BCrypt.encode(dto.getPassword()));
         merchant.setStatus(MerchantStatusEnum.BUSINESS_CLOSED.getCode());
-        merchantMapper.insert(merchant);
-        createDefaultCategory(merchant.getId());
+        try {
+            merchantMapper.insert(merchant);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "用户名或手机号已经存在"
+            );
+        }
+        categoryCommendService.createDefaultCategory(merchant.getId());
     }
-    private void createDefaultCategory(Long merchantId) {
-        Category defaultCategory = new Category();
-        defaultCategory.setMerchantId(merchantId);
-        defaultCategory.setCategoryName("默认分类");
-        defaultCategory.setIsDefault(CategoryDefaultEnum.DEFAULT.getCode());
-        defaultCategory.setStatus(CategoryStatusEnum.ACTIVE.getCode());
-        categoryMapper.insert(defaultCategory);
-    }
+
 
     /**
      * 更新商家信息

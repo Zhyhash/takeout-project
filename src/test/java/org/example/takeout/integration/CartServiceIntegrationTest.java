@@ -79,6 +79,7 @@ public class CartServiceIntegrationTest {
     @BeforeEach
     void setUp() {
         CartHeaderTestFixture.ensureTable(jdbcTemplate);
+        OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
         deleteTestData();
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, USER_1_ID);
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, USER_2_ID);

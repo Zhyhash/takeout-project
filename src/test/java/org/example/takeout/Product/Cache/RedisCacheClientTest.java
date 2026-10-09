@@ -1,5 +1,6 @@
 package org.example.takeout.Product.Cache;
 
+import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -18,7 +19,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
-class ProductCacheServiceTest {
+class RedisCacheClientTest {
 
     @Mock
     private StringRedisTemplate redisTemplate;
@@ -27,45 +28,50 @@ class ProductCacheServiceTest {
     private ValueOperations<String, String> valueOperations;
 
     @InjectMocks
-    private ProductCacheService productCacheService;
+    private RedisCacheClient redisCacheClient;
 
     @Test
     void getReturnsStringValue() {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get("product:1")).thenReturn("{\"id\":1}");
 
-        assertEquals("{\"id\":1}", productCacheService.get("product:1"));
+        assertEquals("{\"id\":1}", redisCacheClient.get("product:1"));
     }
 
     @Test
     void setWritesStringValueWithTtl() {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
-        productCacheService.set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
+        redisCacheClient.set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
 
         verify(valueOperations).set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
     }
 
     @Test
-    void setDoesNotPropagateRedisFailureBecauseCachePopulationIsBestEffort() {
+    void setReportsRedisFailureAsUnavailableForTheCacheServiceToHandle() {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        doThrow(new IllegalStateException("Redis write failed"))
+        IllegalStateException redisFailure = new IllegalStateException("Redis write failed");
+        doThrow(redisFailure)
                 .when(valueOperations)
                 .set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
 
-        assertDoesNotThrow(() -> productCacheService.set(
+        RedisCacheUnavailableException unavailable = assertThrows(
+                RedisCacheUnavailableException.class,
+                () -> redisCacheClient.set(
                 "product:1",
                 "{\"id\":1}",
                 60,
                 TimeUnit.MINUTES
-        ));
+                ));
 
+        assertSame(redisFailure, unavailable.getCause());
+        assertTrue(unavailable.getMessage().contains("product:1"));
         verify(valueOperations).set("product:1", "{\"id\":1}", 60, TimeUnit.MINUTES);
     }
 
     @Test
     void deleteRemovesKey() {
-        productCacheService.delete("product:1");
+        redisCacheClient.delete("product:1");
 
         verify(redisTemplate).delete("product:1");
     }
@@ -77,7 +83,7 @@ class ProductCacheServiceTest {
                 "lock:product:1", "request-token", 10, TimeUnit.SECONDS))
                 .thenReturn(true);
 
-        assertTrue(productCacheService.tryLock(
+        assertTrue(redisCacheClient.tryLock(
                 "lock:product:1", "request-token", 10, TimeUnit.SECONDS));
     }
 
@@ -89,7 +95,7 @@ class ProductCacheServiceTest {
                 eq("request-token")))
                 .thenReturn(1L, 0L);
 
-        assertTrue(productCacheService.unlock("lock:product:1", "request-token"));
-        assertFalse(productCacheService.unlock("lock:product:1", "request-token"));
+        assertTrue(redisCacheClient.unlock("lock:product:1", "request-token"));
+        assertFalse(redisCacheClient.unlock("lock:product:1", "request-token"));
     }
 }

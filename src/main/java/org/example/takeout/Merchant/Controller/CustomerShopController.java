@@ -6,7 +6,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Result.Result;
-import org.example.takeout.Merchant.Service.MerchantQueryService;
+import org.example.takeout.Merchant.Service.CustomerShopQueryService;
 import org.example.takeout.Merchant.VO.MerchantDetailVO;
 import org.example.takeout.Merchant.VO.MerchantListVO;
 import org.springframework.validation.annotation.Validated;
@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class CustomerShopController {
 
-    private final MerchantQueryService merchantQueryService;
+    private final CustomerShopQueryService merchantQueryService;
 
     /**
      * 用户端-浏览/搜索商家列表

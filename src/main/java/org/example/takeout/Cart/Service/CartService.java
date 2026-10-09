@@ -12,53 +12,52 @@ import org.example.takeout.Cart.VO.CartListVO;
 import org.example.takeout.Cart.VO.CartVO;
 import org.example.takeout.CartHeader.Entity.CartHeader;
 import org.example.takeout.CartHeader.Manager.CartHeaderManager;
-import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
-import org.example.takeout.Merchant.Mapper.MerchantMapper;
+import org.example.takeout.Merchant.Service.MerchantQueryService;
 import org.example.takeout.Product.Entity.Product;
-import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductQueryService;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class CartService {
     private final CartMapper cartMapper;
-    private final ProductMapper productMapper;
-    private final MerchantMapper merchantMapper;
+    private final ProductQueryService  productQueryService;
+    private final MerchantQueryService merchantQueryService;
     private final CartHeaderManager  cartHeaderManager;
     //添加
     @Transactional(rollbackFor = Exception.class)
     public CartVO add(AddCartDTO addCartDTO) {
         // 1. 校验商品是否存在
-        Product product = productMapper.selectOne(Wrappers.<Product>lambdaQuery().
-                eq(Product::getId, addCartDTO.getProductId()).
-                ne(Product::getIsDeleted, DeleteConstant.DELETED).
-                eq(Product::getStatus, ProductStatusEnum.ON_SALE.getCode()));
-        if (product == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商品不存在");
+        Product onSaleProduct = productQueryService.findOnSaleProduct(addCartDTO.getProductId());
+        if (onSaleProduct == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "商品已下架或不存在");
         }
 
         //判断商家状态是否营业
-        Long merchantId = product.getMerchantId();
-        Merchant merchant = merchantMapper.selectById(merchantId);
-        if (merchant == null ||
-                Objects.equals(merchant.getStatus(), MerchantStatusEnum.BUSINESS_CLOSED.getCode())) {
+        Long merchantId = onSaleProduct.getMerchantId();
+        boolean notOpen = merchantQueryService.checkMerchantOpen(merchantId);
+        if (notOpen) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家不存在或者商家已打烊");
         }
 
+
         //提升用户体验，提前拦截明显不可购买商品。
-        if (product.getStock() == null || product.getStock() <= 0){
+        if (onSaleProduct.getStock() == null || onSaleProduct.getStock() <= 0){
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"没有库存了，无法添加");
         }
 
@@ -87,11 +86,11 @@ public class CartService {
             // 1. 如果不存在，创建新对象并完整赋值
             cartItem = new CartItem();
             cartItem.setUserId(userId);
-            cartItem.setProductId(product.getId());
-            cartItem.setProductName(product.getProductName());
-            cartItem.setProductImage(product.getImageUrl());
-            cartItem.setPrice(product.getPrice());
-            cartItem.setMerchantId(product.getMerchantId());
+            cartItem.setProductId(onSaleProduct.getId());
+            cartItem.setProductName(onSaleProduct.getProductName());
+            cartItem.setProductImage(onSaleProduct.getImageUrl());
+            cartItem.setPrice(onSaleProduct.getPrice());
+            cartItem.setMerchantId(onSaleProduct.getMerchantId());
             cartItem.setQuantity(1);
         }
         int i = cartMapper.addOrIncrease(cartItem);
@@ -148,15 +147,15 @@ public class CartService {
         }
 
         // 3. 校验商家状态（打烊则不可修改）
-        Merchant merchant = merchantMapper.selectById(cartItem.getMerchantId());
-        if (merchant == null || Objects.equals(merchant.getStatus(), MerchantStatusEnum.BUSINESS_CLOSED.getCode())) {
-            // 注意：这里不删除购物车记录，只抛异常。前端收到这个错误码后应主动刷新购物车列表
+        boolean notOpen = merchantQueryService.checkMerchantOpen(cartItem.getMerchantId());
+        if (notOpen) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "该商家已打烊，无法修改");
         }
 
+
         // 4. 校验商品状态
-        Product product = productMapper.selectById(cartItem.getProductId());
-        if (product == null || !Objects.equals(product.getStatus(), ProductStatusEnum.ON_SALE.getCode())) {
+        Product onSaleProduct = productQueryService.findOnSaleProduct(cartItem.getProductId());
+        if (onSaleProduct == null ) {
             // 同样不删除，只抛异常。前端刷新列表时会自动清理这条失效记录
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品已下架或不存在");
         }
@@ -224,12 +223,9 @@ public class CartService {
             canBuy = false;
             invalidReason.append("用户购物车有多商家\n");
         }
-        Map<Long, Product> productMap = productMapper.selectList(Wrappers.<Product>lambdaQuery()
-                        .in(Product::getId, productIds))
-                .stream().collect(Collectors.toMap(Product::getId, p -> p));
-        Map<Long, Merchant> merchantMap = merchantMapper.selectList(Wrappers.<Merchant>lambdaQuery()
-                        .in(Merchant::getId, merchantIds))
-                .stream().collect(Collectors.toMap(Merchant::getId, m -> m));
+        Map<Long, Product> productMap=productQueryService.selectProductsByIds(productIds);
+
+        Map<Long, Merchant> merchantMap = merchantQueryService.selectMerchantsByIds(merchantIds);
 
         // 分类收集
         List<CartVO> allItems = new ArrayList<>();

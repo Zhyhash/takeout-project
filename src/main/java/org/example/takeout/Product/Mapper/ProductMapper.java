@@ -41,5 +41,23 @@ public interface ProductMapper extends BaseMapper<Product> {
                       @Param("saleOutStatus") Integer saleOutStatus,
                       @Param("onSaleStatus") Integer onSaleStatus);
 
+    @Select("""
+            SELECT id FROM product
+            WHERE merchant_id=#{merchantId}
+             AND category_id=#{categoryId}
+            FOR UPDATE
+    """)
+    List<Long> selectIdsByMerchantIdAndCategoryId(
+            @Param("merchantId") Long merchantId,
+            @Param("categoryId") Long categoryId
+    );
 
+    @Update("""
+    UPDATE product
+        SET category_id = #{targetCategoryId},
+            version=version+1
+    WHERE merchant_id = #{merchantId}
+        AND category_id=#{sourceCategoryId}
+    """)
+    int updateCategory(Long merchantId, Long sourceCategoryId, Long targetCategoryId);
 }

@@ -3,12 +3,14 @@ package org.example.takeout.Order.Service;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
-import org.example.takeout.Cart.Service.cartDomainService;
+import org.example.takeout.Cart.Service.CartCheckoutService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.Order.Assembler.OrderVOAssembler;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
+import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Support.OrderRequestFingerprint;
@@ -31,17 +33,17 @@ import static org.mockito.Mockito.*;
 class OrderServiceValidationTest {
 
     @Mock
-    private OrderDomainService orderDomainService;
-    @Mock
     private OrderTransactionExecutor orderTransactionExecutor;
     @Mock
     private OrderItemMapper orderItemMapper;
     @Mock
     private OrderMapper orderMapper;
     @Mock
-    private OrderVOBuilder orderVOBuilder;
+    private OrderVOAssembler orderVOAssembler;
     @Mock
-    private cartDomainService cartDomainService;
+    private OrderConvertor orderConvertor;
+    @Mock
+    private CartCheckoutService CartCheckoutService;
     @Spy
     private OrderRequestFingerprint orderRequestFingerprint = new OrderRequestFingerprint();
     @InjectMocks
@@ -65,7 +67,7 @@ class OrderServiceValidationTest {
         result.setAvailableItems(List.of(availableItem));
 
         when(orderMapper.selectOne(any())).thenReturn(null);
-        when(cartDomainService.getAvailableCartItems(21L)).thenReturn(result);
+        when(CartCheckoutService.prepareCheckout(21L)).thenReturn(result);
 
         assertThrows(BusinessException.class, () -> orderService.createOrder(dto));
         verify(orderTransactionExecutor, never()).executeOrderCreation(any(), any(), any(), anyString());

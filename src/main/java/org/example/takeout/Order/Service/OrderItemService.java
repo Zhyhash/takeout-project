@@ -8,6 +8,7 @@ import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Product.Entity.Product;
+import org.example.takeout.Product.Service.ProductCommandService;
 import org.example.takeout.Product.Service.ProductService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,7 +22,7 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class OrderItemService {
-    private final ProductService productService;
+    private final ProductCommandService  productCommandService;
     private final OrderItemMapper orderItemMapper;
 
     //NOTE:按商品 ID 升序扣减库存，确保并发订单以相同顺序获取商品行锁。
@@ -31,7 +32,7 @@ public class OrderItemService {
         orderedItems.sort(Comparator.comparing(CartItem::getProductId));
 
         for (CartItem item : orderedItems) {
-            productService.decreaseStock(item.getProductId(), item.getQuantity());
+            productCommandService.decreaseStock(item.getProductId(), item.getQuantity());
         }
     }
 
@@ -43,7 +44,7 @@ public class OrderItemService {
         orderedItems.sort(Comparator.comparing(OrderItem::getProductId));
 
         for (OrderItem item : orderedItems) {
-            productService.increaseStock(item.getProductId(), item.getQuantity());
+            productCommandService.increaseStock(item.getProductId(), item.getQuantity());
         }
     }
 

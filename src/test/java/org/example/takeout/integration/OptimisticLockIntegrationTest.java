@@ -17,6 +17,7 @@ import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductCommandService;
 import org.example.takeout.Product.Service.ProductService;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.dataFactory.TestDataFactory;
@@ -61,6 +62,8 @@ public class OptimisticLockIntegrationTest {
 
     private final ProductService productService;
 
+    private final ProductCommandService productCommandService;
+
     private final CartMapper cartMapper;
 
     private final MerchantMapper merchantMapper;
@@ -69,6 +72,7 @@ public class OptimisticLockIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
         deleteTestData();
 
         UserContextHolder.setUserId(TEST_USER_ID);
@@ -159,14 +163,14 @@ public class OptimisticLockIntegrationTest {
         product.setCategoryId(TEST_CATEGORY_ID);
         productMapper.insert(product);
 
-        productService.decreaseStock(TEST_PRODUCT_ID, 1);
+        productCommandService.decreaseStock(TEST_PRODUCT_ID, 1);
 
         Product soldOut = productMapper.selectById(TEST_PRODUCT_ID);
         assertEquals(0, soldOut.getStock());
         assertEquals(ProductStatusEnum.SALE_OUT.getCode(), soldOut.getStatus());
         assertEquals(1, soldOut.getVersion());
 
-        productService.increaseStock(TEST_PRODUCT_ID, 2);
+        productCommandService.increaseStock(TEST_PRODUCT_ID, 2);
 
         Product onSale = productMapper.selectById(TEST_PRODUCT_ID);
         assertEquals(2, onSale.getStock());
@@ -176,7 +180,7 @@ public class OptimisticLockIntegrationTest {
         jdbcTemplate.update(
                 "UPDATE product SET status = ? WHERE id = ?",
                 ProductStatusEnum.OFF_SALE.getCode(), TEST_PRODUCT_ID);
-        productService.increaseStock(TEST_PRODUCT_ID, 1);
+        productCommandService.increaseStock(TEST_PRODUCT_ID, 1);
 
         Product stillOffSale = productMapper.selectById(TEST_PRODUCT_ID);
         assertEquals(3, stillOffSale.getStock());
@@ -196,7 +200,7 @@ public class OptimisticLockIntegrationTest {
         staleReset.setStock(20);
         staleReset.setVersion(0);
 
-        productService.increaseStock(TEST_PRODUCT_ID, 1);
+        productCommandService.increaseStock(TEST_PRODUCT_ID, 1);
         MerchantContextHolder.setMerchantId(TEST_MERCHANT_ID);
 
         assertThrows(BusinessException.class,
@@ -218,7 +222,7 @@ public class OptimisticLockIntegrationTest {
 
         assertEquals(1, productMapper.deleteById(TEST_PRODUCT_ID));
 
-        productService.increaseStock(TEST_PRODUCT_ID, 2);
+        productCommandService.increaseStock(TEST_PRODUCT_ID, 2);
 
         assertEquals(1, jdbcTemplate.queryForObject(
                 "SELECT is_deleted FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));

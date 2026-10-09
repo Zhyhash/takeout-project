@@ -278,9 +278,15 @@ mvn test "-Dtest=RedisBasicIntegrationTest,RedisLoginAttemptStoreIntegrationTest
 
 默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表（不含缓存失效任务表），只能对专用测试库运行。Redis 不可用时，Redis 专用测试通过 JUnit assumption 跳过；要覆盖 Redis 行为则需提供 `127.0.0.1:6379`。如需让测试连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
 
+`FlywayMigrationIntegrationTest` 默认跳过，显式启用后验证旧库升级、空库初始化、历史数据保留、异常数据预检及演示数据重复导入。每个用例创建随机命名的 `takeout_migration_test_*` 数据库并在结束时清理，需要 MySQL 账号具备创建和删除测试库的权限；不会使用 `takeout` 或 `takeout_integration_test`：
+
+```powershell
+mvn -Dtest=FlywayMigrationIntegrationTest "-Dtakeout.migration-test.enabled=true" test
+```
+
 ## 7. 数据库初始化
 
-仓库提供 [`deploy/schema.sql`](deploy/schema.sql)，用于创建 `takeout` 数据库及以下十张表：
+仓库提供 [`deploy/schema.sql`](deploy/schema.sql)，用于创建 `takeout` 数据库及以下十一张业务表：
 
 ```text
 user
@@ -288,6 +294,7 @@ merchant
 category
 product
 cart
+cart_header
 orders
 order_item
 rider
@@ -295,20 +302,26 @@ delivery_task
 cache_invalidation_task
 ```
 
-在项目根目录执行：
+配置所指向的数据库需要先存在。已创建的空数据库可直接启动应用：Flyway 会执行 `B20261008__initial_schema.sql` 累计基线，再应用更高版本的迁移，无需预先运行 `schema.sql`。已有迁移历史的数据库会忽略 `B` 脚本，继续按历史升级，详见 [Flyway 累计基线文档](https://documentation.red-gate.com/flyway/flyway-concepts/migrations/baseline-migrations)。
+
+也可在项目根目录手工初始化数据库和表：
 
 ```powershell
 mysql -u root -p --execute="source deploy/schema.sql"
 ```
 
-已有数据库由应用启动时的 Flyway 迁移，迁移脚本位于 `src/main/resources/db/migration`，命名格式为 `V<版本>__<描述>.sql`。当前配置会在非空旧库上先建立版本 `1` 的基线，再按版本顺序执行 `V20260820` 至 `V20261005`，并将结果写入 `takeout.flyway_schema_history`。
+已有数据库由应用启动时的 Flyway 迁移，权威脚本位于 `src/main/resources/db/migration`，命名格式为 `V<版本>__<描述>.sql`。非空旧库尚无迁移历史时，当前配置会先建立版本 `1` 的基线；随后按版本顺序执行尚未成功应用的脚本，并将版本、校验和及执行结果写入 `flyway_schema_history`。已有成功记录的版本会校验内容并跳过执行。
 
-`deploy/migrations` 保留为历史 SQL 参考；不要在 Flyway 已记录成功的版本上再次手工执行同一变更。新增数据库变更时，应在 `src/main/resources/db/migration` 增加更高版本的新脚本，保持已执行脚本不变。`schema.sql` 只负责 Compose 首次创建 MySQL 数据卷时的空库基线；修改它不会升级已有数据卷。
+当前版本范围为 `V20260820` 至 `V20261011`：`V20261007` 调整用户名排序规则及订单索引，`V20261008` 增加超时取消退避字段和扫描索引，`V20261009` 补齐配送奖励及骑手、配送任务自增主键，`V20261010` 回填购物车总表，`V20261011` 修正商家版本默认值、商品分类非空约束及缓存任务状态默认值。空库通过 `B20261008` 建表后，从 `V20261009` 继续升级。历史配送任务缺失的奖励快照按当前 `DeliveryFeeCalculator` 固定规则回填 `5.00` 元，已有奖励和时间字段保持原值。
+
+购物车回填和分类约束迁移使用临时表的命名 `CHECK` 约束预检旧数据。失败时错误会指出具体约束，含义及排查 SQL 见 [`deploy/migrations/README.md`](deploy/migrations/README.md)。应先处理对应数据问题，再按失败迁移恢复流程重试；不要修改已成功脚本或使用 `repair` 更新其校验和来绕过检查。
+
+[`deploy/migrations`](deploy/migrations/README.md) 是上述 `B`、`V` 脚本的同名、同内容镜像，供部署审阅使用，应用只扫描 classpath 目录。不要在 Flyway 已记录成功的版本上再次手工执行同一变更，也不要修改其文件名或内容。新增数据库变更时，应增加更高版本的新脚本，并同步部署镜像。`schema.sql` 负责手工或 Compose 空库初始化；修改它不会升级已有数据库或数据卷。
 
 可用下面的 SQL 检查迁移状态：
 
 ```sql
-SELECT installed_rank, version, description, success
+SELECT installed_rank, version, description, checksum, success
 FROM flyway_schema_history
 ORDER BY installed_rank;
 ```

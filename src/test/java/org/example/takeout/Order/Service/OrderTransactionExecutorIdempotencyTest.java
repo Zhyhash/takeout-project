@@ -5,7 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
-import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.Cart.Service.CartCommandService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
@@ -26,6 +26,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -36,11 +37,10 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class OrderTransactionExecutorIdempotencyTest {
     private static final Long USER_ID = 21L;
-    @Mock private OrderDomainService orderDomainService;
     @Mock private OrderItemService orderItemService;
     @Mock private OrderConvertor orderConvertor;
     @Mock private OrderMapper orderMapper;
-    @Mock private CartMapper cartMapper;
+    @Mock private CartCommandService cartCommandService;
     @InjectMocks private OrderTransactionExecutor executor;
 
     private CreateOrderDTO request;
@@ -61,7 +61,6 @@ class OrderTransactionExecutorIdempotencyTest {
         context.setMerchant(TestDataFactory.createOpenMerchant(31L));
         context.setTotalAmount(BigDecimal.TEN);
         duplicateKey = new DuplicateKeyException("Duplicate entry for unique key");
-        when(orderDomainService.createOrderNo()).thenReturn("ORD-NEW");
         when(orderMapper.insert(any(Order.class))).thenThrow(duplicateKey);
     }
 
@@ -73,7 +72,7 @@ class OrderTransactionExecutorIdempotencyTest {
         assertSame(committed, executor.executeOrderCreation(context, request, USER_ID, requestHash));
 
         assertLookupUsesOriginalUniqueKey();
-        verifyNoInteractions(cartMapper, orderItemService);
+        verifyNoInteractions(cartCommandService, orderItemService);
     }
 
     @Test
@@ -89,7 +88,7 @@ class OrderTransactionExecutorIdempotencyTest {
         assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
         assertEquals("同一 requestId 不能携带不同下单参数，请使用新的 requestId", exception.getMessage());
         assertLookupUsesOriginalUniqueKey();
-        verifyNoInteractions(cartMapper, orderItemService);
+        verifyNoInteractions(cartCommandService, orderItemService);
     }
 
     @Test
@@ -100,7 +99,20 @@ class OrderTransactionExecutorIdempotencyTest {
                 () -> executor.executeOrderCreation(context, request, USER_ID, requestHash)));
 
         assertLookupUsesOriginalUniqueKey();
-        verifyNoInteractions(cartMapper, orderItemService);
+        verifyNoInteractions(cartCommandService, orderItemService);
+    }
+
+    @Test
+    void newOrderIsInitiallyEligibleForTimeoutCancellationAfterThirtyMinutes() {
+        when(orderMapper.selectOne(any())).thenReturn(committedOrder(requestHash));
+
+        executor.executeOrderCreation(context, request, USER_ID, requestHash);
+
+        ArgumentCaptor<Order> insertedOrder = ArgumentCaptor.forClass(Order.class);
+        verify(orderMapper).insert(insertedOrder.capture());
+        LocalDateTime createdAt = insertedOrder.getValue().getCreateTime();
+        assertNotNull(createdAt);
+        assertEquals(createdAt.plusMinutes(30), insertedOrder.getValue().getTimeoutCancelAvailableAt());
     }
 
     private Order committedOrder(String hash) {

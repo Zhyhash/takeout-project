@@ -14,7 +14,7 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
-import org.example.takeout.Merchant.Service.MerchantQueryService;
+import org.example.takeout.Merchant.Service.CustomerShopQueryService;
 import org.example.takeout.Merchant.Service.MerchantService;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
@@ -71,7 +71,7 @@ abstract class AbstractMockMvcApiTest {
     protected MerchantService merchantService;
 
     @MockitoBean
-    protected MerchantQueryService merchantQueryService;
+    protected CustomerShopQueryService merchantQueryService;
 
     @MockitoBean
     protected CategoryService categoryService;

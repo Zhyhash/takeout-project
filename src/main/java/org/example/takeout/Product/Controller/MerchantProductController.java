@@ -47,36 +47,36 @@ public class MerchantProductController {
     }
 
     @GetMapping("/{id}")
-    public Result<ProductVO> getDetail(@PathVariable("id") @Positive Long id) {
+    public Result<ProductVO> getDetail(@PathVariable @Positive Long id) {
         return Result.success(productService.getProductDetail(id));
     }
 
     @GetMapping("/{id}/edit")
-    public Result<MerchantProductVO> getEditDetail(@PathVariable("id") @Positive Long id) {
+    public Result<MerchantProductVO> getEditDetail(@PathVariable @Positive Long id) {
         return Result.success(productService.getMerchantProductDetail(id));
     }
 
     @PutMapping("/{id}")
     public Result<MerchantProductVO> update(
-            @PathVariable("id") @Positive Long id,
+            @PathVariable @Positive Long id,
             @RequestBody @Valid UpdateProductDTO updateProductDTO) {
         return Result.success(productService.updateProduct(id, updateProductDTO));
     }
 
     @DeleteMapping("/{id}")
-    public Result<String> delete(@PathVariable("id") @Positive Long id) {
+    public Result<String> delete(@PathVariable @Positive Long id) {
         productService.deleteProduct(id);
         return Result.success("删除成功");
     }
 
     @PatchMapping("/{id}/on-shelf")
-    public Result<?> onShelf(@PathVariable("id") @Positive Long id) {
+    public Result<?> onShelf(@PathVariable @Positive Long id) {
         MerchantProductVO productVO = productService.onShelf(id);
         return Result.success(productVO);
     }
 
     @PatchMapping("/{id}/off-shelf")
-    public Result<?> offShelf(@PathVariable("id") @Positive Long id) {
+    public Result<?> offShelf(@PathVariable @Positive Long id) {
         MerchantProductVO productVO = productService.offShelf(id);
         return Result.success(productVO);
     }
