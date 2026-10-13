@@ -4,7 +4,6 @@ import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
-import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
@@ -16,8 +15,8 @@ import org.springframework.stereotype.Service;
 public class OrderCommandService {
     private final OrderMapper orderMapper;
 
-    //商家模块
-    public void acceptOrderByMerchant(@NonNull Long orderId, Long merchantId){
+    // 以下订单接单和备餐状态修改接口提供给商家领域使用。
+    public void acceptOrderByMerchant(@NonNull Long orderId, Long merchantId) {
         int rows = orderMapper.updateOrderStatusToPreparing(
                 orderId,
                 merchantId,
@@ -25,7 +24,7 @@ public class OrderCommandService {
                 OrderStatusEnum.PREPARING.getCode()
         );
 
-        if(rows != 1){
+        if (rows != 1) {
             Order order = orderMapper.selectById(orderId);
             if (order == null || !merchantId.equals(order.getMerchantId())) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
@@ -40,7 +39,7 @@ public class OrderCommandService {
         }
     }
 
-    public MarkReadyResult markReadyByMerchant(@NonNull Long orderId, Long merchantId){
+    public MarkReadyResult markReadyByMerchant(@NonNull Long orderId, Long merchantId) {
         int rows = orderMapper.updateOrderStatusToReady(
                 orderId,
                 merchantId,
@@ -49,31 +48,26 @@ public class OrderCommandService {
         );
         Order order = orderMapper.selectById(orderId);
         if (rows == 1) {
-            return new MarkReadyResult( true,order);
+            return new MarkReadyResult(true, order);
         }
 
         if (order == null || !merchantId.equals(order.getMerchantId())) {
-            throw new BusinessException(
-                    ResultCodeEnum.BUSINESS_ERROR,
-                    "订单不存在或无权操作该订单"
-            );
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或无权操作该订单");
         }
 
         if (OrderStatusEnum.READY.getCode().equals(order.getStatus())) {
-            return new MarkReadyResult(false,order);
+            return new MarkReadyResult(false, order);
         }
 
-        throw new BusinessException(
-                ResultCodeEnum.BUSINESS_ERROR,
-                "订单未处于制作中状态，当前状态码：" + order.getStatus()
-        );
+        throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                "订单未处于制作中状态，当前状态码：" + order.getStatus());
     }
 
-    //配送任务模块
-    public void updateOrderStatusToDelivering(Long orderId){
-        int i = orderMapper.updateOrderStatusToDelivering(orderId,
+    // 以下订单配送状态修改接口提供给配送任务领域使用。
+    public void updateOrderStatusToDelivering(Long orderId) {
+        int rows = orderMapper.updateOrderStatusToDelivering(orderId,
                 OrderStatusEnum.READY.getCode(), OrderStatusEnum.DELIVERING.getCode());
-        if (i != 1) {
+        if (rows != 1) {
             Order order = orderMapper.selectById(orderId);
             if (order == null) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
@@ -83,10 +77,10 @@ public class OrderCommandService {
         }
     }
 
-    public void updateOrderStatusToDelivered(Long orderId){
-        int i = orderMapper.updateOrderStatusToDelivered(orderId,
+    public void updateOrderStatusToDelivered(Long orderId) {
+        int rows = orderMapper.updateOrderStatusToDelivered(orderId,
                 OrderStatusEnum.DELIVERING.getCode(), OrderStatusEnum.DELIVERED.getCode());
-        if (i != 1) {
+        if (rows != 1) {
             Order order = orderMapper.selectById(orderId);
             if (order == null) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
@@ -96,42 +90,4 @@ public class OrderCommandService {
         }
     }
 
-    public void assertDelivering(Long orderId) {
-        assertOrderStatus(
-                orderId,
-                OrderStatusEnum.DELIVERING.getCode(),
-                "配送中"
-        );
-    }
-
-    private void assertOrderStatus(Long orderId, Integer expectedStatus, String expectedStatusDescription) {
-        Order order = orderMapper.selectById(orderId);
-
-        if (order == null) {
-            throw new BusinessException(
-                    ResultCodeEnum.BUSINESS_ERROR,
-                    "订单不存在"
-            );
-        }
-
-        if (!expectedStatus.equals(order.getStatus())) {
-            throw new BusinessException(
-                    ResultCodeEnum.BUSINESS_ERROR,
-                    "订单未处于" + expectedStatusDescription + "状态，当前状态码：" + order.getStatus()
-            );
-        }
-    }
-
-
-    public void assertOrderReachedDeliveryCompletion(Long orderId) {
-        Order order = orderMapper.selectById(orderId);
-        if (order == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
-        }
-        if (!OrderStatusEnum.DELIVERED.getCode().equals(order.getStatus())
-                && !OrderStatusEnum.FINISHED.getCode().equals(order.getStatus())) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "订单未处于已送达或已完成状态，当前状态码：" + order.getStatus());
-        }
-    }
 }

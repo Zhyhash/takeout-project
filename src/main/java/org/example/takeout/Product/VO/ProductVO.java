@@ -10,7 +10,6 @@ public class ProductVO {
     private  Long id;
     private String productName;
     private String imageUrl;
-    private String categoryName;
     private Boolean inStock;
     private Integer status;
     private String statusDesc;

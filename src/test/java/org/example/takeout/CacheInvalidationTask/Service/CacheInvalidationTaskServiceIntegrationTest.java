@@ -4,7 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
-import org.example.takeout.Product.Cache.RedisCacheClient;
+import org.example.takeout.Common.Redis.RedisCacheClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

@@ -1,4 +1,4 @@
-package org.example.takeout.Product.Cache;
+package org.example.takeout.Common.Redis;
 
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.junit.jupiter.api.Test;

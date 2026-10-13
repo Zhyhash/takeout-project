@@ -1,12 +1,16 @@
 package org.example.takeout.integration;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.UpdateCartDTO;
+import org.example.takeout.Cart.Service.CartCheckoutService;
+import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Redis.RedisLoginAttemptStore;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
@@ -17,22 +21,31 @@ import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
+import org.example.takeout.Order.Entity.Order;
+import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Product.DTO.CreateProductDTO;
+import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.context.WebApplicationContext;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -40,9 +53,17 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -75,6 +96,9 @@ class MysqlApiIntegrationTest {
     @MockitoBean
     private OrderCreateRateLimiter orderCreateRateLimiter;
 
+    @MockitoSpyBean
+    private CartCheckoutService cartCheckoutService;
+
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     private MockMvc mockMvc;
@@ -84,6 +108,130 @@ class MysqlApiIntegrationTest {
         this.mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
         when(orderCreateRateLimiter.tryAcquire(anyLong())).thenReturn(true);
         recreateSchema();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"0,0.00", "18.805,18.81", "99999.99,99999.99"})
+    void productUpdateUsesIntentionalPriceRulesAndStoredCurrencyPrecision(String input, String stored) throws Exception {
+        MerchantSeed merchant = insertMerchant("price_" + suffix());
+        Long categoryId = insertCategory(merchant.id(), "Price category");
+        Long productId = insertProduct(merchant.id(), categoryId, "Price product",
+                ProductStatusEnum.ON_SALE.getCode(), 10);
+        UpdateProductDTO dto = new UpdateProductDTO();
+        dto.setProductName("Price product");
+        dto.setVersion(0);
+        dto.setPrice(new BigDecimal(input));
+
+        MvcResult result = mockMvc.perform(put("/category/products/" + productId)
+                        .header("Authorization", bearer(loginMerchant(merchant.username())))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(dto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        assertThat(jdbcTemplate.queryForObject("SELECT price FROM product WHERE id = ?",
+                BigDecimal.class, productId)).isEqualByComparingTo(stored);
+        assertThat(responseJson(result).path("data").path("price").decimalValue())
+                .isEqualByComparingTo(stored);
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM product WHERE id = ?",
+                Integer.class, productId)).isEqualTo(ProductStatusEnum.ON_SALE.getCode());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"user", "merchant", "rider"})
+    void legalLoginNamesRegisterAndAuthenticateWhileUnicodeVariantsCannotBypassFailureLimit(String role) throws Exception {
+        String name = "Key_1-" + suffix();
+        int invalidCredentialsCode = "user".equals(role) ? 401 : 500;
+        String loginField = "rider".equals(role) ? "name" : "username";
+        List<String> variants = invalidLoginNames(name);
+        RedisLoginAttemptStore store = webApplicationContext.getBean(RedisLoginAttemptStore.class);
+        store.clear(role, name);
+        for (String variant : variants) {
+            store.clear(role, variant);
+        }
+        try {
+            assertThat(jdbcTemplate.queryForObject("SELECT collation_name FROM information_schema.columns "
+                            + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+                    String.class, role, loginField)).isEqualTo("utf8mb4_0900_as_cs");
+            postJson("/" + role + "/register", loginRegistrationBody(role, name))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+            Long accountId = jdbcTemplate.queryForObject("SELECT id FROM `" + role
+                    + "` WHERE `" + loginField + "` = ?", Long.class, name);
+            assertThat(jdbcTemplate.queryForObject("SELECT `" + loginField + "` FROM `" + role
+                    + "` WHERE id = ?", String.class, accountId)).isEqualTo(name);
+            if ("user".equals(role)) {
+                assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM cart_header WHERE user_id = ? "
+                        + "AND merchant_id IS NULL", Integer.class, accountId)).isEqualTo(1);
+            } else if ("merchant".equals(role)) {
+                assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM category WHERE merchant_id = ? "
+                        + "AND is_default = ?", Integer.class, accountId, CategoryDefaultEnum.DEFAULT.getCode()))
+                        .isEqualTo(1);
+            }
+            // These different raw Redis keys resolve the original account under the retained as_cs rule.
+            for (String equivalent : List.of(name + "\u200B", name.replace("K", "\u212A"))) {
+                assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM `" + role
+                        + "` WHERE `" + loginField + "` = ?", Integer.class, equivalent)).isEqualTo(1);
+            }
+            postJson("/" + role + "/login", Map.of(loginField, name, "password", PASSWORD))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.id").value(accountId))
+                    .andExpect(jsonPath("$.data.token").isNotEmpty());
+            for (int attempt = 0; attempt < 5; attempt++) {
+                postJson("/" + role + "/login", Map.of(loginField, name, "password", "wrong-password"))
+                        .andExpect(jsonPath("$.code").value(invalidCredentialsCode));
+            }
+            postJson("/" + role + "/login", Map.of(loginField, name, "password", PASSWORD))
+                    .andExpect(jsonPath("$.code").value(403));
+            for (String variant : variants) {
+                // Bean Validation must reject the spelling before credentials or Redis failure counting.
+                postJson("/" + role + "/login", Map.of(loginField, variant, "password", PASSWORD))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(400))
+                        .andExpect(result -> assertThat(result.getResolvedException())
+                                .isInstanceOf(MethodArgumentNotValidException.class));
+                assertThat(store.getFailureCount(role, variant)).isZero();
+                assertThat(store.getFailureCount(role, name)).isEqualTo(5);
+            }
+            assertThat(store.getFailureCount(role, name)).isEqualTo(5);
+            postJson("/" + role + "/login", Map.of(loginField, name, "password", PASSWORD))
+                    .andExpect(jsonPath("$.code").value(403));
+        } finally {
+            store.clear(role, name);
+            for (String variant : variants) {
+                store.clear(role, variant);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"user", "merchant", "rider"})
+    void illegalLoginNameRegistrationDoesNotCreateAccountsOrInitializationRows(String role) throws Exception {
+        List<String> variants = invalidLoginNames("Key_1-" + suffix());
+        RedisLoginAttemptStore store = webApplicationContext.getBean(RedisLoginAttemptStore.class);
+        for (String variant : variants) {
+            store.clear(role, variant);
+        }
+        try {
+            for (String variant : variants) {
+                postJson("/" + role + "/register", loginRegistrationBody(role, variant))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(400))
+                        .andExpect(result -> assertThat(result.getResolvedException())
+                                .isInstanceOf(MethodArgumentNotValidException.class));
+                for (String table : List.of("user", "merchant", "rider", "cart_header", "category")) {
+                    assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM `" + table + "`",
+                            Integer.class)).as("invalid %s registration must not write %s", role, table).isZero();
+                }
+                assertThat(store.getFailureCount(role, variant)).isZero();
+            }
+        } finally {
+            for (String variant : variants) {
+                store.clear(role, variant);
+            }
+        }
     }
 
     @Test
@@ -210,6 +358,167 @@ class MysqlApiIntegrationTest {
         assertThat(itemCount).isEqualTo(1);
         assertThat(cartCount).isZero();
         assertThat(CartHeaderTestFixture.merchantId(jdbcTemplate, seed.userId())).isNull();
+    }
+
+    @Test
+    void cartEmptyFallbackDoesNotReplayConcurrentCommittedOrderWhenNewCartAmountIsExcessive() throws Exception {
+        UserSeed user = insertUser("it_replay_user_" + suffix());
+        MerchantSeed merchant = insertMerchant("it_replay_merchant_" + suffix());
+        Long categoryId = insertCategory(merchant.id(), "Replay category");
+        Long originalProductId = insertProduct(merchant.id(), categoryId, productName(),
+                ProductStatusEnum.ON_SALE.getCode(), 10);
+        String userToken = loginUser(user.username());
+        String merchantToken = loginMerchant(merchant.username());
+
+        CreateProductDTO expensiveProduct = productDTO(categoryId, productName());
+        expensiveProduct.setPrice(new BigDecimal("1000000.01"));
+        MvcResult createdProduct = postJson("/category/products", expensiveProduct, merchantToken)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Long expensiveProductId = responseJson(createdProduct).at("/data/id").asLong();
+        mockMvc.perform(patch("/category/products/{id}/on-shelf", expensiveProductId)
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertThat(jdbcTemplate.queryForObject("SELECT price FROM product WHERE id = ?",
+                BigDecimal.class, expensiveProductId)).isEqualByComparingTo("1000000.01");
+        addCartItemThroughApi(originalProductId, userToken);
+
+        CreateOrderDTO request = new CreateOrderDTO();
+        request.setRequestId(UUID.randomUUID().toString());
+        request.setReceiverName("Integration Tester");
+        request.setReceiverPhone("13800138000");
+        request.setReceiverAddress("Integration Road 1");
+        request.setRemark("same request replay");
+        CountDownLatch preparationReached = new CountDownLatch(1);
+        CountDownLatch resumePreparation = new CountDownLatch(1);
+        AtomicReference<Thread> replayThread = new AtomicReference<>();
+        AtomicBoolean pauseFirstPreparation = new AtomicBoolean(true);
+
+        // Only pause B after its real initial lookup missed; keep all SQL and checkout reads real.
+        doAnswer(invocation -> {
+            if (Thread.currentThread() == replayThread.get()
+                    && pauseFirstPreparation.compareAndSet(true, false)) {
+                assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                assertThat(jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM orders WHERE user_id = ? AND request_id = ?",
+                        Integer.class, user.id(), request.getRequestId())).isZero();
+                preparationReached.countDown();
+                assertThat(resumePreparation.await(10, TimeUnit.SECONDS)).isTrue();
+            }
+            return invocation.callRealMethod();
+        }).when(cartCheckoutService).prepareCheckout(anyLong());
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<Long> replay = null;
+        try {
+            replay = executor.submit(() -> {
+                replayThread.set(Thread.currentThread());
+                postJson("/order", request, userToken)
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(500))
+                        .andExpect(jsonPath("$.message").value("商品总金额超过最大结算数，请清理购物车"));
+
+                // A fresh lookup on B's own thread proves the committed result is visible after its failure.
+                assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                Order committed = webApplicationContext.getBean(OrderMapper.class).selectOne(
+                        Wrappers.<Order>lambdaQuery()
+                                .eq(Order::getUserId, user.id())
+                                .eq(Order::getRequestId, request.getRequestId()));
+                assertThat(committed).isNotNull();
+                return committed.getId();
+            });
+            assertThat(preparationReached.await(10, TimeUnit.SECONDS)).isTrue();
+
+            // A uses the original affordable cart and commits the same key while B is paused.
+            MvcResult committedResult = postJson("/order", request, userToken)
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn();
+            Long committedOrderId = responseJson(committedResult).at("/data/orderId").asLong();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT id FROM orders WHERE user_id = ? AND request_id = ?",
+                    Long.class, user.id(), request.getRequestId())).isEqualTo(committedOrderId);
+            assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM cart WHERE user_id = ?",
+                    Integer.class, user.id())).isZero();
+
+            // This is a separate legitimate add after A's commit, not a replacement of B's checkout result.
+            Long newCartItemId = addCartItemThroughApi(expensiveProductId, userToken);
+            resumePreparation.countDown();
+            assertThat(replay.get(10, TimeUnit.SECONDS)).isEqualTo(committedOrderId);
+            assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM orders WHERE user_id = ?",
+                    Integer.class, user.id())).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM order_item WHERE order_id = ? AND product_id = ?",
+                    Integer.class, committedOrderId, originalProductId)).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT quantity FROM cart WHERE id = ? AND user_id = ? AND product_id = ?",
+                    Integer.class, newCartItemId, user.id(), expensiveProductId)).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject("SELECT stock FROM product WHERE id = ?",
+                    Integer.class, originalProductId)).isEqualTo(9);
+            assertThat(jdbcTemplate.queryForObject("SELECT stock FROM product WHERE id = ?",
+                    Integer.class, expensiveProductId)).isEqualTo(expensiveProduct.getStock());
+
+            postJson("/order", request, userToken)
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.orderId").value(committedOrderId));
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT quantity FROM cart WHERE id = ?", Integer.class, newCartItemId)).isEqualTo(1);
+        } finally {
+            resumePreparation.countDown();
+            if (replay != null && !replay.isDone()) {
+                replay.cancel(true);
+            }
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void excessiveOriginalCartWithoutCommittedOrderCorrectlyKeepsFailureAndMissingKey() throws Exception {
+        UserSeed user = insertUser("it_excess_user_" + suffix());
+        MerchantSeed merchant = insertMerchant("it_excess_merchant_" + suffix());
+        Long categoryId = insertCategory(merchant.id(), "Excess category");
+        String userToken = loginUser(user.username());
+        String merchantToken = loginMerchant(merchant.username());
+        CreateProductDTO product = productDTO(categoryId, productName());
+        product.setPrice(new BigDecimal("1000000.01"));
+        MvcResult createdProduct = postJson("/category/products", product, merchantToken)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Long productId = responseJson(createdProduct).at("/data/id").asLong();
+        mockMvc.perform(patch("/category/products/{id}/on-shelf", productId)
+                        .header("Authorization", bearer(merchantToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        Long cartItemId = addCartItemThroughApi(productId, userToken);
+
+        CreateOrderDTO request = new CreateOrderDTO();
+        request.setRequestId(UUID.randomUUID().toString());
+        request.setReceiverName("Integration Tester");
+        request.setReceiverPhone("13800138000");
+        request.setReceiverAddress("Integration Road 1");
+        for (int attempt = 0; attempt < 2; attempt++) {
+            postJson("/order", request, userToken)
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(500))
+                    .andExpect(jsonPath("$.message").value("商品总金额超过最大结算数，请清理购物车"));
+            Order absent = webApplicationContext.getBean(OrderMapper.class).selectOne(
+                    Wrappers.<Order>lambdaQuery()
+                            .eq(Order::getUserId, user.id())
+                            .eq(Order::getRequestId, request.getRequestId()));
+            assertThat(absent).isNull();
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM orders WHERE user_id = ?",
+                Integer.class, user.id())).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM order_item", Integer.class)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT quantity FROM cart WHERE id = ?",
+                Integer.class, cartItemId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT stock FROM product WHERE id = ?",
+                Integer.class, productId)).isEqualTo(product.getStock());
     }
 
     @Test
@@ -767,6 +1076,22 @@ class MysqlApiIntegrationTest {
         return dto;
     }
 
+    private Map<String, String> loginRegistrationBody(String role, String name) {
+        String loginField = "rider".equals(role) ? "name" : "username";
+        if ("merchant".equals(role)) {
+            return Map.of(loginField, name, "password", PASSWORD, "confirmPassword", PASSWORD,
+                    "phone", phone(), "merchantName", "Login test merchant");
+        }
+        return Map.of(loginField, name, "password", PASSWORD, "confirmPassword", PASSWORD, "phone", phone());
+    }
+
+    private static List<String> invalidLoginNames(String legalName) {
+        return List.of(legalName + "\u200B", legalName.replace("K", "\u212A"),
+                legalName.replace("e", "e\u0301"), legalName.replace("e", "\u00E9"),
+                legalName + " ", legalName.replace("K", "\uFF2B"), legalName + ".",
+                legalName + "\u4E2D", legalName + "\uD83D\uDE00", legalName + "\n");
+    }
+
     private CreateProductDTO productDTO(Long categoryId, String productName) {
         CreateProductDTO dto = new CreateProductDTO();
         dto.setProductName(productName);
@@ -979,7 +1304,7 @@ class MysqlApiIntegrationTest {
                     `status` tinyint NOT NULL DEFAULT 1,
                     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL,
                     PRIMARY KEY (`id`) USING BTREE,
                     UNIQUE INDEX `uk_user_phone` (`phone` ASC) USING BTREE,
                     UNIQUE INDEX `uk_user_username` (`username` ASC) USING BTREE
@@ -990,7 +1315,7 @@ class MysqlApiIntegrationTest {
         jdbcTemplate.execute("""
                 CREATE TABLE `merchant` (
                     `id` bigint NOT NULL AUTO_INCREMENT,
-                    `username` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `username` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL,
                     `phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `password` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '',
@@ -1130,7 +1455,7 @@ class MysqlApiIntegrationTest {
         jdbcTemplate.execute("""
                 CREATE TABLE `rider` (
                     `id` bigint NOT NULL AUTO_INCREMENT,
-                    `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+                    `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL,
                     `phone` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `password` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `status` int NOT NULL,

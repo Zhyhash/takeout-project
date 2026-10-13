@@ -1,17 +1,28 @@
 package org.example.takeout.api;
 
 import com.github.pagehelper.PageInfo;
+import jakarta.servlet.Filter;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.example.takeout.Product.Controller.MerchantProductController;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.math.BigDecimal;
+import java.net.URI;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -19,12 +30,74 @@ import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.handler;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 
 class CategoryProductApiTest extends AbstractMockMvcApiTest {
+
+    private final WebApplicationContext webApplicationContext;
 
     @Autowired
     CategoryProductApiTest(JWTUtils jwtUtils, WebApplicationContext webApplicationContext) {
         super(jwtUtils, webApplicationContext);
+        this.webApplicationContext = webApplicationContext;
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/category/products/image", "/cat%65gory/products/image"})
+    void uploadImageRejectsUserTokenForPlainAndEncodedPaths(String path) throws Exception {
+        uploadMockMvcWithSecurity().perform(multipart(URI.create(path))
+                        .file(uploadFile())
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(UNAUTHORIZED))
+                .andExpect(jsonPath("$.message").value("无权访问该资源，请使用商家账号登录"))
+                .andExpect(handler().handlerType(MerchantProductController.class))
+                .andExpect(handler().methodName("uploadImage"))
+                .andExpect(request().attribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                        "/category/products/image"));
+
+        verify(productService, never()).uploadImage(any(MultipartFile.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/category/products/image", "/cat%65gory/products/image"})
+    void uploadImageRejectsRiderTokenForPlainAndEncodedPaths(String path) throws Exception {
+        uploadMockMvcWithSecurity().perform(multipart(URI.create(path))
+                        .file(uploadFile())
+                        .header("Authorization", riderBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(UNAUTHORIZED))
+                .andExpect(jsonPath("$.message").value("无权访问该资源，请使用商家账号登录"))
+                .andExpect(handler().handlerType(MerchantProductController.class))
+                .andExpect(handler().methodName("uploadImage"))
+                .andExpect(request().attribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                        "/category/products/image"));
+
+        verify(productService, never()).uploadImage(any(MultipartFile.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/category/products/image", "/cat%65gory/products/image"})
+    void uploadImageAllowsMerchantTokenForPlainAndEncodedPaths(String path) throws Exception {
+        MockMultipartFile file = uploadFile();
+        String imageUrl = "/uploads/products/mock-upload.png";
+        when(productService.uploadImage(any(MultipartFile.class))).thenReturn(imageUrl);
+
+        uploadMockMvcWithSecurity().perform(multipart(URI.create(path))
+                        .file(file)
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value(imageUrl))
+                .andExpect(handler().handlerType(MerchantProductController.class))
+                .andExpect(handler().methodName("uploadImage"))
+                .andExpect(request().attribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                        "/category/products/image"));
+
+        verify(productService).uploadImage(file);
+        verify(merchantService).requireActiveMerchantId();
     }
 
     @Test
@@ -376,6 +449,97 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(PARAM_ERROR));
     }
 
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = "   ")
+    void updateProductRequiresNonblankName(String name) throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        dto.setProductName(name);
+
+        mockMvc.perform(put("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verifyNoInteractions(productService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "18.805", "99999.99"})
+    void updateProductAcceptsIntentionalPriceRules(String price) throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        dto.setPrice(new BigDecimal(price));
+        when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
+                .thenReturn(merchantProductVO(301L, "Updated Rice"));
+
+        mockMvc.perform(put("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS));
+
+        verify(productService).updateProduct(eq(301L), argThat(update ->
+                update.getPrice().compareTo(new BigDecimal(price)) == 0));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"-0.001", "100000"})
+    void updateProductRejectsPriceOutsideBusinessBounds(String price) throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        dto.setPrice(new BigDecimal(price));
+
+        mockMvc.perform(put("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verifyNoInteractions(productService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 10000})
+    void updateProductAcceptsStockBounds(int stock) throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        dto.setStock(stock);
+        when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
+                .thenReturn(merchantProductVO(301L, "Updated Rice"));
+
+        mockMvc.perform(put("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 10001})
+    void updateProductRejectsStockOutsideBusinessBounds(int stock) throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        dto.setStock(stock);
+
+        mockMvc.perform(put("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verifyNoInteractions(productService);
+    }
+
+    @Test
+    void defaultProductImageIsServedAnonymouslyAsSvg() throws Exception {
+        mockMvc.perform(get("/images/default-product.svg"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith("image/svg+xml"));
+    }
+
     @Test
     void deleteProductReturnsSuccess() throws Exception {
         mockMvc.perform(delete("/category/products/301")
@@ -490,6 +654,17 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         .header("Authorization", userBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(UNAUTHORIZED));
+    }
+
+    private MockMvc uploadMockMvcWithSecurity() {
+        // Exercise the real security filter chain and MVC mapping; upload stays mocked.
+        return MockMvcBuilders.webAppContextSetup(webApplicationContext)
+                .addFilters(webApplicationContext.getBean("springSecurityFilterChain", Filter.class))
+                .build();
+    }
+
+    private MockMultipartFile uploadFile() {
+        return new MockMultipartFile("file", "test.png", "image/png", new byte[]{1, 2, 3});
     }
 
     private CreateProductDTO productDTO() {

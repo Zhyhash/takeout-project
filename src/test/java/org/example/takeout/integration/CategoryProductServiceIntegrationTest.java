@@ -19,10 +19,12 @@ import org.example.takeout.dataFactory.TestDataFactory;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -176,6 +178,8 @@ class CategoryProductServiceIntegrationTest {
         MerchantProductVO second = productService.createProduct(
                 createProductDTO("柠檬茶", "https://example.test/lemon-2.png"));
         assertEquals(1, productMapper.deleteById(second.getId()));
+        int firstVersionBeforeRestore = productVersion(first.getId());
+        int secondVersionBeforeRestore = productVersion(second.getId());
 
         CountDownLatch readyLatch = new CountDownLatch(2);
         CountDownLatch startLatch = new CountDownLatch(1);
@@ -208,21 +212,42 @@ class CategoryProductServiceIntegrationTest {
         assertFalse(secondRestore.isAlive(), "第二个恢复线程未在规定时间内结束");
 
         int successCount = 0;
-        int conflictCount = 0;
+        int failureCount = 0;
         for (Throwable failure : new Throwable[]{firstFailure.get(), secondFailure.get()}) {
             if (failure == null) {
                 successCount++;
                 continue;
             }
-            BusinessException conflict = assertInstanceOf(BusinessException.class, failure);
-            assertEquals("当前店铺已存在同名商品", conflict.getMessage());
-            conflictCount++;
+            if (failure instanceof BusinessException conflict) {
+                assertEquals("当前店铺已存在同名商品", conflict.getMessage());
+            } else {
+                DeadlockLoserDataAccessException deadlock =
+                        assertInstanceOf(DeadlockLoserDataAccessException.class, failure);
+                Throwable rootCause = deadlock;
+                while (rootCause.getCause() != null) {
+                    rootCause = rootCause.getCause();
+                }
+                SQLException sqlFailure = assertInstanceOf(SQLException.class, rootCause);
+                assertEquals(1213, sqlFailure.getErrorCode());
+                assertEquals("40001", sqlFailure.getSQLState());
+            }
+            failureCount++;
         }
 
         assertEquals(1, successCount);
-        assertEquals(1, conflictCount);
+        assertEquals(1, failureCount);
         assertEquals(2, productCountIncludingDeleted("柠檬茶"));
         assertEquals(1, activeProductCount("柠檬茶"));
+        boolean firstWon = firstFailure.get() == null;
+        Long winnerId = firstWon ? first.getId() : second.getId();
+        Long loserId = firstWon ? second.getId() : first.getId();
+        int winnerVersionBeforeRestore = firstWon ? firstVersionBeforeRestore : secondVersionBeforeRestore;
+        int loserVersionBeforeRestore = firstWon ? secondVersionBeforeRestore : firstVersionBeforeRestore;
+        assertEquals(winnerId, activeProductId("柠檬茶"));
+        assertEquals(ProductStatusEnum.OFF_SALE.getCode(), productStatus(winnerId));
+        assertEquals(winnerVersionBeforeRestore + 1, productVersion(winnerId));
+        assertEquals(1, productDeletedFlag(loserId));
+        assertEquals(loserVersionBeforeRestore, productVersion(loserId));
     }
 
 
@@ -408,6 +433,14 @@ class CategoryProductServiceIntegrationTest {
     private int productStatus(Long productId) {
         return jdbcTemplate.queryForObject(
                 "SELECT status FROM product WHERE id = ?",
+                Integer.class,
+                productId
+        );
+    }
+
+    private int productVersion(Long productId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT version FROM product WHERE id = ?",
                 Integer.class,
                 productId
         );

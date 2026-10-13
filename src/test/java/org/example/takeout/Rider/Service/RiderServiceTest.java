@@ -2,9 +2,11 @@ package org.example.takeout.Rider.Service;
 
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
+import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.LoginRateLimitException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
+import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Rider.DTO.RiderLoginDTO;
@@ -13,6 +15,7 @@ import org.example.takeout.Rider.Entity.Rider;
 import org.example.takeout.Rider.Enums.RiderStatusEnum;
 import org.example.takeout.Rider.Mapper.RiderMapper;
 import org.example.takeout.Rider.VO.RiderLoginVO;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -41,6 +44,43 @@ class RiderServiceTest {
 
     @InjectMocks
     private RiderService riderService;
+
+    @AfterEach
+    void clearContext() {
+        RiderContextHolder.clear();
+    }
+
+    @Test
+    void requireActiveRiderIdRejectsMissingIdentityBeforeQueryingDatabase() {
+        assertThrows(AuthException.class, () -> riderService.requireActiveRiderId());
+        verifyNoInteractions(riderMapper);
+    }
+
+    @Test
+    void requireActiveRiderIdRejectsDeletedAccountUsingOldToken() {
+        RiderContextHolder.setRiderId(301L);
+        when(riderMapper.selectById(301L)).thenReturn(null);
+
+        assertThrows(AuthException.class, () -> riderService.requireActiveRiderId());
+    }
+
+    @Test
+    void requireActiveRiderIdRejectsDisabledAccountUsingOldToken() {
+        RiderContextHolder.setRiderId(301L);
+        Rider rider = rider("password123");
+        rider.setStatus(RiderStatusEnum.DISABLED.getCode());
+        when(riderMapper.selectById(301L)).thenReturn(rider);
+
+        assertThrows(AuthException.class, () -> riderService.requireActiveRiderId());
+    }
+
+    @Test
+    void requireActiveRiderIdReturnsNormalAccountId() {
+        RiderContextHolder.setRiderId(301L);
+        when(riderMapper.selectById(301L)).thenReturn(rider("password123"));
+
+        assertEquals(301L, riderService.requireActiveRiderId());
+    }
 
     @Test
     void registerEncryptsPasswordAndInitializesRider() {

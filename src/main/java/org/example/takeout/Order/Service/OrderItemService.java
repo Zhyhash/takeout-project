@@ -1,12 +1,15 @@
 package org.example.takeout.Order.Service;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
+import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
+import org.example.takeout.Order.VO.OrderItemVO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Service.ProductCommandService;
 import org.example.takeout.Product.Service.ProductService;
@@ -24,8 +27,31 @@ import java.util.Map;
 public class OrderItemService {
     private final ProductCommandService  productCommandService;
     private final OrderItemMapper orderItemMapper;
+    private final OrderConvertor orderConvertor;
 
-    //NOTE:按商品 ID 升序扣减库存，确保并发订单以相同顺序获取商品行锁。
+    private String resolveProductPicture(Product product, CartItem cartItem) {
+        String imageUrl = product.getImageUrl();
+        if (imageUrl != null && !imageUrl.isBlank()) {
+            return imageUrl;
+        }
+        String productImage = cartItem.getProductImage();
+        if (productImage != null && !productImage.isBlank()) {
+            return productImage;
+        }
+        return ProductService.DEFAULT_PRODUCT_IMAGE_URL;
+    }
+
+    private List<OrderItem> selectOrderItemsByOrderIds(List<Long> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return List.of();
+        }
+        List<OrderItem> items = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
+                .in(OrderItem::getOrderId, orderIds));
+        return items == null ? List.of() : items;
+    }
+
+    // 以下订单明细查询、修改和构建接口提供给订单领域使用。
+    // 按商品 ID 升序扣减库存，确保并发订单以相同顺序获取商品行锁。
     @Transactional(rollbackFor = Exception.class)
     public void decreaseStocksOrderedByProductId(List<CartItem> cartItems) {
         List<CartItem> orderedItems = new ArrayList<>(cartItems);
@@ -36,8 +62,7 @@ public class OrderItemService {
         }
     }
 
-
-    //NOTE:库存归还也使用相同的商品 ID 锁顺序，避免与扣减库存形成反向等待。
+    // 库存归还使用相同的商品 ID 锁顺序，避免与扣减库存形成反向等待。
     @Transactional(rollbackFor = Exception.class)
     public void increaseStocksOrderedByProductId(List<OrderItem> orderItems) {
         List<OrderItem> orderedItems = new ArrayList<>(orderItems);
@@ -48,8 +73,8 @@ public class OrderItemService {
         }
     }
 
-    public List<OrderItem> buildOrderItems(Order order, List<CartItem> availableCartItems, Map<Long, Product> productMap) {
-
+    public List<OrderItem> buildOrderItems(Order order, List<CartItem> availableCartItems,
+                                           Map<Long, Product> productMap) {
         List<OrderItem> orderItems = new ArrayList<>();
 
         for (CartItem cartItem : availableCartItems) {
@@ -70,27 +95,24 @@ public class OrderItemService {
         }
 
         return orderItems;
-
     }
 
-    private String resolveProductPicture(Product product, CartItem cartItem) {
-        String imageUrl = product.getImageUrl();
-        if (imageUrl != null && !imageUrl.isBlank()) {
-            return imageUrl;
-        }
-        String productImage = cartItem.getProductImage();
-        if (productImage != null && !productImage.isBlank()) {
-            return productImage;
-        }
-        return ProductService.DEFAULT_PRODUCT_IMAGE_URL;
-    }
-
-
-    public void saveBatch(List<OrderItem> items){
+    public void saveBatch(List<OrderItem> items) {
         for (OrderItem item : items) {
             if (orderItemMapper.insert(item) != 1) {
                 throw new BusinessException(ResultCodeEnum.DATABASE_ERROR, "订单明细保存失败");
             }
         }
+    }
+
+    // 以下订单明细查询接口提供给商家领域使用。
+    public List<OrderItem> findMerchantOrderItemsByOrderIds(List<Long> orderIds) {
+        return selectOrderItemsByOrderIds(orderIds);
+    }
+
+    public List<OrderItemVO> findMerchantOrderItemVOsByOrderIds(List<Long> orderIds) {
+        return selectOrderItemsByOrderIds(orderIds).stream()
+                .map(orderConvertor::toOrderItemVO)
+                .toList();
     }
 }

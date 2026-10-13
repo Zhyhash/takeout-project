@@ -31,7 +31,6 @@ import org.example.takeout.User.VO.LoginVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultMatcher;
@@ -94,13 +93,9 @@ abstract class AbstractMockMvcApiTest {
     @MockitoBean
     protected RiderService riderService;
 
-    @MockitoBean
-    protected JdbcTemplate jdbcTemplate;
-
     @BeforeEach
     void setUpMockMvcAndValidationDefaults() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
-        lenient().when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any())).thenReturn(0);
         lenient().when(orderCreateRateLimiter.tryAcquire(anyLong())).thenReturn(true);
     }
 
@@ -108,7 +103,7 @@ abstract class AbstractMockMvcApiTest {
     void resetMocks() {
         reset(userService, merchantService, merchantQueryService, categoryService,
                 productService, cartService, orderService, orderCreateRateLimiter,
-                deliveryTaskService, riderService, jdbcTemplate);
+                deliveryTaskService, riderService);
     }
 
     protected String json(Object value) throws JsonProcessingException {

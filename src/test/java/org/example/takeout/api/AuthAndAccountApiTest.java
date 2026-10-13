@@ -12,11 +12,14 @@ import org.example.takeout.Product.VO.ProductVO;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -29,6 +32,114 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Autowired
     AuthAndAccountApiTest(JWTUtils jwtUtils, WebApplicationContext webApplicationContext) {
         super(jwtUtils, webApplicationContext);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidLoginNames")
+    void userRegisterRejectsIllegalLoginNameBeforeCallingServices(String loginName) throws Exception {
+        RegisterDTO dto = userRegisterDTO();
+        dto.setUsername(loginName);
+
+        assertLoginNameRejected("/user/register", dto);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidLoginNames")
+    void userLoginRejectsIllegalLoginNameBeforeCallingServices(String loginName) throws Exception {
+        LoginDTO dto = userLoginDTO();
+        dto.setUsername(loginName);
+
+        assertLoginNameRejected("/user/login", dto);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidLoginNames")
+    void merchantRegisterRejectsIllegalLoginNameBeforeCallingServices(String loginName) throws Exception {
+        MerchantRegisterDTO dto = merchantRegisterDTO();
+        dto.setUsername(loginName);
+
+        assertLoginNameRejected("/merchant/register", dto);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidLoginNames")
+    void merchantLoginRejectsIllegalLoginNameBeforeCallingServices(String loginName) throws Exception {
+        MerchantLoginDTO dto = merchantLoginDTO();
+        dto.setUsername(loginName);
+
+        assertLoginNameRejected("/merchant/login", dto);
+    }
+
+    @ParameterizedTest
+    @MethodSource("legalLoginNames")
+    void userRegisterPreservesLegalLoginName(String loginName) throws Exception {
+        RegisterDTO dto = userRegisterDTO();
+        dto.setUsername(loginName);
+
+        mockMvc.perform(post("/user/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value("success"));
+
+        verify(userService).register(argThat(actual -> loginName.equals(actual.getUsername())));
+        verifyNoInteractions(merchantService, riderService);
+    }
+
+    @ParameterizedTest
+    @MethodSource("legalLoginNames")
+    void userLoginPreservesLegalLoginName(String loginName) throws Exception {
+        LoginDTO dto = userLoginDTO();
+        dto.setUsername(loginName);
+        when(userService.login(any(LoginDTO.class))).thenReturn(userLoginVO());
+
+        mockMvc.perform(post("/user/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data.id").value(101))
+                .andExpect(jsonPath("$.data.token").value("user-token"));
+
+        verify(userService).login(argThat(actual -> loginName.equals(actual.getUsername())));
+        verifyNoInteractions(merchantService, riderService);
+    }
+
+    @ParameterizedTest
+    @MethodSource("legalLoginNames")
+    void merchantRegisterPreservesLegalLoginName(String loginName) throws Exception {
+        MerchantRegisterDTO dto = merchantRegisterDTO();
+        dto.setUsername(loginName);
+
+        mockMvc.perform(post("/merchant/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value("success"));
+
+        verify(merchantService).register(argThat(actual -> loginName.equals(actual.getUsername())));
+        verifyNoInteractions(userService, riderService);
+    }
+
+    @ParameterizedTest
+    @MethodSource("legalLoginNames")
+    void merchantLoginPreservesLegalLoginName(String loginName) throws Exception {
+        MerchantLoginDTO dto = merchantLoginDTO();
+        dto.setUsername(loginName);
+        when(merchantService.login(any(MerchantLoginDTO.class))).thenReturn(merchantLoginVO());
+
+        mockMvc.perform(post("/merchant/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data.id").value(201))
+                .andExpect(jsonPath("$.data.token").value("merchant-token"));
+
+        verify(merchantService).login(argThat(actual -> loginName.equals(actual.getUsername())));
+        verifyNoInteractions(userService, riderService);
     }
 
     @Test
@@ -390,6 +501,26 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
         mockMvc.perform(get("/api/customer/shops/0"))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
+    }
+
+    private static Stream<String> invalidLoginNames() {
+        return Stream.of("user\u200B", "Caf\u00E9", "Cafe\u0301", "\u212A", "\uFF2B",
+                "\u4E2D\u6587", "user\uD83D\uDE00", "user name", "user.", "user:name",
+                "user\n", "user\t", "user\0", "a".repeat(51));
+    }
+
+    private static Stream<String> legalLoginNames() {
+        return Stream.of("A", "z", "0", "_", "-", "AaZz09_-", "AaZz09_-".repeat(6) + "A0");
+    }
+
+    private void assertLoginNameRejected(String path, Object dto) throws Exception {
+        mockMvc.perform(post(path)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verifyNoInteractions(userService, merchantService, riderService);
     }
 
     private RegisterDTO userRegisterDTO() {

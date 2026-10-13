@@ -10,7 +10,7 @@ import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Enums.MerchantOrderListType;
-import org.example.takeout.Merchant.Service.MerchantOrderQueryService;
+import org.example.takeout.Merchant.Service.MerchantOrderViewService;
 import org.example.takeout.Merchant.Service.MerchantService;
 import org.example.takeout.Merchant.VO.MerchantOrderDetailVO;
 import org.example.takeout.Merchant.VO.MerchantOrderListVO;
@@ -30,7 +30,7 @@ import org.springframework.web.bind.annotation.*;
 public class MerchantControllerSold {
     
     private final MerchantService merchantService;
-    private final MerchantOrderQueryService merchantOrderQueryService;
+    private final MerchantOrderViewService merchantOrderViewService;
     @PostMapping("/register")
     public Result<?> register(@Valid  @RequestBody MerchantRegisterDTO dto){
         merchantService.register(dto);
@@ -65,14 +65,14 @@ public class MerchantControllerSold {
     }
 
     /**
-     * 分页查看当前商家的待接取或已接取订单。
+     * 按列表类型分页查看当前商家的待接单、处理中或商家流程已完成的订单。
      */
     @GetMapping("/orders")
     public Result<PageInfo<MerchantOrderListVO>> listOrders(
             @RequestParam(defaultValue = "PENDING") MerchantOrderListType type,
             @RequestParam(defaultValue = "1") @Min(1) Integer pageNum,
             @RequestParam(defaultValue = "10") @Min(1) @Max(100) Integer pageSize) {
-        return Result.success(merchantOrderQueryService.listOrders(type, pageNum, pageSize));
+        return Result.success(merchantOrderViewService.listOrders(type, pageNum, pageSize));
     }
 
     /**
@@ -80,7 +80,7 @@ public class MerchantControllerSold {
      */
     @GetMapping("/orders/{orderId}")
     public Result<MerchantOrderDetailVO> getOrderDetail(@PathVariable @Min(1) Long orderId) {
-        return Result.success(merchantOrderQueryService.getOrderDetail(orderId));
+        return Result.success(merchantOrderViewService.getOrderDetail(orderId));
     }
 
     @PatchMapping("/orders/{orderId}/accept")

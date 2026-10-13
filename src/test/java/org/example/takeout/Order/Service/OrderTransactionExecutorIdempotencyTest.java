@@ -58,7 +58,8 @@ class OrderTransactionExecutorIdempotencyTest {
         request = TestDataFactory.createOrderDTO();
         requestHash = new OrderRequestFingerprint().calculate(request);
         context = new OrderDataContext();
-        context.setMerchant(TestDataFactory.createOpenMerchant(31L));
+        context.setMerchantId(31L);
+        context.setMerchantName("Test merchant");
         context.setTotalAmount(BigDecimal.TEN);
         duplicateKey = new DuplicateKeyException("Duplicate entry for unique key");
         when(orderMapper.insert(any(Order.class))).thenThrow(duplicateKey);

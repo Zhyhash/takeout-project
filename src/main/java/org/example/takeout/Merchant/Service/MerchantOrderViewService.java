@@ -1,6 +1,5 @@
 package org.example.takeout.Merchant.Service;
 
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import lombok.RequiredArgsConstructor;
@@ -13,10 +12,8 @@ import org.example.takeout.Merchant.VO.MerchantOrderDetailVO;
 import org.example.takeout.Merchant.VO.MerchantOrderListVO;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
-import org.example.takeout.Order.Enums.OrderStatusEnum;
-import org.example.takeout.Order.Mapper.OrderConvertor;
-import org.example.takeout.Order.Mapper.OrderItemMapper;
-import org.example.takeout.Order.Mapper.OrderMapper;
+import org.example.takeout.Order.Service.OrderItemService;
+import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Order.Support.OrderProductSummaryBuilder;
 import org.example.takeout.Order.VO.OrderItemVO;
 import org.springframework.stereotype.Service;
@@ -31,25 +28,27 @@ import java.util.stream.Collectors;
  */
 @Service
 @RequiredArgsConstructor
-public class MerchantOrderQueryService {
+public class MerchantOrderViewService {
 
-    private final OrderMapper orderMapper;
-    private final OrderItemMapper orderItemMapper;
     private final MerchantOrderConverter merchantOrderConverter;
-    private final OrderConvertor orderConvertor;
+    private final OrderItemService orderItemService;
+    private final OrderService orderService;
     private final OrderProductSummaryBuilder orderProductSummaryBuilder;
 
     public PageInfo<MerchantOrderListVO> listOrders(MerchantOrderListType type,
                                                      Integer pageNum,
                                                      Integer pageSize) {
         Long merchantId = requireMerchantId();
-        List<Integer> statuses = statusesFor(type);
+        if (type == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单列表类型不能为空");
+        }
 
         PageHelper.startPage(pageNum, pageSize);
-        List<Order> orders = orderMapper.selectList(Wrappers.<Order>lambdaQuery()
-                .eq(Order::getMerchantId, merchantId)
-                .in(Order::getStatus, statuses)
-                .orderByDesc(Order::getCreateTime));
+        List<Order> orders = switch (type) {
+            case PENDING -> orderService.findMerchantPendingOrders(merchantId);
+            case PROCESSING -> orderService.findMerchantProcessingOrders(merchantId);
+            case HISTORY -> orderService.findMerchantHistoryOrders(merchantId);
+        };
         if (orders == null) {
             orders = Collections.emptyList();
         }
@@ -59,8 +58,7 @@ public class MerchantOrderQueryService {
         }
 
         List<Long> orderIds = orders.stream().map(Order::getId).toList();
-        List<OrderItem> items = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
-                .in(OrderItem::getOrderId, orderIds));
+        List<OrderItem> items = orderItemService.findMerchantOrderItemsByOrderIds(orderIds);
         Map<Long, List<OrderItem>> itemsByOrderId = (items == null ? Collections.<OrderItem>emptyList() : items)
                 .stream()
                 .collect(Collectors.groupingBy(OrderItem::getOrderId));
@@ -75,23 +73,17 @@ public class MerchantOrderQueryService {
 
     public MerchantOrderDetailVO getOrderDetail(Long orderId) {
         Long merchantId = requireMerchantId();
-        Order order = orderMapper.selectOne(Wrappers.<Order>lambdaQuery()
-                .eq(Order::getId, orderId)
-                .eq(Order::getMerchantId, merchantId));
+        Order order = orderService.findMerchantOrderById(orderId, merchantId);
         if (order == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或不属于当前商家");
         }
 
-        List<OrderItem> orderItems = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
-                .eq(OrderItem::getOrderId, orderId));
-        if (orderItems == null || orderItems.isEmpty()) {
+        List<OrderItemVO> itemVOs = orderItemService.findMerchantOrderItemVOsByOrderIds(List.of(orderId));
+        if (itemVOs.isEmpty()) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单商品明细异常，查询失败");
         }
 
         MerchantOrderDetailVO vo = merchantOrderConverter.toMerchantOrderDetailVO(order);
-        List<OrderItemVO> itemVOs = orderItems.stream()
-                .map(orderConvertor::toOrderItemVO)
-                .collect(Collectors.toList());
         vo.setItems(itemVOs);
         return vo;
     }
@@ -104,18 +96,4 @@ public class MerchantOrderQueryService {
         return merchantId;
     }
 
-    private List<Integer> statusesFor(MerchantOrderListType type) {
-        if (type == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单列表类型不能为空");
-        }
-        if (type == MerchantOrderListType.PENDING) {
-            return List.of(OrderStatusEnum.PAID.getCode());
-        }
-        return List.of(
-                OrderStatusEnum.PREPARING.getCode(),
-                OrderStatusEnum.READY.getCode(),
-                OrderStatusEnum.DELIVERING.getCode(),
-                OrderStatusEnum.DELIVERED.getCode(),
-                OrderStatusEnum.FINISHED.getCode());
-    }
 }

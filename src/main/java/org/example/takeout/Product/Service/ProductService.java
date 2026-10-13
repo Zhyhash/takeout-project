@@ -1,7 +1,6 @@
 package org.example.takeout.Product.Service;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
@@ -179,7 +178,8 @@ public class ProductService {
 
     @Transactional(rollbackFor = Exception.class)
     public MerchantProductVO updateProduct(Long productId,@NonNull UpdateProductDTO updateProductDTO) {
-        Product updatedProduct = updateProductAndEvictCache(productId, updateProductDTO);
+        Product updatedProduct = applyProductUpdate(productId, updateProductDTO);
+        productDetailCacheService.evictProductDetailCache(productId);
         return productConverter.toMerchantProductVO(updatedProduct, categoryService.getCategory(updatedProduct.getCategoryId()));
     }
 
@@ -196,7 +196,7 @@ public class ProductService {
         productDetailCacheService.evictProductDetailCache(productId);
     }
 
-    private Product updateProductAndEvictCache(Long productId, UpdateProductDTO updateProductDTO){
+    private Product applyProductUpdate(Long productId, UpdateProductDTO updateProductDTO){
         Long merchantId = MerchantContextHolder.getMerchantId();
         if (updateProductDTO.getCategoryId() != null) {
             Category category = categoryService.lockActiveCategory(updateProductDTO.getCategoryId(),
@@ -232,7 +232,6 @@ public class ProductService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "商品修改失败");
         }
-        productDetailCacheService.evictProductDetailCache(productId);
         return getProduct(productId);
     }
 

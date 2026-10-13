@@ -7,7 +7,7 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
-import org.example.takeout.Product.Cache.RedisCacheClient;
+import org.example.takeout.Common.Redis.RedisCacheClient;
 import org.example.takeout.Product.Cache.RedisKeyConstant;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;

@@ -26,6 +26,10 @@ public final class AuthPathMatcher {
                 && PATH_MATCHER.match("/uploads/products/**", path)) {
             return true;
         }
+        if (HttpMethod.GET.matches(method)
+                && PATH_MATCHER.match("/images/default-product.svg", path)){
+            return true;
+        }
 
         if (PATH_MATCHER.match("/user/login", path) && HttpMethod.POST.matches(method)) {
             return true;
@@ -61,12 +65,8 @@ public final class AuthPathMatcher {
         }
 
         // 文档（若启用 knife4j）
-        if (path.startsWith("/doc.html") || path.startsWith("/webjars/")
-                || path.startsWith("/v3/api-docs") || path.startsWith("/swagger")) {
-            return true;
-        }
-
-        return false;
+        return path.startsWith("/doc.html") || path.startsWith("/webjars/")
+                || path.startsWith("/v3/api-docs") || path.startsWith("/swagger");
     }
 
     public static boolean requiresUser(String path) {

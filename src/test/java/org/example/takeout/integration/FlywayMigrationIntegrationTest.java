@@ -1,10 +1,17 @@
 package org.example.takeout.integration;
 
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
+import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
+import org.example.takeout.Rider.DTO.RiderLoginDTO;
+import org.example.takeout.User.DTO.LoginDTO;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.ClassPathResource;
@@ -34,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class FlywayMigrationIntegrationTest {
 
     private static final String BASELINE_VERSION = "20261008";
-    private static final String LATEST_VERSION = "20261011";
+    private static final String LATEST_VERSION = "20261014";
     private static final String HISTORICAL_TIME = "2024-01-02 03:04:05";
     private static final List<String> BUSINESS_TABLES = List.of(
             "cache_invalidation_task", "cart", "cart_header", "category", "delivery_task",
@@ -60,7 +67,7 @@ class FlywayMigrationIntegrationTest {
             Map<String, List<List<String>>> before = database.businessRows();
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(6);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SELECT user_id, merchant_id FROM cart_header ORDER BY user_id"))
@@ -128,7 +135,7 @@ class FlywayMigrationIntegrationTest {
                     + HISTORICAL_TIME + "' WHERE id = 52");
             database.execute("UPDATE delivery_task SET update_time = NULL WHERE id = 53");
 
-            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(3);
+            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(6);
 
             assertThat(database.rows("SELECT id, delivery_reward, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM delivery_task ORDER BY id"))
@@ -218,7 +225,7 @@ class FlywayMigrationIntegrationTest {
             assertThat(database.rows("SHOW TABLES")).isEmpty();
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(7);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SHOW TABLES").stream().map(values -> values.get(0)))
@@ -238,13 +245,313 @@ class FlywayMigrationIntegrationTest {
             database.executeDeploymentScript(Path.of("deploy", "schema.sql"));
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(11);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(14);
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
             assertDemoRows(database);
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
             assertDemoRows(database);
             assertThat(flyway.migrate().migrationsExecuted).isZero();
+        }
+    }
+
+    @Test
+    void usernameMigrationMakesMerchantAndRiderLoginCaseAndAccentSensitive() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            insertMerchant(database, 10, 7);
+            insertRider(database, 41);
+            database.execute("UPDATE merchant SET username = 'Cafe' WHERE id = 10");
+            database.execute("UPDATE rider SET name = 'Cafe' WHERE id = 41");
+            database.baselinedFlyway("20261011").migrate();
+            for (String[] loginColumn : List.of(new String[]{"merchant", "username"},
+                    new String[]{"rider", "name"})) {
+                assertThat(database.column(loginColumn[0], loginColumn[1], "collation_name"))
+                        .isEqualTo("utf8mb4_0900_ai_ci");
+                assertThat(database.scalar("SELECT COUNT(*) FROM " + loginColumn[0]
+                        + " WHERE " + loginColumn[1] + " = 'cafe'"))
+                        .as("historical %s login ignores case", loginColumn[0]).isEqualTo("1");
+            }
+
+            assertThat(database.flyway("20261012", false, BASELINE_VERSION)
+                    .migrate().migrationsExecuted).isEqualTo(1);
+
+            for (String[] loginColumn : List.of(new String[]{"merchant", "username"},
+                    new String[]{"rider", "name"})) {
+                assertThat(database.column(loginColumn[0], loginColumn[1], "collation_name"))
+                        .isEqualTo("utf8mb4_0900_as_cs");
+                assertThat(database.scalar("SELECT COUNT(*) FROM " + loginColumn[0]
+                        + " WHERE " + loginColumn[1] + " = 'Cafe'"))
+                        .as("stored %s login still resolves", loginColumn[0]).isEqualTo("1");
+                for (String variant : List.of("cafe", "Caf\u00e9")) {
+                    assertThat(database.scalar("SELECT COUNT(*) FROM " + loginColumn[0]
+                            + " WHERE " + loginColumn[1] + " = '" + variant + "'"))
+                            .as("%s login must distinguish %s", loginColumn[0], variant).isEqualTo("0");
+                }
+            }
+        }
+    }
+
+    @Test
+    void version12UnicodeEquivalentLookupsAreRejectedAtCurrentDtoBoundary() throws Exception {
+        try (TestDatabase database = TestDatabase.create();
+             ValidatorFactory validatorFactory = Validation.buildDefaultValidatorFactory()) {
+            database.loadLocalSchema();
+            insertUser(database, 1);
+            insertMerchant(database, 10, 7);
+            insertRider(database, 41);
+            database.baselinedFlyway("20261012").migrate();
+            Validator validator = validatorFactory.getValidator();
+
+            for (String[] spellings : List.of(new String[]{"Cafe", "Cafe\u200b"},
+                    new String[]{"Caf\u00e9", "Cafe\u0301"})) {
+                MerchantLoginDTO merchantLogin = new MerchantLoginDTO();
+                merchantLogin.setUsername(spellings[1]);
+                merchantLogin.setPassword("Password1");
+                RiderLoginDTO riderLogin = new RiderLoginDTO();
+                riderLogin.setName(spellings[1]);
+                riderLogin.setPassword("Password1");
+                LoginDTO userLogin = new LoginDTO();
+                userLogin.setUsername(spellings[1]);
+                userLogin.setPassword("Password1");
+                assertThat(validator.validate(merchantLogin))
+                        .extracting(violation -> violation.getPropertyPath().toString()).contains("username");
+                assertThat(validator.validate(riderLogin))
+                        .extracting(violation -> violation.getPropertyPath().toString()).contains("name");
+                assertThat(validator.validate(userLogin))
+                        .extracting(violation -> violation.getPropertyPath().toString()).contains("username");
+
+                // as_cs distinguishes case and accents, but UCA equivalence is not byte equality.
+                for (String[] loginColumn : List.of(new String[]{"user", "username"},
+                        new String[]{"merchant", "username"},
+                        new String[]{"rider", "name"})) {
+                    assertThat(database.column(loginColumn[0], loginColumn[1], "collation_name"))
+                            .isEqualTo("utf8mb4_0900_as_cs");
+                    database.execute("UPDATE `" + loginColumn[0] + "` SET " + loginColumn[1]
+                            + " = '" + spellings[0] + "'");
+                    assertThat(database.scalar("SELECT COUNT(*) FROM `" + loginColumn[0] + "`"
+                            + " WHERE " + loginColumn[1] + " = '" + spellings[1] + "'"))
+                            .as("%s UCA-equivalent spelling still resolves the same login", loginColumn[0])
+                            .isEqualTo("1");
+                }
+            }
+        }
+    }
+
+    @Test
+    void binaryLoginMigrationPreservesAllThreeAccountsAndUsesExactLookupAndUniqueness() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            insertUser(database, 1);
+            insertMerchant(database, 10, 7);
+            insertRider(database, 41);
+            List<String[]> loginColumns = List.of(new String[]{"user", "username"},
+                    new String[]{"merchant", "username"}, new String[]{"rider", "name"});
+            String originalName = "Caf\u00e9";
+            List<String> variants = List.of("caf\u00e9", "Cafe", "Cafe\u0301", "Caf\u00e9\u200b", "Caf\u00e9 ");
+            for (String[] loginColumn : loginColumns) {
+                database.execute("UPDATE `" + loginColumn[0] + "` SET `" + loginColumn[1]
+                        + "` = '" + originalName + "'");
+            }
+            database.baselinedFlyway("20261012").migrate();
+            Map<String, List<List<String>>> existingRows = database.businessRows();
+            for (String[] loginColumn : loginColumns) {
+                assertThat(database.column(loginColumn[0], loginColumn[1], "collation_name"))
+                        .isEqualTo("utf8mb4_0900_as_cs");
+            }
+
+            Flyway flyway = database.flyway("20261013", false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("20261013");
+            assertThat(database.businessRows()).isEqualTo(existingRows);
+            for (String[] loginColumn : loginColumns) {
+                assertThat(database.column(loginColumn[0], loginColumn[1], "collation_name"))
+                        .isEqualTo("utf8mb4_0900_bin");
+            }
+
+            int phoneSuffix = 100;
+            for (String[] loginColumn : loginColumns) {
+                String lookupPrefix = "SELECT COUNT(*) FROM `" + loginColumn[0]
+                        + "` WHERE `" + loginColumn[1] + "` = '";
+                assertThat(database.scalar(lookupPrefix + originalName + "'"))
+                        .as("%s original login remains unchanged", loginColumn[0]).isEqualTo("1");
+                for (String variant : variants) {
+                    assertThat(database.scalar(lookupPrefix + variant + "'"))
+                            .as("%s must distinguish variant %s", loginColumn[0], variant).isEqualTo("0");
+                    insertLoginAccount(database, loginColumn[0], variant,
+                            String.format("13800000%03d", phoneSuffix++));
+                    assertThat(database.scalar(lookupPrefix + variant + "'"))
+                            .as("%s variant has its own exact login", loginColumn[0]).isEqualTo("1");
+                }
+                assertThat(database.scalar("SELECT COUNT(*) FROM `" + loginColumn[0] + "`"))
+                        .isEqualTo(String.valueOf(variants.size() + 1));
+                String distinctPhone = String.format("13800000%03d", phoneSuffix++);
+                assertThatThrownBy(() -> insertLoginAccount(database, loginColumn[0], originalName, distinctPhone))
+                        .as("%s exact duplicate name is still rejected", loginColumn[0])
+                        .isInstanceOf(SQLIntegrityConstraintViolationException.class);
+            }
+            Map<String, List<List<String>>> newRows = database.businessRows();
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+            assertThat(database.businessRows()).isEqualTo(newRows);
+        }
+    }
+
+    @Test
+    void version14RestoresAsCsWithoutChangingExistingAccountValuesAndDoesNothingOnRerun() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            insertUser(database, 1);
+            insertMerchant(database, 10, 7);
+            insertRider(database, 41);
+            database.baselinedFlyway("20261013").migrate();
+            List<String[]> loginColumns = List.of(new String[]{"user", "username"},
+                    new String[]{"merchant", "username"}, new String[]{"rider", "name"});
+            int phoneSuffix = 100;
+            for (String[] loginColumn : loginColumns) {
+                assertThat(database.column(loginColumn[0], loginColumn[1], "collation_name"))
+                        .isEqualTo("utf8mb4_0900_bin");
+                // Historical Unicode names are preserved, not silently renamed to fit the new DTO rule.
+                database.execute("UPDATE `" + loginColumn[0] + "` SET `" + loginColumn[1]
+                        + "` = 'Caf\u00e9'");
+                insertLoginAccount(database, loginColumn[0], "Ascii_Name-9",
+                        String.format("13800000%03d", phoneSuffix++));
+            }
+            Map<String, List<List<String>>> originalRows = database.businessRows();
+            List<List<String>> originalColumns = database.columnDefinitions();
+            List<List<String>> unrelatedCollations = database.rows("SELECT table_name, column_name, collation_name "
+                    + "FROM information_schema.columns WHERE table_schema = DATABASE() "
+                    + "AND table_name <> 'flyway_schema_history' "
+                    + "AND NOT ((table_name IN ('user', 'merchant') AND column_name = 'username') "
+                    + "OR (table_name = 'rider' AND column_name = 'name')) ORDER BY table_name, ordinal_position");
+
+            Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
+            assertRuntimeColumnDefinitions(database);
+            assertThat(database.businessRows()).as("all values, passwords and account IDs survive V14")
+                    .isEqualTo(originalRows);
+            assertThat(database.columnDefinitions()).isEqualTo(originalColumns);
+            assertThat(database.rows("SELECT table_name, column_name, collation_name "
+                    + "FROM information_schema.columns WHERE table_schema = DATABASE() "
+                    + "AND table_name <> 'flyway_schema_history' "
+                    + "AND NOT ((table_name IN ('user', 'merchant') AND column_name = 'username') "
+                    + "OR (table_name = 'rider' AND column_name = 'name')) ORDER BY table_name, ordinal_position"))
+                    .as("V14 changes only the three login collations").isEqualTo(unrelatedCollations);
+            for (String[] loginColumn : loginColumns) {
+                assertThat(database.scalar("SELECT COUNT(*) FROM `" + loginColumn[0]
+                        + "` WHERE `" + loginColumn[1] + "` = 'Ascii_Name-9'"))
+                        .as("legal ASCII login remains resolvable for %s", loginColumn[0]).isEqualTo("1");
+            }
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+            assertThat(database.businessRows()).isEqualTo(originalRows);
+            assertThat(database.columnDefinitions()).isEqualTo(originalColumns);
+            assertRuntimeColumnDefinitions(database);
+        }
+    }
+
+    @ParameterizedTest(name = "V14 rejects {1} collision in {0} before changing any login collation")
+    @CsvSource({"user,Kelvin", "merchant,Kelvin", "rider,Kelvin",
+            "user,zero-width", "merchant,zero-width", "rider,zero-width"})
+    void version14PreflightsAllThreeRolesBeforeChangingAnyLoginColumn(String table, String equivalence)
+            throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            insertUser(database, 1);
+            insertMerchant(database, 10, 7);
+            insertRider(database, 41);
+            database.baselinedFlyway("20261013").migrate();
+            String column = table.equals("rider") ? "name" : "username";
+            String originalName = equivalence.equals("Kelvin") ? "KAccount" : "Account";
+            String equivalentName = equivalence.equals("Kelvin") ? "\u212aAccount" : "Account\u200b";
+            database.execute("UPDATE `" + table + "` SET `" + column + "` = '" + originalName + "'");
+            insertLoginAccount(database, table, equivalentName, "13800000999");
+            assertThat(database.scalar("SELECT COUNT(*) FROM `" + table + "` WHERE `" + column + "` = '"
+                    + originalName + "' COLLATE utf8mb4_0900_as_cs"))
+                    .as("the existing binary-distinct rows collide under the proposed as_cs target")
+                    .isEqualTo("2");
+            Map<String, List<List<String>>> originalRows = database.businessRows();
+            List<List<String>> originalColumns = database.columnDefinitions();
+
+            assertThatThrownBy(() -> database.flyway(LATEST_VERSION, false, BASELINE_VERSION).migrate())
+                    .isInstanceOf(FlywayException.class)
+                    .hasMessageContaining("chk_" + table + "_login_name_as_cs_unique");
+
+            assertThat(database.businessRows()).isEqualTo(originalRows);
+            assertThat(database.columnDefinitions()).isEqualTo(originalColumns);
+            for (String[] loginColumn : List.of(new String[]{"user", "username"},
+                    new String[]{"merchant", "username"}, new String[]{"rider", "name"})) {
+                assertThat(database.column(loginColumn[0], loginColumn[1], "collation_name"))
+                        .as("preflight failure must leave %s.%s untouched", loginColumn[0], loginColumn[1])
+                        .isEqualTo("utf8mb4_0900_bin");
+            }
+            assertThat(database.scalar("SELECT COUNT(*) FROM flyway_schema_history "
+                    + "WHERE version = '20261014' AND success = 1")).isEqualTo("0");
+        }
+    }
+
+    @Test
+    void permittedAsciiAlphabetHasDistinctNonIgnorableFixedWidthAsCsWeights() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            String alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+            StringJoiner permittedSql = new StringJoiner(" UNION ALL ");
+            for (char character : alphabet.toCharArray()) {
+                permittedSql.add("SELECT _utf8mb4'" + character
+                        + "' COLLATE utf8mb4_0900_as_cs AS login_character");
+            }
+            String characterRows = "(" + permittedSql + ")";
+            assertThat(database.scalar("SELECT COUNT(DISTINCT login_character) FROM " + characterRows + " permitted"))
+                    .isEqualTo("64");
+            Map<String, String> weights = new HashMap<>();
+            for (List<String> character : database.rows("SELECT login_character, HEX(WEIGHT_STRING(login_character)) "
+                    + "FROM " + characterRows + " permitted")) {
+                String weight = character.get(1);
+                // A single ASCII character has one two-byte weight at each of the three UCA levels.
+                // Zero-level separators are explicit, and no permitted character is ignorable.
+                assertThat(weight).as("fixed-width as_cs weight for %s", character.get(0)).hasSize(20);
+                assertThat(weight.substring(4, 8)).isEqualTo("0000");
+                assertThat(weight.substring(12, 16)).isEqualTo("0000");
+                for (int start : List.of(0, 8, 16)) {
+                    assertThat(weight.substring(start, start + 4))
+                            .as("non-ignorable level weight for %s", character.get(0)).isNotEqualTo("0000");
+                }
+                weights.put(character.get(0), weight);
+            }
+            assertThat(weights).hasSize(64);
+            assertThat(new HashSet<>(weights.values())).hasSize(64);
+            assertThat(database.scalar("SELECT PAD_ATTRIBUTE FROM information_schema.collations "
+                    + "WHERE COLLATION_NAME = 'utf8mb4_0900_as_cs'")).isEqualTo("NO PAD");
+
+            Set<String> pairWeights = new HashSet<>();
+            List<List<String>> pairs = database.rows("SELECT CONCAT(a.login_character, b.login_character), "
+                    + "HEX(WEIGHT_STRING(CONCAT(a.login_character, b.login_character))) FROM "
+                    + characterRows + " a CROSS JOIN " + characterRows + " b");
+            assertThat(pairs).hasSize(64 * 64);
+            for (List<String> pair : pairs) {
+                String first = weights.get(pair.get(0).substring(0, 1));
+                String second = weights.get(pair.get(0).substring(1, 2));
+                String composedWeight = first.substring(0, 4) + second.substring(0, 4) + "0000"
+                        + first.substring(8, 12) + second.substring(8, 12) + "0000"
+                        + first.substring(16, 20) + second.substring(16, 20);
+                assertThat(pair.get(1)).as("no contraction or ignored character in %s", pair.get(0))
+                        .isEqualTo(composedWeight);
+                pairWeights.add(pair.get(1));
+            }
+            assertThat(pairWeights).hasSize(64 * 64);
+            for (String spelling : List.of(alphabet, new StringBuilder(alphabet).reverse().toString(),
+                    "A_a-0".repeat(10))) {
+                StringBuilder primary = new StringBuilder();
+                StringBuilder secondary = new StringBuilder();
+                StringBuilder tertiary = new StringBuilder();
+                for (char character : spelling.toCharArray()) {
+                    String weight = weights.get(String.valueOf(character));
+                    primary.append(weight, 0, 4);
+                    secondary.append(weight, 8, 12);
+                    tertiary.append(weight, 16, 20);
+                }
+                assertThat(database.scalar("SELECT HEX(WEIGHT_STRING(_utf8mb4'" + spelling
+                        + "' COLLATE utf8mb4_0900_as_cs))"))
+                        .isEqualTo(primary + "0000" + secondary + "0000" + tertiary);
+            }
         }
     }
 
@@ -278,6 +585,26 @@ class FlywayMigrationIntegrationTest {
         assertThat(database.column("product", "stock", "column_default")).isEqualTo("0");
         assertThat(database.column("cache_invalidation_task", "status", "column_comment"))
                 .contains("PENDING", "SUCCESS", "FAILED");
+        assertThat(database.column("user", "username", "collation_name"))
+                .isEqualTo("utf8mb4_0900_as_cs");
+        assertThat(database.column("merchant", "username", "collation_name"))
+                .isEqualTo("utf8mb4_0900_as_cs");
+        assertThat(database.column("rider", "name", "collation_name"))
+                .isEqualTo("utf8mb4_0900_as_cs");
+    }
+
+    private static void insertLoginAccount(TestDatabase database, String table, String loginName, String phone)
+            throws SQLException {
+        String values = "'" + loginName + "', '" + phone + "', 'hash'";
+        switch (table) {
+            case "user" -> database.execute("INSERT INTO `user` (username, phone, password, status) VALUES ("
+                    + values + ", 1)");
+            case "merchant" -> database.execute("INSERT INTO merchant (username, phone, password, merchant_name) VALUES ("
+                    + values + ", 'separate login')");
+            case "rider" -> database.execute("INSERT INTO rider (name, phone, password, status, create_time, is_delete) VALUES ("
+                    + values + ", 1, '" + HISTORICAL_TIME + "', 0)");
+            default -> throw new IllegalArgumentException("Unsupported login table: " + table);
+        }
     }
 
     private static void insertUser(TestDatabase database, long id) throws SQLException {
@@ -447,7 +774,8 @@ class FlywayMigrationIntegrationTest {
         }
 
         private String column(String table, String column, String metadata) throws SQLException {
-            if (!List.of("extra", "is_nullable", "column_default", "column_comment").contains(metadata)) {
+            if (!List.of("extra", "is_nullable", "column_default", "column_comment", "collation_name")
+                    .contains(metadata)) {
                 throw new IllegalArgumentException("Unsupported column metadata: " + metadata);
             }
             try (PreparedStatement statement = connection.prepareStatement("SELECT " + metadata

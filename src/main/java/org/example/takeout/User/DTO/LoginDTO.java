@@ -1,6 +1,7 @@
 package org.example.takeout.User.DTO;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -8,6 +9,7 @@ import lombok.Data;
 public class LoginDTO {
     @Size(max = 50,message = "用户名长度不能超过50")
     @NotBlank(message = "用户名不能为空")
+    @Pattern(regexp = "^[A-Za-z0-9_-]+$", message = "登录名只能包含英文字母、数字、下划线和连字符")
     private String username;
 
     @Size(min = 8,max = 20,message = "密码长度不能低于8/超过20")

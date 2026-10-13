@@ -101,6 +101,57 @@ class OrderCommandServiceTest {
                 exception.getMessage());
     }
 
+    @Test
+    void deliveryClaimChangesOnlyReadyOrderToDelivering() {
+        when(orderMapper.updateOrderStatusToDelivering(501L,
+                OrderStatusEnum.READY.getCode(), OrderStatusEnum.DELIVERING.getCode())).thenReturn(1);
+
+        assertDoesNotThrow(() -> orderCommandService.updateOrderStatusToDelivering(501L));
+
+        verify(orderMapper, never()).selectById(501L);
+    }
+
+    @Test
+    void deliveryCompletionChangesOnlyDeliveringOrderToDelivered() {
+        when(orderMapper.updateOrderStatusToDelivered(501L,
+                OrderStatusEnum.DELIVERING.getCode(), OrderStatusEnum.DELIVERED.getCode())).thenReturn(1);
+
+        assertDoesNotThrow(() -> orderCommandService.updateOrderStatusToDelivered(501L));
+
+        verify(orderMapper, never()).selectById(501L);
+    }
+
+    @Test
+    void deliveryClaimRejectsNonReadyOrder() {
+        when(orderMapper.selectById(501L)).thenReturn(order(101L, OrderStatusEnum.PAID.getCode()));
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderCommandService.updateOrderStatusToDelivering(501L));
+
+        assertEquals("订单未处于待配送状态，当前状态码：" + OrderStatusEnum.PAID.getCode(), failure.getMessage());
+    }
+
+    @Test
+    void deliveryCompletionRejectsOrderThatIsNotDelivering() {
+        when(orderMapper.selectById(501L)).thenReturn(order(101L, OrderStatusEnum.READY.getCode()));
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderCommandService.updateOrderStatusToDelivered(501L));
+
+        assertEquals("订单未处于配送中状态，当前状态码：" + OrderStatusEnum.READY.getCode(), failure.getMessage());
+    }
+
+    @Test
+    void deliveryCommandsRejectMissingOrder() {
+        BusinessException claimFailure = assertThrows(BusinessException.class,
+                () -> orderCommandService.updateOrderStatusToDelivering(501L));
+        BusinessException completionFailure = assertThrows(BusinessException.class,
+                () -> orderCommandService.updateOrderStatusToDelivered(501L));
+
+        assertEquals("订单不存在", claimFailure.getMessage());
+        assertEquals("订单不存在", completionFailure.getMessage());
+    }
+
     private void mockAcceptUpdateMiss() {
         when(orderMapper.updateOrderStatusToPreparing(
                 501L,

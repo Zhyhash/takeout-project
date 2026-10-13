@@ -5,6 +5,8 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.CartHeader.Entity.CartHeader;
+import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
@@ -18,7 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.stream.Collectors;
+
 @Service
 @RequiredArgsConstructor
 public class CartCheckoutService {
@@ -30,23 +32,30 @@ public class CartCheckoutService {
     private final MerchantQueryService merchantQueryService;
     private final CartMapper cartMapper;
     private final ProductQueryService productQueryService;
+    private final CartHeaderManager cartHeaderManager;
+
     public CartAvailableResult prepareCheckout(Long userId) {
         List<CartItem> allItems = cartMapper.selectList(Wrappers.<CartItem>lambdaQuery()
                 .eq(CartItem::getUserId, userId));
         if (allItems.isEmpty()) return new CartAvailableResult();
 
-        // 批量查询商品和商家（性能优化）
+        // 批量查询商品
         List<Long> productIds = allItems.stream().map(CartItem::getProductId).toList();
-        List<Long> merchantIds = allItems.stream().map(CartItem::getMerchantId).collect(Collectors.toList());
+
 
         Map<Long, Product> productMap = productQueryService.selectProductsByIds(productIds);
-
-        Map<Long, Merchant> merchantMap = merchantQueryService.selectMerchantsByIds(merchantIds);
+        CartHeader cartHeader = cartHeaderManager.getByUserId(userId);
+        if (cartHeader == null) {
+            return new CartAvailableResult();
+        }
+        Long requestedMerchantId = cartHeader.getMerchantId();
+        Merchant merchant = requestedMerchantId == null
+                ? null
+                : merchantQueryService.selectMerchantById(requestedMerchantId);
 
         List<CartItem> available = new ArrayList<>();
         for (CartItem item : allItems) {
             Product product = productMap.get(item.getProductId());
-            Merchant merchant = merchantMap.get(item.getMerchantId());
             if (isAvailable(product, merchant)) {
                 available.add(item);
             }
@@ -55,7 +64,10 @@ public class CartCheckoutService {
         cartAvailableResult.setAllItems(allItems);
         cartAvailableResult.setAvailableItems(available);
         cartAvailableResult.setProductMap(productMap);
-        cartAvailableResult.setMerchantMap(merchantMap);
+        if (merchant != null) {
+            cartAvailableResult.setMerchantId(merchant.getId());
+            cartAvailableResult.setMerchantName(merchant.getMerchantName());
+        }
         return cartAvailableResult;
     }
 

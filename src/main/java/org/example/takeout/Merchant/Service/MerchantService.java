@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.Category.Service.CategoryCommandService;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
+import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
@@ -25,6 +26,7 @@ import org.example.takeout.Order.Service.OrderCommandService;
 import org.jspecify.annotations.NonNull;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -76,6 +78,23 @@ public class MerchantService {
 
 
         return loginVO;
+    }
+
+    /**
+     * 返回当前请求中的有效商家 ID，并确认账号仍然存在。
+     * 营业状态不代表账号状态，打烊商家仍可访问管理接口。
+     */
+    public Long requireActiveMerchantId() {
+        Long merchantId = MerchantContextHolder.getMerchantId();
+        if (merchantId == null) {
+            throw new AuthException("商家身份无效，请重新登录");
+        }
+
+        Merchant merchant = merchantMapper.selectById(merchantId);
+        if (merchant == null) {
+            throw new AuthException("商家账号不存在，请重新登录");
+        }
+        return merchantId;
     }
 
     //NOTE:商家注册
@@ -134,11 +153,23 @@ public class MerchantService {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "手机号已被其他商家使用");
             }
         }
-        //NOTE:维持原判。商家的名字不做去重处理
+
         Merchant merchant = merchantConverter.toMerchant(merchantUpdateDTO, oldMerchant);
-        int i = merchantMapper.updateById(merchant);
-        if (i != 1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家信息更新失败");
+        int affected;
+        try {
+            affected = merchantMapper.updateById(merchant);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "手机号已被其他商家使用"
+            );
+        }
+
+        if (affected != 1) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "商家信息更新失败"
+            );
         }
 
         return merchantConverter.toMerchantUpdateVO(merchant);
@@ -170,7 +201,8 @@ public class MerchantService {
         orderCommandService.acceptOrderByMerchant(orderId, merchantId);
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class,
+            isolation = Isolation.READ_COMMITTED)
     public void completePreparation(Long orderId){
         Long merchantId = MerchantContextHolder.getMerchantId();
 

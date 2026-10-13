@@ -41,6 +41,25 @@ public interface ProductMapper extends BaseMapper<Product> {
                       @Param("saleOutStatus") Integer saleOutStatus,
                       @Param("onSaleStatus") Integer onSaleStatus);
 
+    @Update("""
+            UPDATE product
+            SET status = CASE
+                    WHEN stock = #{quantity} THEN #{saleOutStatus}
+                    ELSE status
+                END,
+                stock = stock - #{quantity},
+                version = version + 1
+            WHERE id = #{productId}
+              AND is_deleted = #{notDeleted}
+              AND status = #{onSaleStatus}
+              AND stock >= #{quantity}
+            """)
+    int decreaseStock(@Param("productId") Long productId,
+                      @Param("quantity") Integer quantity,
+                      @Param("notDeleted") Integer notDeleted,
+                      @Param("onSaleStatus") Integer onSaleStatus,
+                      @Param("saleOutStatus") Integer saleOutStatus);
+
     @Select("""
             SELECT id FROM product
             WHERE merchant_id=#{merchantId}

@@ -19,8 +19,10 @@ import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Service.OrderCommandService;
+import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Rider.Service.RiderService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -36,11 +38,13 @@ import java.util.stream.Collectors;
 public class DeliveryTaskService {
     private final DeliveryTaskMapper deliveryTaskMapper;
     private final OrderCommandService  orderCommandService;
+    private final OrderService orderService;
     private final DeliveryTaskConverter deliveryTaskConverter;
     private final DeliveryFeeCalculator deliveryFeeCalculator;
     private final RiderService  riderService;
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class,
+            isolation = Isolation.READ_COMMITTED)
     public void claimTask(Long taskId){
         Long riderId = riderService.requireActiveRiderId();
 
@@ -65,7 +69,7 @@ public class DeliveryTaskService {
 
             if (DeliveryTaskEnums.DELIVERING.getCode().equals(deliveryTask.getStatus())
                     && Objects.equals(deliveryTask.getRiderId(), riderId)) {
-                orderCommandService.assertDelivering(deliveryTask.getOrderId());
+                orderService.assertDelivering(deliveryTask.getOrderId());
                 return;
             }
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
@@ -76,7 +80,8 @@ public class DeliveryTaskService {
         orderCommandService.updateOrderStatusToDelivering(deliveryTask.getOrderId());
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class,
+        isolation =  Isolation.READ_COMMITTED)
     public void completeDelivery(Long taskId){
         Long riderId = riderService.requireActiveRiderId();
 
@@ -103,7 +108,7 @@ public class DeliveryTaskService {
                         "配送任务当前状态为：" + deliveryTask.getStatus() + "，无法确认送达");
             }
 
-            orderCommandService.assertOrderReachedDeliveryCompletion(deliveryTask.getOrderId());
+            orderService.assertOrderReachedDeliveryCompletion(deliveryTask.getOrderId());
             return;
         }
 

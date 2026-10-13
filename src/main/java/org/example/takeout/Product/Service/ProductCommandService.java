@@ -1,6 +1,5 @@
 package org.example.takeout.Product.Service;
 
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -53,16 +52,12 @@ public class ProductCommandService {
         if (quantity == null || quantity <= 0) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "扣减数量必须大于0");
         }
-        UpdateWrapper<Product> wrapper = new UpdateWrapper<>();
-        wrapper.eq("id", productId).
-                eq("is_deleted", DeleteConstant.NOT_DELETED).
-                eq("status", ProductStatusEnum.ON_SALE.getCode())
-                .ge("stock", quantity)
-                .setSql("status = CASE WHEN stock = " + quantity
-                        + " THEN " + ProductStatusEnum.SALE_OUT.getCode()
-                        + " ELSE status END, stock = stock - " + quantity
-                        + ", version = version + 1");
-        int row= productMapper.update(null,wrapper);
+        int row = productMapper.decreaseStock(
+                productId,
+                quantity,
+                DeleteConstant.NOT_DELETED,
+                ProductStatusEnum.ON_SALE.getCode(),
+                ProductStatusEnum.SALE_OUT.getCode());
         if (row != 1)
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"创建订单失败");
         evictCacheIfInStockChanged(productId, -quantity);

@@ -9,6 +9,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
 @Component
+//NOTE:计算orderDTO的hash
 public class OrderRequestFingerprint {
     public String calculate(CreateOrderDTO dto) {
         String raw = encode(dto.getReceiverName())

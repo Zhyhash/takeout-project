@@ -7,7 +7,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
-import org.example.takeout.Category.Mapper.CategoryMapper;
+import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Service.CategoryService;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
@@ -17,6 +17,7 @@ import org.example.takeout.Merchant.VO.MerchantDetailVO;
 import org.example.takeout.Merchant.VO.MerchantListVO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Service.ProductQueryService;
+import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -103,6 +106,40 @@ class CustomerShopQueryServiceTest {
         assertSame(detail, merchantQueryService.getMerchantDetailWithGroupedProducts(201L));
 
         verify(productQueryService).getVisibleProductsByMerchantId(201L);
+    }
+
+    @Test
+    void shopDetailBatchesCategoryLookupAndPreservesProductsForUnknownCategory() {
+        Merchant merchant = new Merchant();
+        MerchantDetailVO detail = new MerchantDetailVO();
+        Product knownProduct = new Product();
+        knownProduct.setCategoryId(31L);
+        Product unknownProduct = new Product();
+        unknownProduct.setCategoryId(32L);
+        ProductVO knownProductVO = new ProductVO();
+        ProductVO unknownProductVO = new ProductVO();
+        Category category = new Category();
+        category.setId(31L);
+        category.setCategoryName("热菜");
+
+        when(merchantConverter.toMerchantDetailVO(merchant)).thenReturn(detail);
+        when(categoryService.getCategoriesByIds(Set.of(31L, 32L))).thenReturn(List.of(category));
+        when(merchantConverter.toProductVO(knownProduct)).thenReturn(knownProductVO);
+        when(merchantConverter.toProductVO(unknownProduct)).thenReturn(unknownProductVO);
+
+        MerchantDetailVO result = merchantQueryService.toMerchantDetailVO(merchant,
+                Map.of(31L, List.of(knownProduct), 32L, List.of(unknownProduct)));
+
+        assertEquals(2, result.getCategories().size());
+        var knownCategory = result.getCategories().stream()
+                .filter(value -> value.getCategoryId().equals(31L)).findFirst().orElseThrow();
+        var unknownCategory = result.getCategories().stream()
+                .filter(value -> value.getCategoryId().equals(32L)).findFirst().orElseThrow();
+        assertEquals("热菜", knownCategory.getCategoryName());
+        assertEquals(List.of(knownProductVO), knownCategory.getProducts());
+        assertEquals("未知分类", unknownCategory.getCategoryName());
+        assertEquals(List.of(unknownProductVO), unknownCategory.getProducts());
+        verify(categoryService).getCategoriesByIds(Set.of(31L, 32L));
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

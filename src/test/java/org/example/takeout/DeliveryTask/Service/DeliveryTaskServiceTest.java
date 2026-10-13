@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
@@ -14,6 +15,7 @@ import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Service.OrderCommandService;
+import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Rider.Service.RiderService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -48,6 +50,9 @@ class DeliveryTaskServiceTest {
     private OrderCommandService orderCommandService;
 
     @Mock
+    private OrderService orderService;
+
+    @Mock
     private RiderService riderService;
 
     @Mock
@@ -65,20 +70,20 @@ class DeliveryTaskServiceTest {
     void disabledRiderCannotClaimTaskWithExistingToken() {
         mockDisabledRider();
 
-        assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
+        assertThrows(AuthException.class, () -> deliveryTaskService.claimTask(501L));
 
         verify(riderService).requireActiveRiderId();
-        verifyNoInteractions(deliveryTaskMapper, orderCommandService);
+        verifyNoInteractions(deliveryTaskMapper, orderCommandService, orderService);
     }
 
     @Test
     void disabledRiderCannotCompleteTaskWithExistingToken() {
         mockDisabledRider();
 
-        assertThrows(BusinessException.class, () -> deliveryTaskService.completeDelivery(501L));
+        assertThrows(AuthException.class, () -> deliveryTaskService.completeDelivery(501L));
 
         verify(riderService).requireActiveRiderId();
-        verifyNoInteractions(deliveryTaskMapper, orderCommandService);
+        verifyNoInteractions(deliveryTaskMapper, orderCommandService, orderService);
     }
 
     @Test
@@ -89,7 +94,8 @@ class DeliveryTaskServiceTest {
                 .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
 
         assertDoesNotThrow(() -> deliveryTaskService.claimTask(501L));
-        verify(orderCommandService).assertDelivering(601L);
+        verify(orderService).assertDelivering(601L);
+        verifyNoInteractions(orderCommandService);
     }
 
     @Test
@@ -98,9 +104,10 @@ class DeliveryTaskServiceTest {
         mockTaskUpdateMiss();
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
-        doThrow(businessFailure()).when(orderCommandService).assertDelivering(601L);
+        doThrow(businessFailure()).when(orderService).assertDelivering(601L);
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
+        verifyNoInteractions(orderCommandService);
     }
 
     @Test
@@ -113,6 +120,7 @@ class DeliveryTaskServiceTest {
                 .updateOrderStatusToDelivering(601L);
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
+        verifyNoInteractions(orderService);
     }
 
     @Test
@@ -123,7 +131,8 @@ class DeliveryTaskServiceTest {
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
 
         assertDoesNotThrow(() -> deliveryTaskService.completeDelivery(501L));
-        verify(orderCommandService).assertOrderReachedDeliveryCompletion(601L);
+        verify(orderService).assertOrderReachedDeliveryCompletion(601L);
+        verifyNoInteractions(orderCommandService);
     }
 
     @Test
@@ -134,7 +143,8 @@ class DeliveryTaskServiceTest {
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
 
         assertDoesNotThrow(() -> deliveryTaskService.completeDelivery(501L));
-        verify(orderCommandService).assertOrderReachedDeliveryCompletion(601L);
+        verify(orderService).assertOrderReachedDeliveryCompletion(601L);
+        verifyNoInteractions(orderCommandService);
     }
 
     @Test
@@ -143,10 +153,11 @@ class DeliveryTaskServiceTest {
         mockTaskUpdateMiss();
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
-        doThrow(businessFailure()).when(orderCommandService)
+        doThrow(businessFailure()).when(orderService)
                 .assertOrderReachedDeliveryCompletion(601L);
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.completeDelivery(501L));
+        verifyNoInteractions(orderCommandService);
     }
 
     @Test
@@ -156,9 +167,10 @@ class DeliveryTaskServiceTest {
         when(deliveryTaskMapper.selectOne(any()))
                 .thenReturn(deliveryTask(DeliveryTaskEnums.COMPLETED.getCode()));
         doThrow(businessFailure()).when(orderCommandService)
-                .updateOrderStatusToDelivered(any(DeliveryTask.class));
+                .updateOrderStatusToDelivered(601L);
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.completeDelivery(501L));
+        verifyNoInteractions(orderService);
     }
 
     @Test
@@ -237,9 +249,8 @@ class DeliveryTaskServiceTest {
 
     private void mockDisabledRider() {
         RiderContextHolder.setRiderId(301L);
-        when(riderService.requireActiveRiderId()).thenThrow(new BusinessException(
-                ResultCodeEnum.BUSINESS_ERROR,
-                "骑手账号已禁用或不存在"));
+        when(riderService.requireActiveRiderId()).thenThrow(new AuthException(
+                "骑手账号已禁用或不存在，请重新登录"));
     }
 
     private void mockActiveRider() {

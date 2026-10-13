@@ -7,8 +7,7 @@
     <select id="selectReferencedImageUrls" resultType="java.lang.String">
         SELECT image_url
         FROM product
-        WHERE is_deleted = 0
-          AND image_url IN
+        WHERE image_url IN
         <foreach collection="candidates" item="imageUrl" open="(" separator="," close=")">
             #{imageUrl}
         </foreach>

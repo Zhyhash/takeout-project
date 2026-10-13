@@ -4,6 +4,7 @@ import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Service.CategoryService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
+import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
 import org.example.takeout.Product.DTO.CreateProductDTO;
@@ -26,6 +27,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
+import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -119,6 +121,9 @@ class ProductServiceTest {
         when(categoryService.lockActiveCategory(1L, MERCHANT_ID)).thenReturn(category);
         when(productMapper.insert(any(Product.class))).thenAnswer(invocation -> {
             Product product = invocation.getArgument(0);
+            assertEquals(ProductStatusEnum.OFF_SALE.getCode(), product.getStatus());
+            assertEquals(DeleteConstant.NOT_DELETED, product.getIsDeleted());
+            assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, product.getImageUrl());
             product.setId(PRODUCT_ID);
             return 1;
         });
@@ -234,6 +239,55 @@ class ProductServiceTest {
 
         assertEquals("商品不存在或不属于当前商家", exception.getMessage());
         verify(productConverter, never()).toProductVO(any(ProductDetailCacheDTO.class));
+    }
+
+    @Test
+    void getProductDetailSuppliesMysqlLoaderToTheCacheService() {
+        Product product = product(ProductStatusEnum.ON_SALE.getCode(), 8, 1);
+        ProductDetailCacheDTO loaded = new ProductDetailCacheDTO();
+        loaded.setId(PRODUCT_ID);
+        loaded.setMerchantId(MERCHANT_ID);
+        ProductVO expected = new ProductVO();
+        when(productMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        when(productConverter.toProductDetailCacheDTO(product)).thenReturn(loaded);
+        when(productDetailCacheService.getProductDetailCache(eq(PRODUCT_ID), any()))
+                .thenAnswer(invocation -> {
+                    Supplier<ProductDetailCacheDTO> loader = invocation.getArgument(1);
+                    return loader.get();
+                });
+        when(productConverter.toProductVO(loaded)).thenReturn(expected);
+
+        assertSame(expected, productService.getProductDetail(PRODUCT_ID));
+
+        verify(productMapper).selectById(PRODUCT_ID);
+        verify(productConverter).toProductDetailCacheDTO(product);
+    }
+
+    @Test
+    void getProductDetailRejectsMissingProductReturnedByCacheLoader() {
+        when(productDetailCacheService.getProductDetailCache(eq(PRODUCT_ID), any()))
+                .thenReturn(null);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> productService.getProductDetail(PRODUCT_ID));
+
+        assertEquals("商品不存在或不属于当前商家", exception.getMessage());
+        verifyNoInteractions(productMapper, productConverter);
+    }
+
+    @Test
+    void updateProductRejectsUnavailableDestinationCategoryBeforeWriting() {
+        UpdateProductDTO dto = new UpdateProductDTO();
+        dto.setCategoryId(2L);
+        dto.setVersion(4);
+        when(categoryService.lockActiveCategory(2L, MERCHANT_ID)).thenReturn(null);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> productService.updateProduct(PRODUCT_ID, dto));
+
+        assertEquals("分类不存在或不可用", exception.getMessage());
+        verify(categoryService).lockActiveCategory(2L, MERCHANT_ID);
+        verifyNoInteractions(productMapper, productConverter, productDetailCacheService);
     }
 
     @Test

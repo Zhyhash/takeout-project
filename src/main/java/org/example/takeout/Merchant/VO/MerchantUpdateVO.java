@@ -8,7 +8,6 @@ public class MerchantUpdateVO {
     private String merchantName;
     private String address;
     private String phone;
-    private String email;
     private String description;
     private String pictureURL;
     private Integer status;

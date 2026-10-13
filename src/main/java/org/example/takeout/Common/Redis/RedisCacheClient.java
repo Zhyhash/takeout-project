@@ -1,4 +1,4 @@
-package org.example.takeout.Product.Cache;
+package org.example.takeout.Common.Redis;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

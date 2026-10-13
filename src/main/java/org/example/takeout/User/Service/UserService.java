@@ -18,6 +18,7 @@ import org.example.takeout.User.Mapper.UserMapper;
 import org.example.takeout.User.StatusEnum.UserStatusEnum;
 import org.example.takeout.User.VO.LoginVO;
 import org.jspecify.annotations.NonNull;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -69,9 +70,15 @@ public class UserService {
         user.setPhone(dto.getPhone());
         user.setStatus(UserStatusEnum.NORMAL.getCode());
         user.setNickname("用户_" + random.nextInt(10000));
-        userMapper.insert(user);
+        try {
+            userMapper.insert(user);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "用户名或手机号已经存在"
+            );
+        }
 
-        //创建购物车总表
         cartHeaderManager.insertCartHeader(user.getId());
     }
 
@@ -83,19 +90,19 @@ public class UserService {
         if(user == null){
             //安全性保证
             loginAttemptLimiter.recordFailure(AuthRole.USER, loginDTO.getUsername());
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
+            throw new BusinessException(ResultCodeEnum.UNAUTHORIZED,"用户名或密码错误");
         }
         boolean matches = BCrypt.matches(loginDTO.getPassword(), user.getPassword());
         if(!matches){
             //限流
             loginAttemptLimiter.recordFailure(AuthRole.USER, loginDTO.getUsername());
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户名或密码错误");
+            throw new BusinessException(ResultCodeEnum.UNAUTHORIZED,"用户名或密码错误");
         }
 
         loginAttemptLimiter.clearFailures(AuthRole.USER, loginDTO.getUsername());
 
         if (!UserStatusEnum.NORMAL.getCode().equals(user.getStatus())) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"用户账号已禁用或不可用");
+            throw new BusinessException(ResultCodeEnum.FORBIDDEN,"用户账号已禁用或不可用");
         }
 
        LoginVO loginVO = new LoginVO();

@@ -12,6 +12,7 @@ import org.example.takeout.Common.CustomAnnotation.PasswordMatches;
 public class MerchantRegisterDTO implements PasswordMatchable {
     @NotBlank(message = "用户名不能为空")
     @Size(min = 1, max = 50, message = "用户名长度必须在1到50个字符之间")
+    @Pattern(regexp = "^[A-Za-z0-9_-]+$", message = "登录名只能包含英文字母、数字、下划线和连字符")
     private String username;
 
     @NotBlank(message = "密码不能为空")

@@ -13,6 +13,7 @@ public class CartHeaderManager {
 
     private final CartHeaderMapper cartHeaderMapper;
 
+
     public CartHeader lock(Long userId) {
         return cartHeaderMapper.lockCartHeader(userId);
     }
@@ -48,5 +49,9 @@ public class CartHeaderManager {
         if (rows != 0 || cartHeader == null || cartHeader.getMerchantId() != null) {
             throw new IllegalStateException("解绑购物车商家失败，userId=" + userId + ", affectedRows=" + rows);
         }
+    }
+
+    public CartHeader getByUserId(Long userId) {
+        return cartHeaderMapper.selectById(userId);
     }
 }

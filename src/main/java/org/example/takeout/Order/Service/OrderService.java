@@ -7,10 +7,10 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Service.CartCheckoutService;
+import org.example.takeout.Cart.Service.CartService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
-import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Assembler.OrderVOAssembler;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Domain.OrderDataContext;
@@ -45,61 +45,64 @@ public class OrderService {
     private final OrderConvertor orderConvertor;
     private final CartCheckoutService CartCheckoutService;
     private final OrderRequestFingerprint orderRequestFingerprint;
+    private final BigDecimal MAX_ORDER_AMOUNT= BigDecimal.valueOf(1_000_000);
 
-    public CreateOrderVO createOrder(@NonNull CreateOrderDTO createOrderDTO) {
+    public CreateOrderVO createOrder(CreateOrderDTO dto) {
         Long userId = UserContextHolder.getUserId();
-        String requestHash = orderRequestFingerprint.calculate(createOrderDTO);
+        String requestHash = orderRequestFingerprint.calculate(dto);
 
-        Order existing = orderMapper.selectOne(
-                Wrappers.<Order>lambdaQuery().
-                        eq(Order::getUserId, userId).
-                        eq(Order::getRequestId, createOrderDTO.getRequestId()));
+        // 第一次幂等检查
+        Order existing = findOrder(userId, dto.getRequestId());
         if (existing != null) {
-            if (!Objects.equals(existing.getRequestHash(), requestHash)) {
-                throw new BusinessException(
-                        ResultCodeEnum.PARAM_ERROR,
-                        "同一 requestId 不能携带不同下单参数，请使用新的 requestId"
-                );
-            }
+            validateRequestHash(existing, requestHash);
             return orderConvertor.toCreateOrderVO(existing);
         }
 
+        OrderDataContext context;
+        try {
+            context = prepareOrderDataContext(userId);
+        } catch (BusinessException e) {
+            if (!Objects.equals(e.getCode(), ResultCodeEnum.CART_EMPTY.getCode())) {
+                throw e;
+            }
+            // prepare 失败后的第二次幂等检查
+            existing = findOrder(userId, dto.getRequestId());
 
-        OrderDataContext orderDataContext = prepareOrderDataContext(userId);
+            if (existing != null) {
+                validateRequestHash(existing, requestHash);
+                return orderConvertor.toCreateOrderVO(existing);
+            }
 
-
-        /// 修改数据库层面
-        Order order = orderTransactionExecutor.executeOrderCreation(orderDataContext, createOrderDTO, userId, requestHash);
+            throw e;
+        }
+        Order order = orderTransactionExecutor.executeOrderCreation(
+                context, dto, userId, requestHash
+        );
 
         return orderConvertor.toCreateOrderVO(order);
+    }
+    private Order findOrder(Long userId, String requestId) {
+        return orderMapper.selectOne(
+                Wrappers.<Order>lambdaQuery()
+                        .eq(Order::getUserId, userId)
+                        .eq(Order::getRequestId, requestId)
+        );
+    }
+    private void validateRequestHash(Order order, String requestHash) {
+        if (!Objects.equals(order.getRequestHash(), requestHash)) {
+            throw new BusinessException(
+                    ResultCodeEnum.PARAM_ERROR,
+                    "同一 requestId 不能携带不同下单参数，请使用新的 requestId"
+            );
+        }
     }
     private OrderDataContext prepareOrderDataContext(Long userId) {
         // 获取可用购物车（内部已校验商品/商家状态）
         CartAvailableResult result = CartCheckoutService.prepareCheckout(userId);
 
-        List<CartItem> allCartItems = result.getAllItems();
-        List<CartItem> availableCartItems = result.getAvailableItems();
-        if (allCartItems == null || allCartItems.isEmpty()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车为空，无法创建订单");
-        }
-        if (availableCartItems == null || availableCartItems.size() != allCartItems.size()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "购物车包含不可用商品或不可下单商家，请刷新购物车后重试");
-        }
+        List<CartItem> availableCartItems = getCartItems(result);
 
-        // 防脏数据：过滤多商家情况
-        Map<Long, Merchant> merchantMap = result.getMerchantMap();
-        Set<Long> merchantIds = availableCartItems.stream()
-                .map(CartItem::getMerchantId)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-        if (merchantIds.size() != 1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车包含多个商家的商品，请清空后重试");
-        }
-        Long merchantId = merchantIds.iterator().next();
-
-        Merchant merchant = merchantMap.get(merchantId);
-        if (merchant == null) {
+        if (result.getMerchantId() == null) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商家不存在");
         }
 
@@ -107,14 +110,33 @@ public class OrderService {
 
 
         BigDecimal totalAmount = calculateTotalAmount(availableCartItems, productMap);
+        if (totalAmount.compareTo(MAX_ORDER_AMOUNT) > 0) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "商品总金额超过最大结算数，请清理购物车");
+        }
 
         OrderDataContext orderDataContext = new OrderDataContext();
         orderDataContext.setTotalAmount(totalAmount);
-        orderDataContext.setMerchant(merchant);
+        orderDataContext.setMerchantId(result.getMerchantId());
+        orderDataContext.setMerchantName(result.getMerchantName());
         orderDataContext.setProductMap(productMap);
         orderDataContext.setAvailableItems(availableCartItems);
         return orderDataContext;
     }
+
+    private  @NonNull List<CartItem> getCartItems(CartAvailableResult result) {
+        List<CartItem> allCartItems = result.getAllItems();
+        List<CartItem> availableCartItems = result.getAvailableItems();
+        if (allCartItems == null || allCartItems.isEmpty()) {
+            throw new BusinessException(ResultCodeEnum.CART_EMPTY, "购物车为空，无法创建订单");
+        }
+        if (availableCartItems == null || availableCartItems.size() != allCartItems.size()) {
+            throw new BusinessException(ResultCodeEnum.CART_EMPTY,
+                    "购物车包含不可用商品或不可下单商家，请刷新购物车后重试");
+        }
+        return availableCartItems;
+    }
+
     //NOTE:计算金额方法
     private BigDecimal calculateTotalAmount(@NonNull List<CartItem> cartItems, Map<Long, Product> productMap) {
         return cartItems.stream().
@@ -198,6 +220,7 @@ public class OrderService {
         return pageInfo.convert(order -> orderVOAssembler.toOrderVO(order, itemsMap));
 
     }
+
     //NOTE:取消订单，统一返回result
     @Transactional(rollbackFor = Exception.class)
     public void cancelOrder(Long orderId){
@@ -262,7 +285,72 @@ public class OrderService {
         }
     }
 
+    private List<Order> findMerchantOrdersByStatuses(Long merchantId, List<Integer> statuses) {
+        return orderMapper.selectList(Wrappers.<Order>lambdaQuery()
+                .eq(Order::getMerchantId, merchantId)
+                .in(Order::getStatus, statuses)
+                .orderByDesc(Order::getCreateTime));
+    }
 
+    // 以下查询接口提供给商家领域使用。
+    public List<Order> findMerchantPendingOrders(@NonNull Long merchantId) {
+        return findMerchantOrdersByStatuses(merchantId, List.of(OrderStatusEnum.PAID.getCode()));
+    }
+
+    public List<Order> findMerchantProcessingOrders(@NonNull Long merchantId) {
+        return findMerchantOrdersByStatuses(merchantId, List.of(OrderStatusEnum.PREPARING.getCode()));
+    }
+
+    public List<Order> findMerchantHistoryOrders(@NonNull Long merchantId) {
+        return findMerchantOrdersByStatuses(merchantId, List.of(
+                OrderStatusEnum.READY.getCode(),
+                OrderStatusEnum.DELIVERING.getCode(),
+                OrderStatusEnum.DELIVERED.getCode(),
+                OrderStatusEnum.FINISHED.getCode()));
+    }
+
+    public Order findMerchantOrderById(@NonNull Long orderId, @NonNull Long merchantId) {
+        return orderMapper.selectOne(Wrappers.<Order>lambdaQuery()
+                .eq(Order::getId, orderId)
+                .eq(Order::getMerchantId, merchantId));
+    }
+
+    // 以下订单配送状态校验接口提供给 配送任务 领域使用。
+    public void assertDelivering(Long orderId) {
+        assertOrderStatus(orderId, OrderStatusEnum.DELIVERING.getCode(), "配送中");
+    }
+
+    public void assertOrderReachedDeliveryCompletion(Long orderId) {
+        Order order = orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在");
+        }
+        if (!OrderStatusEnum.DELIVERED.getCode().equals(order.getStatus())
+                && !OrderStatusEnum.FINISHED.getCode().equals(order.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单未处于已送达或已完成状态，当前状态码：" + order.getStatus());
+        }
+    }
+
+    private void assertOrderStatus(Long orderId, Integer expectedStatus, String expectedStatusDescription) {
+        Order order = orderMapper.selectById(orderId);
+
+        if (order == null) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "订单不存在"
+            );
+        }
+
+        if (!expectedStatus.equals(order.getStatus())) {
+            throw new BusinessException(
+                    ResultCodeEnum.BUSINESS_ERROR,
+                    "订单未处于" + expectedStatusDescription + "状态，当前状态码：" + order.getStatus()
+            );
+        }
+    }
+
+    // 以下超时取消接口提供给订单定时任务使用。
     @Transactional(rollbackFor = Exception.class)
     public boolean cancelTimeoutOrder(Long orderId, LocalDateTime expiredBefore) {
         int rows = orderMapper.updateTimeoutOrderToCancelled(
@@ -274,7 +362,6 @@ public class OrderService {
         if (rows != 1) {
             return false;
         }
-
         restoreOrderStock(orderId);
         return true;
     }

@@ -12,10 +12,14 @@ import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
+import org.example.takeout.Merchant.Service.MerchantService;
+import org.example.takeout.Rider.Service.RiderService;
 import org.example.takeout.User.Service.UserService;
+import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.HandlerMapping;
 
 @Component
 @RequiredArgsConstructor
@@ -23,9 +27,11 @@ public class JwtInterceptor implements HandlerInterceptor {
 
     private final JWTUtils jwtUtils;
     private final UserService userService;
+    private final MerchantService merchantService;
+    private final RiderService riderService;
 
     @Override
-    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+    public boolean preHandle(@NonNull HttpServletRequest request, HttpServletResponse response, Object handler) {
         try {
             if (AuthPathMatcher.isPublicPath(request)) {
                 return true;
@@ -49,17 +55,25 @@ public class JwtInterceptor implements HandlerInterceptor {
 
             String role = claims.get("role", String.class);
             Long id = extractId(claims.get("id"));
-            String path = AuthPathMatcher.normalizePath(request);
+            String matchedPattern = (String) request.getAttribute(
+                    HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE
+            );
 
-            assertRoleAllowed(path, role);
+            if (matchedPattern == null) {
+                throw new AuthException("无法识别请求资源");
+            }
+
+            assertRoleAllowed(matchedPattern, role);
 
             if (AuthRole.MERCHANT.equals(role)) {
                 MerchantContextHolder.setMerchantId(id);
+                merchantService.requireActiveMerchantId();
             } else if (AuthRole.USER.equals(role)) {
                 UserContextHolder.setUserId(id);
                 userService.requireActiveUserId();
             } else if (AuthRole.RIDER.equals(role)) {
                 RiderContextHolder.setRiderId(id);
+                riderService.requireActiveRiderId();
             } else {
                 throw new AuthException("token角色无效");
             }
@@ -72,14 +86,15 @@ public class JwtInterceptor implements HandlerInterceptor {
         }
     }
 
-    private static void assertRoleAllowed(String path, String role) {
-        if (AuthPathMatcher.requiresMerchant(path) && !AuthRole.MERCHANT.equals(role)) {
+
+    private static void assertRoleAllowed(String matchedPattern, String role) {
+        if (AuthPathMatcher.requiresMerchant(matchedPattern) && !AuthRole.MERCHANT.equals(role)) {
             throw new AuthException("无权访问该资源，请使用商家账号登录");
         }
-        if (AuthPathMatcher.requiresUser(path) && !AuthRole.USER.equals(role)) {
+        if (AuthPathMatcher.requiresUser(matchedPattern) && !AuthRole.USER.equals(role)) {
             throw new AuthException("无权访问该资源，请使用用户账号登录");
         }
-        if (AuthPathMatcher.requiresRider(path) && !AuthRole.RIDER.equals(role)) {
+        if (AuthPathMatcher.requiresRider(matchedPattern) && !AuthRole.RIDER.equals(role)) {
             throw new AuthException("无权访问该资源，请使用骑手账号登录");
         }
     }
@@ -98,8 +113,8 @@ public class JwtInterceptor implements HandlerInterceptor {
     }
 
     @Override
-    public void afterCompletion(HttpServletRequest request, HttpServletResponse response,
-                                Object handler, @Nullable Exception ex) {
+    public void afterCompletion(@NonNull HttpServletRequest request, HttpServletResponse response,
+                                @NonNull Object handler, @Nullable Exception ex) {
         UserContextHolder.clear();
         MerchantContextHolder.clear();
         RiderContextHolder.clear();

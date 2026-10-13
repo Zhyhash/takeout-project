@@ -7,7 +7,7 @@ import org.example.takeout.CacheInvalidationTask.Entity.CacheInvalidationTask;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
 import org.example.takeout.CacheInvalidationTask.Mapper.CacheInvalidationTaskMapper;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
-import org.example.takeout.Product.Cache.RedisCacheClient;
+import org.example.takeout.Common.Redis.RedisCacheClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;

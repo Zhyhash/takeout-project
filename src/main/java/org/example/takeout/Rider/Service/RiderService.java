@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
 import org.example.takeout.Common.Constants.DeleteConstant;
+import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
@@ -91,15 +92,19 @@ public class RiderService {
         return loginVO;
     }
 
+    /**
+     * 返回当前请求中的有效骑手 ID，并复核数据库中的实时账号状态。
+     * 用于阻断账号被禁用或删除后继续使用旧 Token。
+     */
     public Long requireActiveRiderId() {
         Long riderId = RiderContextHolder.getRiderId();
         if (riderId == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手身份无效");
+            throw new AuthException("骑手身份无效，请重新登录");
         }
 
         Rider rider = riderMapper.selectById(riderId);
         if (rider == null || !RiderStatusEnum.NORMAL.getCode().equals(rider.getStatus())) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "骑手账号已禁用或不存在");
+            throw new AuthException("骑手账号已禁用或不存在，请重新登录");
         }
         return riderId;
     }

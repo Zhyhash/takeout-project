@@ -1,27 +1,41 @@
 package org.example.takeout.Merchant.Service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.Category.Service.CategoryCommandService;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
+import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.LoginRateLimitException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
+import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
+import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.loginVO;
+import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Order.Service.OrderCommandService;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.dao.DuplicateKeyException;
 
 import java.util.List;
@@ -32,6 +46,12 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class MerchantServiceTest {
+
+    @BeforeAll
+    static void initializeMybatisMetadata() {
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), Merchant.class);
+    }
 
     @Mock
     private MerchantMapper merchantMapper;
@@ -51,6 +71,37 @@ class MerchantServiceTest {
     @InjectMocks
     private MerchantService merchantService;
 
+    @AfterEach
+    void clearContext() {
+        MerchantContextHolder.clear();
+    }
+
+    @Test
+    void requireActiveMerchantIdRejectsMissingIdentityBeforeQueryingDatabase() {
+        assertThrows(AuthException.class, () -> merchantService.requireActiveMerchantId());
+        verifyNoInteractions(merchantMapper);
+    }
+
+    @Test
+    void requireActiveMerchantIdRejectsDeletedAccountUsingOldToken() {
+        MerchantContextHolder.setMerchantId(201L);
+        when(merchantMapper.selectById(201L)).thenReturn(null);
+
+        assertThrows(AuthException.class, () -> merchantService.requireActiveMerchantId());
+    }
+
+    @ParameterizedTest
+    @EnumSource(MerchantStatusEnum.class)
+    void requireActiveMerchantIdAllowsBothOpenAndClosedMerchants(MerchantStatusEnum status) {
+        MerchantContextHolder.setMerchantId(201L);
+        Merchant merchant = new Merchant();
+        merchant.setId(201L);
+        merchant.setStatus(status.getCode());
+        when(merchantMapper.selectById(201L)).thenReturn(merchant);
+
+        assertEquals(201L, merchantService.requireActiveMerchantId());
+    }
+
     @Test
     void registerInitializesMerchantAndCreatesDefaultCategoryAfterInsert() {
         MerchantRegisterDTO dto = registerDTO();
@@ -69,6 +120,49 @@ class MerchantServiceTest {
         var order = inOrder(merchantMapper, categoryCommandService);
         order.verify(merchantMapper).insert(merchant);
         order.verify(categoryCommandService).createDefaultCategory(201L);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void updateMerchantExcludesOwnIdFromPhoneUniquenessCheck() {
+        MerchantContextHolder.setMerchantId(201L);
+        Merchant merchant = new Merchant();
+        merchant.setId(201L);
+        merchant.setPhone("13800138001");
+        MerchantUpdateDTO dto = new MerchantUpdateDTO();
+        dto.setPhone(merchant.getPhone());
+        MerchantUpdateVO expected = new MerchantUpdateVO();
+        when(merchantMapper.selectOne(any())).thenReturn(merchant);
+        when(merchantMapper.selectCount(any())).thenReturn(0L);
+        when(merchantConverter.toMerchant(dto, merchant)).thenReturn(merchant);
+        when(merchantMapper.updateById(merchant)).thenReturn(1);
+        when(merchantConverter.toMerchantUpdateVO(merchant)).thenReturn(expected);
+
+        assertSame(expected, merchantService.updateMerchant(dto));
+
+        ArgumentCaptor<Wrapper<Merchant>> captor = ArgumentCaptor.forClass((Class) Wrapper.class);
+        verify(merchantMapper).selectCount(captor.capture());
+        AbstractWrapper<?, ?, ?> wrapper = (AbstractWrapper<?, ?, ?>) captor.getValue();
+        assertTrue(wrapper.getSqlSegment().contains("<>"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(201L));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(dto.getPhone()));
+    }
+
+    @Test
+    void updateMerchantWithoutPhoneDoesNotCheckPhoneUniqueness() {
+        MerchantContextHolder.setMerchantId(201L);
+        Merchant merchant = new Merchant();
+        merchant.setId(201L);
+        MerchantUpdateDTO dto = new MerchantUpdateDTO();
+        dto.setDescription("店铺简介");
+        when(merchantMapper.selectOne(any())).thenReturn(merchant);
+        when(merchantConverter.toMerchant(dto, merchant)).thenReturn(merchant);
+        when(merchantMapper.updateById(merchant)).thenReturn(1);
+
+        merchantService.updateMerchant(dto);
+
+        verify(merchantMapper, never()).selectCount(any());
+        verify(merchantMapper).updateById(merchant);
     }
 
     @Test

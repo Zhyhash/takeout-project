@@ -2,8 +2,10 @@ package org.example.takeout.Cart.Service;
 
 import org.example.takeout.Cart.DTO.AddCartDTO;
 import org.example.takeout.Cart.DTO.DeleteDTO;
+import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Mapper.CartMapper;
+import org.example.takeout.Cart.VO.CartListVO;
 import org.example.takeout.Cart.VO.CartVO;
 import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.CartHeader.Mapper.CartHeaderMapper;
@@ -11,6 +13,8 @@ import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Config.MybatisPlusConfig;
+import org.example.takeout.Merchant.Entity.Merchant;
+import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Service.MerchantQueryService;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Service.ProductQueryService;
@@ -33,6 +37,7 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -108,8 +113,8 @@ class CartHeaderServiceRegressionTest {
         reset(productQueryService, merchantQueryService);
         when(productQueryService.findOnSaleProduct(any()))
                 .thenAnswer(invocation -> requestedProduct.get());
-        when(merchantQueryService.checkMerchantOpen(MERCHANT_A_ID)).thenReturn(false);
-        when(merchantQueryService.checkMerchantOpen(MERCHANT_B_ID)).thenReturn(false);
+        when(merchantQueryService.checkMerchantOpen(MERCHANT_A_ID)).thenReturn(true);
+        when(merchantQueryService.checkMerchantOpen(MERCHANT_B_ID)).thenReturn(true);
         UserContextHolder.setUserId(USER_ID);
     }
 
@@ -117,6 +122,61 @@ class CartHeaderServiceRegressionTest {
     void clearThreadContext() {
         requestedProduct.remove();
         UserContextHolder.clear();
+    }
+
+    @Test
+    void cartListUsesBoundMerchantAndPreservesItemsWhenStoreCloses() {
+        seedCart(ITEM_A_ID, USER_ID, productA, 2);
+        Merchant merchant = new Merchant();
+        merchant.setId(MERCHANT_A_ID);
+        merchant.setStatus(MerchantStatusEnum.BUSINESS_OPEN.getCode());
+        when(merchantQueryService.selectMerchantById(MERCHANT_A_ID)).thenReturn(merchant);
+        when(productQueryService.selectProductsByIds(List.of(productA.getId())))
+                .thenReturn(Map.of(productA.getId(), productA));
+
+        CartListVO openCart = cartService.list();
+
+        assertTrue(openCart.getCanBuy());
+        assertEquals(new BigDecimal("25.00"), openCart.getTotalAmount());
+        assertTrue(openCart.getItems().get(0).getAvailable());
+
+        merchant.setStatus(MerchantStatusEnum.BUSINESS_CLOSED.getCode());
+        CartListVO closedCart = cartService.list();
+
+        assertFalse(closedCart.getCanBuy());
+        assertEquals(BigDecimal.ZERO, closedCart.getTotalAmount());
+        assertFalse(closedCart.getItems().get(0).getAvailable());
+        assertEquals("商家已打烊", closedCart.getItems().get(0).getDisableReason());
+        assertEquals(2, cartMapper.selectById(ITEM_A_ID).getQuantity());
+        assertEquals(MERCHANT_A_ID, cartHeaderMapper.selectById(USER_ID).getMerchantId());
+        verify(merchantQueryService, times(2)).selectMerchantById(MERCHANT_A_ID);
+        verifyNoMoreInteractions(merchantQueryService);
+    }
+
+    @Test
+    void addingItemRejectsClosedMerchantWithoutChangingCart() {
+        when(merchantQueryService.checkMerchantOpen(MERCHANT_A_ID)).thenReturn(false);
+
+        BusinessException rejected = assertThrows(BusinessException.class, () -> add(productA));
+
+        assertEquals("商家不存在或者商家已打烊", rejected.getMessage());
+        assertFalse(cartMapper.existsByUserId(USER_ID));
+        assertNull(cartHeaderMapper.selectById(USER_ID).getMerchantId());
+    }
+
+    @Test
+    void updatingItemRejectsClosedMerchantWithoutChangingQuantity() {
+        seedCart(ITEM_A_ID, USER_ID, productA, 2);
+        when(merchantQueryService.checkMerchantOpen(MERCHANT_A_ID)).thenReturn(false);
+        UpdateCartDTO request = new UpdateCartDTO();
+        request.setCartItemId(ITEM_A_ID);
+        request.setQuantityChange(1);
+
+        BusinessException rejected = assertThrows(BusinessException.class, () -> cartService.update(request));
+
+        assertEquals("该商家已打烊，无法修改", rejected.getMessage());
+        assertEquals(2, cartMapper.selectById(ITEM_A_ID).getQuantity());
+        assertEquals(MERCHANT_A_ID, cartHeaderMapper.selectById(USER_ID).getMerchantId());
     }
 
     @Test

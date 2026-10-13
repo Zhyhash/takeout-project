@@ -7,7 +7,6 @@ import org.example.takeout.CartHeader.Mapper.CartHeaderMapper;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Config.MybatisPlusConfig;
-import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
@@ -27,6 +26,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 import javax.sql.DataSource;
@@ -49,6 +49,7 @@ class OrderCartHeaderTransactionTest {
     private static final long ITEM_ID = 401L;
 
     @Autowired private OrderTransactionExecutor executor;
+    @Autowired private CartCommandService cartCommandService;
     @Autowired private CartMapper cartMapper;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private OrderItemService orderItemService;
@@ -119,6 +120,20 @@ class OrderCartHeaderTransactionTest {
         request.setReceiverPhone("13800138000");
         request.setReceiverAddress("Test Road");
         requestHash = new OrderRequestFingerprint().calculate(request);
+    }
+
+    @Test
+    void checkoutConsumptionRequiresExistingTransactionBeforeChangingCart() {
+        OrderDataContext snapshot = snapshot(ITEM_ID);
+
+        assertThrows(IllegalTransactionStateException.class,
+                () -> cartCommandService.consumeCheckedOutItems(USER_ID, snapshot.getAvailableItems()));
+
+        assertEquals(5, cartMapper.selectById(ITEM_ID).getQuantity());
+        assertEquals(4, cartMapper.selectById(ITEM_ID).getVersion());
+        assertEquals(MERCHANT_ID, boundMerchant());
+        assertEquals(0, orderCount());
+        verifyNoInteractions(orderItemService);
     }
 
     @Test
@@ -242,10 +257,8 @@ class OrderCartHeaderTransactionTest {
         OrderDataContext context = new OrderDataContext();
         context.setAvailableItems(List.of(itemIds).stream().map(cartMapper::selectById).toList());
         context.setProductMap(Map.of());
-        Merchant merchant = new Merchant();
-        merchant.setId(MERCHANT_ID);
-        merchant.setMerchantName("Test merchant");
-        context.setMerchant(merchant);
+        context.setMerchantId(MERCHANT_ID);
+        context.setMerchantName("Test merchant");
         context.setTotalAmount(BigDecimal.TEN);
         return context;
     }

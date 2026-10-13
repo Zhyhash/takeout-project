@@ -1,5 +1,6 @@
 package org.example.takeout.Product.Service;
 
+import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
@@ -35,19 +36,31 @@ class ProductCommandServiceTest {
     @Test
     void decreaseStockEvictsProductDetailCacheWhenAvailabilityChanges() {
         Product updatedProduct = productWithStock(0);
-        when(productMapper.update(isNull(), any())).thenReturn(1);
+        when(productMapper.decreaseStock(
+                PRODUCT_ID, 1,
+                DeleteConstant.NOT_DELETED,
+                ProductStatusEnum.ON_SALE.getCode(),
+                ProductStatusEnum.SALE_OUT.getCode())).thenReturn(1);
         when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID)).thenReturn(updatedProduct);
 
         productCommandService.decreaseStock(PRODUCT_ID, 1);
 
-        verify(productMapper).update(isNull(), any());
+        verify(productMapper).decreaseStock(
+                PRODUCT_ID, 1,
+                DeleteConstant.NOT_DELETED,
+                ProductStatusEnum.ON_SALE.getCode(),
+                ProductStatusEnum.SALE_OUT.getCode());
         verify(productMapper).selectStockByIdIncludingDeleted(PRODUCT_ID);
         verify(productDetailCacheService).evictProductDetailCache(PRODUCT_ID);
     }
 
     @Test
     void decreaseStockKeepsProductDetailCacheWhenAvailabilityDoesNotChange() {
-        when(productMapper.update(isNull(), any())).thenReturn(1);
+        when(productMapper.decreaseStock(
+                PRODUCT_ID, 1,
+                DeleteConstant.NOT_DELETED,
+                ProductStatusEnum.ON_SALE.getCode(),
+                ProductStatusEnum.SALE_OUT.getCode())).thenReturn(1);
         when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID))
                 .thenReturn(productWithStock(4));
 

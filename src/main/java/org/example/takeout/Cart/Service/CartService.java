@@ -50,8 +50,7 @@ public class CartService {
 
         //判断商家状态是否营业
         Long merchantId = onSaleProduct.getMerchantId();
-        boolean notOpen = merchantQueryService.checkMerchantOpen(merchantId);
-        if (notOpen) {
+        if (!merchantQueryService.checkMerchantOpen(merchantId)) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"商家不存在或者商家已打烊");
         }
 
@@ -147,8 +146,7 @@ public class CartService {
         }
 
         // 3. 校验商家状态（打烊则不可修改）
-        boolean notOpen = merchantQueryService.checkMerchantOpen(cartItem.getMerchantId());
-        if (notOpen) {
+        if (!merchantQueryService.checkMerchantOpen(cartItem.getMerchantId())) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "该商家已打烊，无法修改");
         }
 
@@ -217,26 +215,22 @@ public class CartService {
 
         // 批量查询商品和商家
         List<Long> productIds = cartItems.stream().map(CartItem::getProductId).distinct().toList();
-        List<Long> merchantIds = cartItems.stream().map(CartItem::getMerchantId).distinct().toList();
-
-        if (merchantIds.size() > 1) {
-            canBuy = false;
-            invalidReason.append("用户购物车有多商家\n");
-        }
+        CartHeader cartHeader = cartHeaderManager.getByUserId(userId);
         Map<Long, Product> productMap=productQueryService.selectProductsByIds(productIds);
 
-        Map<Long, Merchant> merchantMap = merchantQueryService.selectMerchantsByIds(merchantIds);
+        Merchant merchant= merchantQueryService.selectMerchantById(cartHeader.getMerchantId());
 
         // 分类收集
         List<CartVO> allItems = new ArrayList<>();
         BigDecimal totalAmount = BigDecimal.ZERO;
 
+        boolean merchantOpen = (merchant != null && MerchantStatusEnum.BUSINESS_OPEN.getCode().equals(merchant.getStatus()));
+
         for (CartItem item : cartItems) {
             Product product = productMap.get(item.getProductId());
-            Merchant merchant = merchantMap.get(item.getMerchantId());
 
             boolean productValid = (product != null && ProductStatusEnum.ON_SALE.getCode().equals(product.getStatus()));
-            boolean merchantOpen = (merchant != null && !MerchantStatusEnum.BUSINESS_CLOSED.getCode().equals(merchant.getStatus()));
+
             CartVO vo = getCartVO(item);
 
             if (!merchantOpen) {

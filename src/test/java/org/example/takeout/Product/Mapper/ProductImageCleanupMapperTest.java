@@ -7,6 +7,7 @@ import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactoryBuilder;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
+import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,8 +48,11 @@ class ProductImageCleanupMapperTest {
             statement.execute("""
                     CREATE TABLE product (
                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        merchant_id BIGINT NOT NULL DEFAULT 201,
                         image_url VARCHAR(255),
-                        is_deleted INT NOT NULL
+                        is_deleted INT NOT NULL,
+                        status INT NOT NULL DEFAULT 1,
+                        version INT NOT NULL DEFAULT 0
                     )
                     """);
         }
@@ -77,7 +81,7 @@ class ProductImageCleanupMapperTest {
     }
 
     @Test
-    void shouldIgnoreImagesReferencedOnlyByDeletedProducts() throws SQLException {
+    void shouldKeepImagesReferencedOnlyByDeletedProductsForRestore() throws SQLException {
         insertProduct("/uploads/products/deleted.png", 1);
         insertProduct("/uploads/products/another-deleted.png", 2);
 
@@ -85,7 +89,28 @@ class ProductImageCleanupMapperTest {
                 "/uploads/products/deleted.png", "/uploads/products/another-deleted.png"
         ));
 
-        assertTrue(referenced.isEmpty());
+        assertEquals(Set.of("/uploads/products/deleted.png", "/uploads/products/another-deleted.png"),
+                Set.copyOf(referenced));
+    }
+
+    @Test
+    void shouldKeepImageReferenceBeforeAndAfterProductRestore() throws SQLException {
+        String imageUrl = "/uploads/products/restorable.png";
+        insertProduct(imageUrl, 1);
+
+        assertEquals(List.of(imageUrl), productMapper.selectReferencedImageUrls(List.of(imageUrl)));
+
+        assertEquals(1, productMapper.restoreDeletedProduct(
+                1L, 201L, ProductStatusEnum.OFF_SALE.getCode()));
+
+        assertEquals(List.of(imageUrl), productMapper.selectReferencedImageUrls(List.of(imageUrl)));
+        try (Statement statement = session.getConnection().createStatement();
+             var result = statement.executeQuery("SELECT is_deleted, status, version FROM product WHERE id = 1")) {
+            assertTrue(result.next());
+            assertEquals(0, result.getInt("is_deleted"));
+            assertEquals(ProductStatusEnum.OFF_SALE.getCode().intValue(), result.getInt("status"));
+            assertEquals(1, result.getInt("version"));
+        }
     }
 
     @Test
@@ -97,7 +122,7 @@ class ProductImageCleanupMapperTest {
                 List.of("/uploads/products/shared.png")
         );
 
-        assertEquals(List.of("/uploads/products/shared.png"), referenced);
+        assertEquals(Set.of("/uploads/products/shared.png"), Set.copyOf(referenced));
     }
 
     @Test

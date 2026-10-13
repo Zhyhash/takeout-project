@@ -4,7 +4,7 @@ import org.example.takeout.CacheInvalidationTask.Service.CacheInvalidationTaskSe
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
-import org.example.takeout.Product.Cache.RedisCacheClient;
+import org.example.takeout.Common.Redis.RedisCacheClient;
 import org.example.takeout.Product.Cache.RedisKeyConstant;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -67,6 +67,42 @@ class ProductDetailCacheServiceTest {
         assertEquals("商品不存在", exception.getMessage());
         verifyNoInteractions(supplier);
         verify(redisCacheClient, never()).tryLock(anyString(), anyString(), anyLong(), any());
+    }
+
+    @Test
+    void acquiredLockRechecksCacheAndSkipsMysqlWhenAnotherRequestFilledIt() throws Exception {
+        ProductDetailCacheDTO cachedProduct = productDetail(true);
+        Supplier<ProductDetailCacheDTO> supplier = mock(Supplier.class);
+        when(redisCacheClient.get(CACHE_KEY)).thenReturn(null, "filled-during-lock");
+        when(redisCacheClient.tryLock(eq(LOCK_KEY), anyString(), eq(10L), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+        when(objectMapper.readValue("filled-during-lock", ProductDetailCacheDTO.class))
+                .thenReturn(cachedProduct);
+
+        assertSame(cachedProduct,
+                productDetailCacheService.getProductDetailCache(PRODUCT_ID, supplier));
+
+        verifyNoInteractions(supplier);
+        verify(redisCacheClient, never()).set(anyString(), anyString(), anyLong(), any());
+        verify(redisCacheClient).unlock(eq(LOCK_KEY), anyString());
+    }
+
+    @Test
+    void legacyCacheWithoutAvailabilityIsDeletedAndRebuilt() throws Exception {
+        ProductDetailCacheDTO obsolete = productDetail(true);
+        obsolete.setInStock(null);
+        ProductDetailCacheDTO current = productDetail(false);
+        when(redisCacheClient.get(CACHE_KEY)).thenReturn("legacy-json", null);
+        when(objectMapper.readValue("legacy-json", ProductDetailCacheDTO.class)).thenReturn(obsolete);
+        when(redisCacheClient.tryLock(eq(LOCK_KEY), anyString(), eq(10L), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+        when(objectMapper.writeValueAsString(current)).thenReturn("current-json");
+
+        assertSame(current, productDetailCacheService.getProductDetailCache(PRODUCT_ID, () -> current));
+
+        verify(redisCacheClient).delete(CACHE_KEY);
+        verify(redisCacheClient).set(eq(CACHE_KEY), eq("current-json"), anyLong(), eq(TimeUnit.MINUTES));
+        verify(redisCacheClient).unlock(eq(LOCK_KEY), anyString());
     }
 
     @Test

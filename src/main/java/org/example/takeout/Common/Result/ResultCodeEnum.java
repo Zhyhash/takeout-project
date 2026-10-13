@@ -20,6 +20,8 @@ public enum ResultCodeEnum {
 
     RATE_LIMIT_EXCEEDED(1001, "操作过于频繁，请稍后再试"),
 
+    CART_EMPTY(2001, "购物车为空，无法创建订单"),
+
     FILE_UPLOAD_ERROR(2001,"文件上传异常，请稍后再试"),
 
     SERVER_ERROR(5000, "服务器异常");

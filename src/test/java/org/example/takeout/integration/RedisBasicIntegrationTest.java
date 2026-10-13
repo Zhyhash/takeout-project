@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -14,6 +15,7 @@ import java.time.Duration;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.example.takeout.testsupport.ConcurrentTestTemplate.runConcurrently;
@@ -48,7 +50,7 @@ class RedisBasicIntegrationTest {
 
     @Test
     void shouldExpireKeyAfterTtl() throws InterruptedException {
-        String key = "test:takeout:redis:ttl";
+        String key = "test:takeout:redis:ttl:" + UUID.randomUUID();
 
         try {
             stringRedisTemplate.opsForValue().set(key,"alive",Duration.ofSeconds(2));
@@ -62,12 +64,25 @@ class RedisBasicIntegrationTest {
             assertNotNull(ttl);
             assertTrue(ttl > 0);
 
+            Long redisTimeBeforeWait = stringRedisTemplate.execute(
+                    (RedisCallback<Long>) connection -> connection.serverCommands().time(TimeUnit.MILLISECONDS));
+            long localTimeBeforeWait = System.nanoTime();
             Thread.sleep(2500);
 
             String valueAfterExpiration =
                     stringRedisTemplate.opsForValue().get(key);
 
-            assertNull(valueAfterExpiration);
+            Long remainingTtlMillis = stringRedisTemplate.getExpire(key, TimeUnit.MILLISECONDS);
+            Long redisTimeAfterWait = stringRedisTemplate.execute(
+                    (RedisCallback<Long>) connection -> connection.serverCommands().time(TimeUnit.MILLISECONDS));
+            assertNotNull(redisTimeBeforeWait);
+            assertNotNull(redisTimeAfterWait);
+            String timingEvidence = "localElapsedMs="
+                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - localTimeBeforeWait)
+                    + ", redisElapsedMs=" + (redisTimeAfterWait - redisTimeBeforeWait)
+                    + ", remainingTtlMs=" + remainingTtlMillis;
+            assertNull(valueAfterExpiration, timingEvidence);
+            assertEquals(Long.valueOf(-2), stringRedisTemplate.getExpire(key));
         } finally {
             stringRedisTemplate.delete(key);
         }

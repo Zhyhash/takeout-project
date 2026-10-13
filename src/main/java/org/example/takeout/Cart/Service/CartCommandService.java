@@ -7,6 +7,8 @@ import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -16,6 +18,7 @@ public class CartCommandService {
     private final CartMapper cartMapper;
     private final CartHeaderManager cartHeaderManager;
 
+    @Transactional(propagation = Propagation.MANDATORY)
     public void consumeCheckedOutItems(Long userId, List<CartItem> items) {
         cartHeaderManager.lock(userId);
 

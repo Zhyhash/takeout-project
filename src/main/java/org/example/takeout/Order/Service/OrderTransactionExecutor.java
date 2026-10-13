@@ -40,8 +40,8 @@ public class OrderTransactionExecutor {
             order.setUserId(userId);
             order.setRequestId(createOrderDTO.getRequestId());
             order.setOrderNo(createOrderNo());
-            order.setMerchantId(orderDataContext.getMerchant().getId());
-            order.setMerchantName(orderDataContext.getMerchant().getMerchantName());
+            order.setMerchantId(orderDataContext.getMerchantId());
+            order.setMerchantName(orderDataContext.getMerchantName());
             order.setTotalAmount(orderDataContext.getTotalAmount());
             order.setOriginalAmount(orderDataContext.getTotalAmount());
             order.setDiscountAmount(BigDecimal.ZERO); // NOTE: 留作后续扩展
