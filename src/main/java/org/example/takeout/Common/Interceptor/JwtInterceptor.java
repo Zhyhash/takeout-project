@@ -18,12 +18,13 @@ import org.example.takeout.User.Service.UserService;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Component;
+import org.springframework.web.servlet.AsyncHandlerInterceptor;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.HandlerMapping;
 
 @Component
 @RequiredArgsConstructor
-public class JwtInterceptor implements HandlerInterceptor {
+public class JwtInterceptor implements HandlerInterceptor, AsyncHandlerInterceptor {
 
     private final JWTUtils jwtUtils;
     private final UserService userService;
@@ -119,4 +120,13 @@ public class JwtInterceptor implements HandlerInterceptor {
         MerchantContextHolder.clear();
         RiderContextHolder.clear();
     }
+    @Override
+    public void afterConcurrentHandlingStarted(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            Object handler) {
+
+        MerchantContextHolder.clear();
+    }
+
 }

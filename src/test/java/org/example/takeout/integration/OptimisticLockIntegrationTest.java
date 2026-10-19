@@ -73,6 +73,7 @@ public class OptimisticLockIntegrationTest {
     @BeforeEach
     void setUp() {
         OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
+        OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
         deleteTestData();
 
         UserContextHolder.setUserId(TEST_USER_ID);

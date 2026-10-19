@@ -140,11 +140,14 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `original_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
     `discount_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
     `pay_time` datetime NULL DEFAULT NULL,
+    `merchant_seen` tinyint(1) NOT NULL DEFAULT 0 COMMENT '商家是否已查看订单',
     PRIMARY KEY (`id`) USING BTREE,
     UNIQUE INDEX `uk_order_no` (`order_no` ASC) USING BTREE,
     UNIQUE INDEX `uk_orders_user_request_id` (`user_id` ASC, `request_id` ASC) USING BTREE,
     INDEX `idx_order_user` (`user_id` ASC) USING BTREE,
     INDEX `idx_order_merchant` (`merchant_id` ASC) USING BTREE,
+    INDEX `idx_order_merchant_status_seen_create_time_id`
+        (`merchant_id` ASC, `status` ASC, `merchant_seen` ASC, `create_time` ASC, `id` ASC) USING BTREE,
     INDEX `idx_order_status_timeout_cancel_time_id`
         (`status` ASC, `timeout_cancel_available_at` ASC, `id` ASC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4

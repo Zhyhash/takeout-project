@@ -88,6 +88,23 @@ public class MerchantOrderViewService {
         return vo;
     }
 
+    public void markOrdersSeen(List<Long> orderIds) {
+        Long merchantId = requireMerchantId();
+
+        if (orderIds == null || orderIds.isEmpty()) {
+            return;
+        }
+
+        orderService.markMerchantOrdersSeen(merchantId, orderIds);
+    }
+
+    public List<Long> listUnseenOrders() {
+        Long merchantId = requireMerchantId();
+
+        return orderService.findMerchantUnseenOrders(merchantId);
+
+    }
+
     private Long requireMerchantId() {
         Long merchantId = MerchantContextHolder.getMerchantId();
         if (merchantId == null) {

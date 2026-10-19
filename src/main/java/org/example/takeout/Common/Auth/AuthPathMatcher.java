@@ -86,6 +86,9 @@ public final class AuthPathMatcher {
         if (PATH_MATCHER.match("/merchant/orders/**", path)) {
             return true;
         }
+        if(PATH_MATCHER.match("/merchant/events",path)){
+            return true;
+        }
         return false;
     }
 

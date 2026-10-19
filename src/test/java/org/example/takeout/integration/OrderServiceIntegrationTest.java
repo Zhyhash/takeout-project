@@ -110,6 +110,7 @@ class OrderServiceIntegrationTest {
     void setUp() {
         CartHeaderTestFixture.ensureTable(jdbcTemplate);
         OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
+        OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
         deleteTestData();
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_USER_ID);
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_OTHER_USER_ID);

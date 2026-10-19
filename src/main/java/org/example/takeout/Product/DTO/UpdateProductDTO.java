@@ -2,7 +2,6 @@ package org.example.takeout.Product.DTO;
 
 import jakarta.validation.constraints.*;
 import lombok.Data;
-import lombok.NonNull;
 
 import java.math.BigDecimal;
 

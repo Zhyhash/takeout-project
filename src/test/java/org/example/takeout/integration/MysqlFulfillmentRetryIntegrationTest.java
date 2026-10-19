@@ -26,19 +26,10 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.sql.Timestamp;
+import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -376,7 +367,8 @@ class MysqlFulfillmentRetryIntegrationTest {
                             create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                             timeout_cancel_available_at DATETIME NULL, update_time DATETIME NULL,
                             finish_time DATETIME NULL, original_amount DECIMAL(10,2) NULL,
-                            discount_amount DECIMAL(10,2) NULL, pay_time DATETIME NULL
+                            discount_amount DECIMAL(10,2) NULL, pay_time DATETIME NULL,
+                            merchant_seen TINYINT(1) NOT NULL DEFAULT 0
                         ) ENGINE=InnoDB
                         """);
                 statement.execute("""

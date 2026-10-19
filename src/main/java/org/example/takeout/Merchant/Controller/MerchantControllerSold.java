@@ -6,18 +6,24 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Result.Result;
+import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Enums.MerchantOrderListType;
 import org.example.takeout.Merchant.Service.MerchantOrderViewService;
 import org.example.takeout.Merchant.Service.MerchantService;
+import org.example.takeout.Merchant.Service.MerchantSseService;
 import org.example.takeout.Merchant.VO.MerchantOrderDetailVO;
 import org.example.takeout.Merchant.VO.MerchantOrderListVO;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
+import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.List;
 
 /**
  * 商家登录与信息管理控制器
@@ -31,6 +37,8 @@ public class MerchantControllerSold {
     
     private final MerchantService merchantService;
     private final MerchantOrderViewService merchantOrderViewService;
+    private final MerchantSseService merchantSseService;
+
     @PostMapping("/register")
     public Result<?> register(@Valid  @RequestBody MerchantRegisterDTO dto){
         merchantService.register(dto);
@@ -76,6 +84,22 @@ public class MerchantControllerSold {
     }
 
     /**
+     * 查询当前商家尚未查看的待接单订单 ID，用于首次打开页面或 SSE 重连后的补偿同步。
+     */
+    @GetMapping("/orders/unseen")
+    public Result<List<Long>> listUnseenOrders() {
+        return Result.success(merchantOrderViewService.listUnseenOrders());
+    }
+
+    @PatchMapping("/orders/seen")
+    public Result<?> markOrdersSeen(
+            @RequestBody List<Long> orderIds) {
+
+        merchantOrderViewService.markOrdersSeen(orderIds);
+        return Result.success("success");
+    }
+
+    /**
      * 查看当前商家名下的单个订单详情。
      */
     @GetMapping("/orders/{orderId}")
@@ -93,5 +117,11 @@ public class MerchantControllerSold {
     public Result<?> completePreparation(@PathVariable @Min(1) Long orderId) {
         merchantService.completePreparation(orderId);
         return Result.success("success");
+    }
+
+    @GetMapping(value = "/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter subscribe() {
+        Long merchantId = MerchantContextHolder.getMerchantId();
+        return merchantSseService.connect(merchantId);
     }
 }

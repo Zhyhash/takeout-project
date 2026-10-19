@@ -16,6 +16,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.support.EncodedResource;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
 
 import java.io.IOException;
@@ -41,7 +43,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class FlywayMigrationIntegrationTest {
 
     private static final String BASELINE_VERSION = "20261008";
-    private static final String LATEST_VERSION = "20261014";
+    private static final String VERSION_14 = "20261014";
+    private static final String LATEST_VERSION = "20261017";
     private static final String HISTORICAL_TIME = "2024-01-02 03:04:05";
     private static final List<String> BUSINESS_TABLES = List.of(
             "cache_invalidation_task", "cart", "cart_header", "category", "delivery_task",
@@ -67,7 +70,7 @@ class FlywayMigrationIntegrationTest {
             Map<String, List<List<String>>> before = database.businessRows();
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(6);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(7);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SELECT user_id, merchant_id FROM cart_header ORDER BY user_id"))
@@ -88,7 +91,7 @@ class FlywayMigrationIntegrationTest {
                 assertThat(database.rows("SELECT * FROM `" + table + "` ORDER BY 1"))
                         .as("historical rows in %s", table).isEqualTo(before.get(table));
             }
-            assertRuntimeColumnDefinitions(database);
+            assertLatestColumnDefinitions(database);
 
             insertDefaultedMerchant(database);
             assertThat(database.scalar("SELECT version FROM merchant WHERE username = 'defaulted_merchant'"))
@@ -135,7 +138,7 @@ class FlywayMigrationIntegrationTest {
                     + HISTORICAL_TIME + "' WHERE id = 52");
             database.execute("UPDATE delivery_task SET update_time = NULL WHERE id = 53");
 
-            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(6);
+            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(7);
 
             assertThat(database.rows("SELECT id, delivery_reward, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM delivery_task ORDER BY id"))
@@ -225,12 +228,12 @@ class FlywayMigrationIntegrationTest {
             assertThat(database.rows("SHOW TABLES")).isEmpty();
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(7);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(8);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SHOW TABLES").stream().map(values -> values.get(0)))
                     .containsExactlyInAnyOrderElementsOf(withHistoryTable());
-            assertRuntimeColumnDefinitions(database);
+            assertLatestColumnDefinitions(database);
             Map<String, List<List<String>>> migratedRows = database.businessRows();
             List<List<String>> migratedColumns = database.columnDefinitions();
             assertThat(flyway.migrate().migrationsExecuted).isZero();
@@ -245,8 +248,9 @@ class FlywayMigrationIntegrationTest {
             database.executeDeploymentScript(Path.of("deploy", "schema.sql"));
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(14);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(15);
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
+            assertLatestColumnDefinitions(database);
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
             assertDemoRows(database);
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
@@ -424,9 +428,9 @@ class FlywayMigrationIntegrationTest {
                     + "AND NOT ((table_name IN ('user', 'merchant') AND column_name = 'username') "
                     + "OR (table_name = 'rider' AND column_name = 'name')) ORDER BY table_name, ordinal_position");
 
-            Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
+            Flyway flyway = database.flyway(VERSION_14, false, BASELINE_VERSION);
             assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(VERSION_14);
             assertRuntimeColumnDefinitions(database);
             assertThat(database.businessRows()).as("all values, passwords and account IDs survive V14")
                     .isEqualTo(originalRows);
@@ -472,7 +476,7 @@ class FlywayMigrationIntegrationTest {
             Map<String, List<List<String>>> originalRows = database.businessRows();
             List<List<String>> originalColumns = database.columnDefinitions();
 
-            assertThatThrownBy(() -> database.flyway(LATEST_VERSION, false, BASELINE_VERSION).migrate())
+            assertThatThrownBy(() -> database.flyway(VERSION_14, false, BASELINE_VERSION).migrate())
                     .isInstanceOf(FlywayException.class)
                     .hasMessageContaining("chk_" + table + "_login_name_as_cs_unique");
 
@@ -486,6 +490,92 @@ class FlywayMigrationIntegrationTest {
             }
             assertThat(database.scalar("SELECT COUNT(*) FROM flyway_schema_history "
                     + "WHERE version = '20261014' AND success = 1")).isEqualTo("0");
+        }
+    }
+
+    @Test
+    void version17BackfillsMerchantSeenAndCreatesReconnectIndexWithoutChangingOrderUpdateTime()
+            throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            database.baselinedFlyway(VERSION_14).migrate();
+            insertUser(database, 1);
+            insertMerchant(database, 10, 7);
+            database.execute("""
+                    INSERT INTO orders (
+                        id, order_no, user_id, request_id, request_hash, merchant_id, merchant_name,
+                        total_amount, status, receiver_name, receiver_phone, receiver_address,
+                        create_time, update_time
+                    ) VALUES
+                        (101, 'SEEN-MIG-0', 1, 'seen-mig-0', REPEAT('a', 64), 10, 'merchant',
+                         10.00, 0, 'receiver', '13800000001', 'address',
+                         '2024-01-02 03:04:05', '2024-01-02 03:04:05'),
+                        (102, 'SEEN-MIG-1', 1, 'seen-mig-1', REPEAT('b', 64), 10, 'merchant',
+                         10.00, 1, 'receiver', '13800000001', 'address',
+                         '2024-01-02 03:04:05', '2024-01-02 03:04:05'),
+                        (103, 'SEEN-MIG-2', 1, 'seen-mig-2', REPEAT('c', 64), 10, 'merchant',
+                         10.00, 2, 'receiver', '13800000001', 'address',
+                         '2024-01-02 03:04:05', '2024-01-02 03:04:05'),
+                        (104, 'SEEN-MIG-5', 1, 'seen-mig-5', REPEAT('d', 64), 10, 'merchant',
+                         10.00, 5, 'receiver', '13800000001', 'address',
+                         '2024-01-02 03:04:05', '2024-01-02 03:04:05')
+                    """);
+
+            Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+
+            assertLatestColumnDefinitions(database);
+            assertThat(database.rows("SELECT id, merchant_seen, "
+                    + "DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') FROM orders ORDER BY id"))
+                    .containsExactly(
+                            row("101", "0", HISTORICAL_TIME),
+                            row("102", "0", HISTORICAL_TIME),
+                            row("103", "0", HISTORICAL_TIME),
+                            row("104", "1", HISTORICAL_TIME));
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+        }
+    }
+
+    @Test
+    void legacyMysqlTestFixtureBackfillsSeenAndPreservesAcknowledgementsOnRepeat() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.execute("""
+                    CREATE TABLE orders (
+                        id BIGINT PRIMARY KEY,
+                        status INT NOT NULL,
+                        update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP
+                    )
+                    """);
+            database.execute("""
+                    INSERT INTO orders (id, status, update_time) VALUES
+                        (101, 0, '2024-01-02 03:04:05'),
+                        (102, 1, '2024-01-02 03:04:05'),
+                        (103, 2, '2024-01-02 03:04:05'),
+                        (104, 5, '2024-01-02 03:04:05')
+                    """);
+            JdbcTemplate jdbcTemplate = new JdbcTemplate(new DriverManagerDataSource(
+                    database.schemaUrl, database.user, database.password));
+
+            OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
+
+            assertThat(database.rows("SELECT id, merchant_seen, "
+                    + "DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') FROM orders ORDER BY id"))
+                    .containsExactly(
+                            row("101", "0", HISTORICAL_TIME),
+                            row("102", "0", HISTORICAL_TIME),
+                            row("103", "0", HISTORICAL_TIME),
+                            row("104", "1", HISTORICAL_TIME));
+            assertThat(database.column("orders", "merchant_seen", "is_nullable")).isEqualTo("NO");
+            assertThat(database.column("orders", "merchant_seen", "column_default")).isEqualTo("0");
+            database.execute("UPDATE orders SET merchant_seen = 1, update_time = update_time WHERE id = 103");
+            List<List<String>> acknowledgedRows = database.rows("SELECT * FROM orders ORDER BY id");
+
+            OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
+
+            assertThat(database.rows("SELECT * FROM orders ORDER BY id")).isEqualTo(acknowledgedRows);
+            database.execute("INSERT INTO orders (id, status) VALUES (105, 2)");
+            assertThat(database.scalar("SELECT merchant_seen FROM orders WHERE id = 105")).isEqualTo("0");
         }
     }
 
@@ -591,6 +681,18 @@ class FlywayMigrationIntegrationTest {
                 .isEqualTo("utf8mb4_0900_as_cs");
         assertThat(database.column("rider", "name", "collation_name"))
                 .isEqualTo("utf8mb4_0900_as_cs");
+    }
+
+    private static void assertLatestColumnDefinitions(TestDatabase database) throws SQLException {
+        assertRuntimeColumnDefinitions(database);
+        assertThat(database.column("orders", "merchant_seen", "is_nullable")).isEqualTo("NO");
+        assertThat(database.column("orders", "merchant_seen", "column_default")).isEqualTo("0");
+        assertThat(database.rows("SELECT column_name FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = 'orders' "
+                + "AND index_name = 'idx_order_merchant_status_seen_create_time_id' ORDER BY seq_in_index"))
+                .containsExactly(
+                        row("merchant_id"), row("status"), row("merchant_seen"),
+                        row("create_time"), row("id"));
     }
 
     private static void insertLoginAccount(TestDatabase database, String table, String loginName, String phone)

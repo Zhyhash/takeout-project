@@ -368,7 +368,8 @@ class DeliveryTaskLifecycleIntegrationTest {
                     finish_time TIMESTAMP NULL,
                     original_amount DECIMAL(10, 2) NULL,
                     discount_amount DECIMAL(10, 2) NULL,
-                    pay_time TIMESTAMP NULL
+                    pay_time TIMESTAMP NULL,
+                    merchant_seen BOOLEAN NOT NULL DEFAULT FALSE
                 )
                 """);
         jdbcTemplate.execute("""

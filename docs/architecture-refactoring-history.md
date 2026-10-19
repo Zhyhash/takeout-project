@@ -1,10 +1,8 @@
-# 架构重构历史与验证记录
+# 架构重构历史与测试职责
 
 首次整理：2026-10-11（Asia/Shanghai）。核查基准：`e72686c98b90ce2283d0881e085abe2233506c77` 加当日工作区。本文由 Git 差异、提交前后源码和当前源码回溯生成，不以提交标题或待办项被删除作为完成证据。
 
-**本文保留历史重构和当时的验证记录，不作为当前未修风险清单。** 当前源码风险、A/B/C/D/E 定性及冻结判断统一以[当前项目风险与架构复核](../当前项目风险与架构复核_2026-10-11.md)为准；以下历史 D/R 状态不能直接沿用。
-
-同日早期再次复核：第 2–3 节及第 5.1–5.3 节保留首次回溯、09:44 测试运行时的工作区快照；第 4.2 节记录当时续审状态，随后代码变化与验证缺口见第 5.4 节。09:51/10:02/10:07 的后续未提交修改不能借用 09:44 的通过结果。当时续审仅更新文档，未修改业务或测试、未再次运行 Maven；后续复核与修复不回写成这次历史测试已覆盖。
+**本文保留历史重构和对应测试职责，不作为当前未修风险清单。** 当前源码风险、A/B/C/D/E 定性及冻结判断统一以[当前项目风险与架构复核](../当前项目风险与架构复核_2026-10-11.md)为准；以下历史 D/R 状态不能直接沿用。
 
 ## 1. 背景、目标与证据口径
 
@@ -23,7 +21,7 @@
 | 待处理 | 当前仍有可定位的问题或验证缺口 |
 | 无法确认 | Git/源码/本次运行不能证明的意图或历史结果，不作推测 |
 
-**工作区标记 `WT-20261011` 没有对应 commit hash。** 它表示本次开始时已存在的已暂存、未暂存或未跟踪改动；不能归到 HEAD。此次仅修订/新增测试和本文，保留原有业务代码、暂存状态及报告改动。历史提交包含测试修改只能证明测试已更新；历史测试是否执行并通过，在没有绑定该版本的运行证据时均为「无法确认」。本次实际验证集中记录于第 5 节。
+**工作区标记 `WT-20261011` 没有对应 commit hash。** 它表示本次开始时已存在的已暂存、未暂存或未跟踪改动；不能归到 HEAD。历史提交包含测试修改只能证明测试已更新；历史测试是否执行并通过，在没有绑定该版本的运行证据时均为「无法确认」。测试职责与历史覆盖缺口见第 5 节。
 
 回溯使用的命令（项目根目录执行）：
 
@@ -40,7 +38,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 
 ## 2. 按模块还原的重构
 
-本节每条的“完成”只针对所述迁移，不能解读为整个模块已无技术债。测试类与执行状态见第 5 节。
+本节每条的“完成”只针对所述迁移，不能解读为整个模块已无技术债。对应测试及历史覆盖缺口见第 5 节。
 
 ### Product / Category
 
@@ -50,7 +48,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 - 实际变化：`e72686c` 删除 `ProductService.decreaseStock/increaseStock` 等实现，新增 [ProductCommandService](../src/main/java/org/example/takeout/Product/Service/ProductCommandService.java) 的 `decreaseStock`、`increaseStock`、`evictCacheIfInStockChanged`，订单项经该组件扣/退库存。命令组件直接依赖 `ProductMapper` 与 `ProductDetailCacheService`，没有反向注入 `ProductService`。
 - 保留契约：两个库存入口保留 `@Transactional(rollbackFor = Exception.class)`；扣减仍限定未删除、在售和足够库存，更新库存/售罄状态/版本；退库回读继续包含逻辑删除商品。这些规则已在 `1653171` 演进，不能记为 `e72686c` 首次新增。
 - 残留：生产代码无旧 Service 库存入口引用；动态 `setSql` 扣减语句仍在命令层，参数化 Mapper 下沉尚未完成。模块依赖 `ProductService -> CategoryService -> ProductCommandService` 仍存在，但该链路不返回 `ProductService`，不能将模块互相引用等同于 Bean 构造器环。
-- 测试：`ProductCommandServiceTest`、`OrderItemServiceTest` 随 `e72686c` 新增/更新；本次验证见 T-P。
+- 测试：`ProductCommandServiceTest`、`OrderItemServiceTest` 随 `e72686c` 新增/更新；对应测试见 T-P。
 
 **P02：详情缓存独立成职责组件，调整 null 回源与回填失败契约 — 已完成。**
 
@@ -81,7 +79,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 - 原问题：`2879400` 虽新增持久化任务，但 `ProductService` 仍在事务内执行 DEL 并把 PENDING 标为成功；提交与缓存删除存在先后窗口。
 - 实际变化：关键提交是 **`6e879a7`**（提交标题没有提到该变化）。[CacheInvalidationTaskService.requestInvalidation](../src/main/java/org/example/takeout/CacheInvalidationTask/Service/CacheInvalidationTaskService.java) 使用 `MANDATORY` 在调用者事务里插入任务，首轮重试设为 15 秒之后，注册 `afterCommit` 做立即删除；即时删除后任务仍等待调度器处理。旧公开 `createPending/markPendingTasksSuccess` 入口及商品事务内直接 DEL 已去除。`e72686c` 再由详情缓存组件承担登记入口，并用于商品分类迁移。
 - 残留：同一 key 可有多条未完成任务，重试按 `limit 100` 批量扫描；聚合、并发领取及积压治理并未完成。即时删除成功不表示持久化任务已标记 SUCCESS。
-- 测试：缓存任务事务集成测试在 `2879400` 新增、`6e879a7/e72686c` 更新，覆盖回滚/提交后行为；实际执行见 T-C。
+- 测试：缓存任务事务集成测试在 `2879400` 新增、`6e879a7/e72686c` 更新，覆盖回滚/提交后行为；对应测试见 T-C。
 
 **C02：通用 Redis 客户端解除 Product 包归属 — 已完成（当前工作区，未提交）。**
 
@@ -120,7 +118,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 - 原问题：`OrderDomainService` 混合数据库查询、计价、编号与商品摘要。
 - 实际变化：`e72686c` 删除该类，查询/计价迁回 [OrderService](../src/main/java/org/example/takeout/Order/Service/OrderService.java)，编号生成迁入 [OrderTransactionExecutor](../src/main/java/org/example/takeout/Order/Service/OrderTransactionExecutor.java)，摘要放入 [OrderProductSummaryBuilder](../src/main/java/org/example/takeout/Order/Support/OrderProductSummaryBuilder.java)。`OrderVOBuilder` 更名为 [OrderVOAssembler](../src/main/java/org/example/takeout/Order/Assembler/OrderVOAssembler.java)。
 - 残留：旧类及主/测试引用已清除；没有独立 PricingPolicy/NumberGenerator，不能把未要求的类拆分列为已完成或必需迁移。OrderVOAssembler 仍有集合映射简化 TODO，未记为已实施。
-- 测试：订单校验、幂等、事务执行器测试在 `e72686c` 改为新依赖；本次执行见 T-O。
+- 测试：订单校验、幂等、事务执行器测试在 `e72686c` 改为新依赖；对应测试见 T-O。
 
 **O02：配送写订单改走订单命令，命令/只读断言边界继续收窄 — 已完成（含未提交后续）。**
 
@@ -136,7 +134,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 - 实际变化：`90af04a` 删除 `RedisOrderCreationExperiment`、`RedisOrderIdempotencyStore`、`RedisIdempotencyState`，引入 [OrderRequestFingerprint](../src/main/java/org/example/takeout/Order/Support/OrderRequestFingerprint.java) 与 `orders.request_hash`，业务查询/重复键后回读校验姓名、电话、地址、备注四字段的 SHA-256 指纹（不包含购物车明细），新增迁移补齐/确认 `user_id + request_id` 唯一约束；父版本 deploy/schema.sql 已有该唯一键，不能写成本轮首次收紧。删除前 Controller 已直接调用 OrderService，不能记成生产从 Redis 切换到数据库。`28a3edb`（2026-07-29）已经拆出独立事务执行器并有数据库幂等，`1653171` 再将库存副作用从明细快照构建分离、按商品 ID 固定扣/退库存顺序。
 - 残留：删除的 Redis 订单实验类型无源码引用；[RedisHashCartServiceExperiment](../src/main/java/org/example/takeout/Cart/Service/RedisHashCartServiceExperiment.java) 及其单元/真实 Redis 集成测试仍保留，源码明确标注实验、不参与实际业务。是否计划删除该购物车实验无法确认，不能记为已清理。
 - 其他实验：[RedisSetFollowServiceExperiment](../src/main/java/org/example/takeout/Cart/Service/RedisSetFollowServiceExperiment.java) 也仍在 main 中，不属于此次已删除的订单 Redis 实验类型。
-- 测试：原 `RedisServiceIntegrationTest` 在 `90af04a` 删除；指纹测试、订单幂等单元/事务/集成测试新增或更新。测试替代范围不等于与旧套件逐用例等价，等价性无法确认。执行见 T-O。
+- 测试：原 `RedisServiceIntegrationTest` 在 `90af04a` 删除；指纹测试、订单幂等单元/事务/集成测试新增或更新。测试替代范围不等于与旧套件逐用例等价，等价性无法确认。对应测试见 T-O。
 
 **O04：订单项查询与图片快照兜底收回 OrderItemService — 已完成（当前工作区，未提交）。**
 
@@ -181,7 +179,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 - 原问题：身份令牌有效不能证明账号当前仍可用；业务资格应由账号模块解释。
 - 实际变化：USER 实时检查来自更早的 `638ff41`；`e72686c` 新增 `RiderService.requireActiveRiderId` 但当时抛 `BusinessException`。`WT-20261011` 改为 `AuthException`、新增 `MerchantService.requireActiveMerchantId`，并在 [JwtInterceptor](../src/main/java/org/example/takeout/Common/Interceptor/JwtInterceptor.java) 的 MERCHANT/RIDER 分支调用，先设置对应身份上下文再复核账号，异常时清理全部上下文。商家资格只确认账号存在，允许打烊账号管理店铺；没有商家封禁状态支持的证据。
 - 残留：拦截器仍位于 Common 且依赖三类账号 Service，整体共享边界整理属部分完成。`JWTUtils.createToken(Long id, String role)` 从 `a775d63` 引入时已经显式传 ID，本轮没有该接口迁移；不能重复记功。
-- 测试：工作区已有 JwtInterceptor/Merchant/Rider 资格测试，本次执行见 T-A。
+- 测试：工作区已有 JwtInterceptor/Merchant/Rider 资格测试，对应测试见 T-A。
 
 **A03：共享登录失败限流和订单创建限流 — 已完成。**
 
@@ -197,8 +195,8 @@ rg -n '旧类名|旧方法名' src/main src/test
 - 原问题：修改 `deploy/schema.sql` 不会升级已有库，手工增量 SQL 与运行实体结构缺少统一版本记录。
 - 实际变化：`90af04a` 增加 flyway-core/mysql 依赖、[FlywayConfig](../src/main/java/org/example/takeout/Config/FlywayConfig.java)、classpath V 迁移及应用配置。`e72686c` 添加 `B20261008` 累计基线与 V20261007–11，部署目录统一为同名镜像并删除旧手工命名脚本。[迁移目录说明](../deploy/migrations/README.md) 明确 classpath 为权威来源。
 - 迁移内容：V07 调整用户名称排序规则/订单扫描索引；V08 超时取消退避；V09 补配送奖励快照及 Rider/DeliveryTask 自增 ID；V10 预检异常购物车并补 header、修正商家绑定；V11 预检空/孤儿分类，再对齐 product/merchant/cache task 默认值与非空约束。历史数据预检用临时 CHECK 表，已有奖励/时间字段有保留逻辑，不能当成一次普通表重建。
-- 残留：两个目录共 12 个 SQL 的名称集合和文件哈希已逐一核对一致，这是静态证据。实际部署的 `flyway_schema_history` 未读取，无法确认生产/开发库已升级。MySQL DDL 不应仅凭 Java `@Transactional` 判定整体可回滚。
-- 测试：`e72686c` 新增 `FlywayMigrationIntegrationTest`，默认 opt-in；普通 `mvn test` 不会执行该类的迁移用例。实际启用结果见 T-DB。
+- 残留：实际部署的 `flyway_schema_history` 未读取，无法确认生产/开发库已升级。MySQL DDL 不应仅凭 Java `@Transactional` 判定整体可回滚。
+- 测试：`e72686c` 新增 `FlywayMigrationIntegrationTest`，默认 opt-in；普通 `mvn test` 不会执行该类的迁移用例。对应测试见 T-DB。
 
 ## 3. 重要架构决策及依据
 
@@ -216,7 +214,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 
 ## 4. 尚未完成的迁移与技术债
 
-### 4.1 首次回溯时的记录（09:44 运行快照）
+### 4.1 首次回溯时的记录（历史工作区）
 
 以下保留首次结论，便于追溯状态变化；不再将其当作后续修改后的当前清单。
 
@@ -250,21 +248,21 @@ rg -n '旧类名|旧方法名' src/main src/test
 | D06 | 部分完成 | CartAvailableResult、OrderDataContext 及其消费链已改为 merchantId/merchantName；仍复用 CartItem/Product 快照，未发现由此越权写入，不强制 DTO 化 |
 | D07 | 无法确认 | RedisHashCartServiceExperiment 仍是 Service 并有测试，未见生产入口调用，长期去留计划无法确认 |
 | D08 | 待处理 | Converter 告警仍需区分后置赋值与缺值；ProductVO.categoryName 当前转换链未补齐，是否需要该字段仍须核对接口契约 |
-| D09 | 无法确认 | 续审重新比对 12 份迁移 SQL 镜像一致；未读取实际部署库迁移历史，测试环境通过不能替代部署验证 |
+| D09 | 无法确认 | 未读取实际部署库迁移历史，测试环境通过不能替代部署验证 |
 | D10 | 待处理 | CartService.list 缺 Header 仍直接解引用；Checkout 缺 Header 返回空结果，未核对 item/product/header 商家 ID；null/未知营业状态与 list 结果仍不同。新增 merchantId 空值分支不代表整体修复 |
 | D11 | 无法确认 | 代码入口仅含 PENDING/PROCESSING/HISTORY，未见 ACCEPTED 兼容映射；仓库外客户端迁移尚未核查 |
-| D12 | 已完成（服务源码） | UserService.register 预查用户名/手机号后捕获 userMapper.insert 的 DuplicateKeyException，并返回 BUSINESS_ERROR“用户名或手机号已经存在”；MerchantService.updateMerchant 预查排除自身的手机号后捕获 updateById 异常，并返回 BUSINESS_ERROR“手机号已被其他商家使用”。数据库唯一约束仍是最终并发裁决；全局 DATABASE_ERROR 为其他未捕获入口兜底。测试源码未覆盖这两个新分支，见第 5.4 节 |
+| D12 | 已完成（服务源码） | UserService.register 预查用户名/手机号后捕获 userMapper.insert 的 DuplicateKeyException，并返回 BUSINESS_ERROR“用户名或手机号已经存在”；MerchantService.updateMerchant 预查排除自身的手机号后捕获 updateById 异常，并返回 BUSINESS_ERROR“手机号已被其他商家使用”。数据库唯一约束仍是最终并发裁决；全局 DATABASE_ERROR 为其他未捕获入口兜底。测试源码未覆盖这两个新分支，见第 5.3 节 |
 | D13 | 已完成（文档，2026-10-11） | `IdempotencyDesign.md` 3.2–3.4 已改为当前执行链：结算快照数量条件减量、归零删除、Header 锁/解绑、订单/购物车/库存/明细同事务回滚，并区分相同与不同 `requestId` 的并发语义；未改代码、未运行测试 |
 
-新发现的测试证据缺口记为检查报告 V01：User 登录改为 UNAUTHORIZED/FORBIDDEN 后，Service 测试仅验证异常类型，API 测试仍 mock BUSINESS_ERROR；详见第 5.4 节。此处不以没有运行证据推断实现失败。
+新发现的测试证据缺口记为检查报告 V01：User 登录改为 UNAUTHORIZED/FORBIDDEN 后，Service 测试仅验证异常类型，API 测试仍 mock BUSINESS_ERROR；详见第 5.3 节。此处不以没有运行证据推断实现失败。
 
-## 5. 测试更新与验证状态
+## 5. 测试职责与历史覆盖边界
 
-### 5.1 对应测试与本次适配
+### 5.1 对应测试与职责
 
 测试路径均相对于 `src/test/java/org/example/takeout/`。本次新增/补充围绕迁移后的公开职责和失败语义，未通过删除断言、扩大 lenient 或跳过失败用例来适配。
 
-| 索引 | 记录 | 测试与历史更新 | 本次变化/执行范围 |
+| 索引 | 记录 | 测试与历史更新 | 测试职责与覆盖边界 |
 | --- | --- | --- | --- |
 | T-P | P01–04 | Product/Service 下 Command、Query、DetailCache、ProductService 测试；Product/Mapper/ProductCategoryMigrationMapperTest；图片服务测试。主要更新于 e72686c | 迁移 Redis 测试包、补 Supplier/null/锁内命中/旧缓存重建/创建状态；新增 Category/Service/CategoryServiceTest |
 | T-C | C01–02 | CacheInvalidationTask/Service/CacheInvalidationTaskServiceIntegrationTest（2879400、6e879a7、e72686c）；RedisCacheClientTest（原 ProductCacheServiceTest） | 保留工作区 Common import；测试文件/package 移至 Common/Redis；使用干净构建避免旧包 class 冒充新用例 |
@@ -274,43 +272,13 @@ rg -n '旧类名|旧方法名' src/main src/test
 | T-A | A01–03 | User/Merchant/Rider Service、JwtInterceptor、LoginAttemptLimiter 与 RedisLoginAttemptStore 集成测试 | 保留工作区资格/异常变化；补注册手机号预检查、header 初始化、更新手机号排除当前账号。Merchant 注册有并发 DuplicateKeyException 测试；User 注册插入竞态、Merchant 更新竞态的新增捕获分支没有直接测试，当前版本未运行 |
 | T-DB | DB01、O05 | integration/FlywayMigrationIntegrationTest（e72686c，默认禁用） | 需单独启用；用例创建随机 takeout_migration_test_* 数据库，验证升级/空库/数据保留/预检/演示数据重复导入 |
 
-### 5.2 首次回溯实际执行（09:44 快照）
+默认配置依旧不会自动提供所有外部依赖：部分 Redis 集成在不可用时通过 assumption 跳过，Redis Hash 实验集成则直接失败；Flyway 用例仍需显式启用。运行普通 `mvn test` 应检查跳过数。
 
-**该次运行结果：2026-10-11 09:44:34 +08:00 完成，57 个套件，655 个测试，Failures=0、Errors=0、Skipped=0，BUILD SUCCESS，退出码 0。** 根据该次 `clean` 后生成的 57 份 Surefire XML 逐项汇总，未使用旧报告推断结果。Java 为 Microsoft OpenJDK 17.0.18，Maven 为 3.9.15。基准为运行时的 HEAD 加未提交工作区，没有创建提交；该结果不覆盖第 5.4 节的后续源码修改。
+### 5.2 历史结果
 
-实际最终命令（项目根目录）：
+上述历史 hash 可确认测试文件的新增、修改、搬迁与删除。仓库没有与每个提交绑定的完整测试执行记录；历史报告引用的局部 Bean 图诊断与静态检查只证明其限定范围。**历史各版本全套测试是否执行并通过：无法确认。**
 
-```powershell
-mvn -B -ntp clean test "-Dtakeout.migration-test.enabled=true" "-Dspring.data.redis.host=172.30.185.119" "-Dspring.data.redis.port=16379" "-Dspring.data.redis.password=architecture-test-20261011"
-```
-
-环境：普通 Spring 测试使用 H2、关闭应用启动 Flyway；MySQL 集成测试使用源码配置的专用 `localhost:3306/takeout_integration_test`。迁移用例显式启用，在随机命名的 `takeout_migration_test_*` 库中执行。Windows 不能连接原 `127.0.0.1:6379`，本次使用已有 WSL Redis 7.0.15 创建独立 16379 端口、认证、无持久化的临时实例；Windows 侧 AUTH/PING 成功后执行测试，结束后关闭。上面的地址和临时测试密码只对应本次运行；以后替换成可连接的测试 Redis 配置，不需改业务源码/测试 YAML。
-
-| 证据范围 | 本次实际执行的关键套件（括号为测试数） | 结果与证明边界 |
-| --- | --- | --- |
-| T-P | CategoryServiceTest(5)、ProductServiceTest(16)、ProductDetailCacheServiceTest(11)、ProductCommandServiceTest(9)、ProductQueryServiceTest(1)、ProductCategoryMigrationMapperTest(2)，以及图片套件 | 全部通过；Mockito 编排、缓存故障分支与 H2 Mapper 行为分别验证，不把 mock 当作数据库锁 |
-| T-C | CacheInvalidationTaskServiceIntegrationTest(15)、Common.Redis.RedisCacheClientTest(6) | 全部通过；前者真实 Spring/H2 事务、Redis mock；后者客户端单测。旧 Product/Cache 测试 class 在 clean 后不存在 |
-| T-CA | CartCheckoutServiceTest(3)、CartHeaderServiceRegressionTest(8)、CartConsumptionMapperTest(12)、OrderCartHeaderTransactionTest(8) | 全部通过；结算只读过滤、header 并发/回滚、条件消费、事务代理拒绝无外事务。后者库存/明细组件被 mock，完整事务另见 MySQL 套件 |
-| T-O | OrderItemServiceTest(10)、OrderMerchantQueryTest(4)、OrderServiceValidationTest(4)、OrderCommandServiceTest(11)、OrderDeliveryStateQueryTest(20)，以及幂等/指纹/超时套件 | 全部通过；查询 Wrapper/明细兜底/命令与只读断言分别验证。Wrapper 断言不等于在 MySQL 执行过全部商家列表 SQL |
-| T-M | CustomerShopQueryServiceTest(3)、MerchantOrderViewServiceTest(8)、MerchantQueryServiceTest(6)、MerchantServiceTest(15)、MerchantFulfillmentServiceTest(7) | 全部通过；视图层证据限定委托/组装/失败传播，外部客户端迁移未验证 |
-| T-A | UserServiceTest(13)、RiderServiceTest(14)、JwtInterceptorTest(8)、LoginAttemptLimiterTest(5)，以及账号 API 套件 | 全部通过；真实账号 Service 单测与 mock 业务的 HTTP 契约测试不同，不能推出生产账号数据状态 |
-| 真实 MySQL | CartServiceIntegrationTest(6)、CategoryProductServiceIntegrationTest(107)、DeliveryTaskLifecycleIntegrationTest(6)、MysqlApiIntegrationTest(22)、OptimisticLockIntegrationTest(5)、OrderServiceIntegrationTest(28) | 全部通过、无跳过；覆盖现有购物车、分类/商品、履约、库存/订单事务及并发场景，仍不代表所有交错或生产压力验证 |
-| 真实 Redis | RedisHashCartServiceExperimentIntegrationTest(27)、OrderCreateRateLimiterIntegrationTest(1)、ProductDetailCacheInvalidationIntegrationTest(1)、RedisBasicIntegrationTest(4)、RedisLoginAttemptStoreIntegrationTest(3) | 全部实际执行并通过、无 assumption 跳过；使用本次临时 Redis，不代表生产实例状态 |
-| T-DB | FlywayMigrationIntegrationTest(9) | 全部实际执行并通过；覆盖旧库升级、空库初始化、历史值保留、购物车/分类预检和演示数据重复导入 |
-
-本次过程中的失败也保留其范围：第一次完整运行是 652 个测试，Errors=28、Skipped=15、Failures=0；27 个错误来自 Redis 连接失败，1 个是新增 `OrderServiceValidationTest` 的 Mockito matcher 用法错误，已先独立计算预期指纹再进行 verify。15 个跳过来自默认禁用的 Flyway 及 Redis assumption。最终重新 `clean`、启用迁移并提供可连接 Redis 后得到上面的 655/0/0/0；参数化迁移用例启用后展开，因此总数与禁用时不同。早先沙箱启动阻塞以及未完成的中间运行没有完整结果，不作为通过证据。
-
-当时的完整测试和排查日志现已清理，本文保留其关键统计、命令和环境；`target/surefire-reports/` 属于可被下一次构建替换的运行产物，不能用来重新证明历史版本。静态校验当时另确认：旧类型/旧包引用无匹配，迁移镜像 12 个文件逐一哈希相同，34 个文档文件链接均存在，`git diff --check` 无空白错误。这些历史静态结果与运行通过分开记录；本轮当前证据见统一风险报告。
-
-默认配置依旧不会自动提供所有外部依赖：部分 Redis 集成在不可用时通过 assumption 跳过，Redis Hash 实验集成则直接失败；Flyway 用例仍需显式启用。以后运行普通 `mvn test` 应重新检查跳过数，不能借用本次结论。
-
-### 5.3 历史结果
-
-上述历史 hash 可确认测试文件的新增、修改、搬迁与删除。仓库没有与每个提交绑定的完整测试执行记录；历史报告引用的局部 Bean 图诊断与静态检查只证明其限定范围。**历史各版本全套测试是否执行并通过：无法确认。** 第 5.2 节仅适用于 09:44 运行时的工作区快照。
-
-### 5.4 同日后续代码变化与验证缺口
-
-当前日志完成时间为 09:44:34；现存 Surefire 报告和编译产物也早于以下源码修改。时间来自文件修改时间，仅用于证明验证先后顺序，**不是 Git 提交时间或设计意图的证据**。
+### 5.3 同日后续代码变化与验证缺口
 
 | 时间 / 复核记录（+08:00） | 当前代码 / 测试变化 | 尚未验证的内容 |
 | --- | --- | --- |
@@ -318,8 +286,6 @@ mvn -B -ntp clean test "-Dtakeout.migration-test.enabled=true" "-Dspring.data.re
 | 10:02 | ProductMapper 新增参数化 decreaseStock；ProductCommandService 委托该方法，ProductCommandServiceTest 已同步 mock/verify | 当前源码尚未重新编译或运行；mock 入口验证不能替代新 SQL 的真实 MySQL 库存、状态和回滚验证 |
 | 10:07 | CartAvailableResult / OrderDataContext 收窄 Merchant 为 id/name；Checkout、OrderService、执行器及相关测试同步 | 当前下单链路尚未重新运行；CartItem/Product 仍复用，Header 异常及商家一致性残留未闭环 |
 | 2026-10-11 本次复核 | UserService.register 预查用户名/手机号后，对 userMapper.insert 的 DuplicateKeyException 转 BUSINESS_ERROR；MerchantService.updateMerchant 排除自身预查手机号后，对 updateById 的 DuplicateKeyException 转手机号冲突的 BUSINESS_ERROR。数据库唯一约束承担并发裁决；全局 DATABASE_ERROR 仍为未捕获入口兜底 | UserServiceTest 只覆盖注册前置查重；MerchantServiceTest 覆盖商家注册并发重复但未覆盖商家更新并发；这两个新增捕获分支没有直接测试，本轮未运行测试 |
-
-本次 D12 续审只更新两份文档，静态核对服务源码、测试源码和全局异常兜底；没有修改业务或测试文件，也没有重跑 Maven。本次不能把“测试源码存在”写成“测试已执行通过”，也不能将历史 655/0/0/0 外推为当前全部通过。
 
 ## 6. Git 提交索引
 
@@ -332,11 +298,7 @@ mvn -B -ntp clean test "-Dtakeout.migration-test.enabled=true" "-Dspring.data.re
 | 2026-10-06 20:54:18 | `90af04adc7c74a63ad326972897df9b5b4640b22` | CA02 header；O03 指纹、唯一键、Redis 订单实验删除；DB01 Flyway 初接入 |
 | 2026-10-09 21:28:16 | `e72686c98b90ce2283d0881e085abe2233506c77` | P01–04、CA01–02、O01–02/O05、M01–02、A01；C02 仅类更名；DB01 基线及后续修复 |
 | 本次开始时的工作区 | 无 hash，`WT-20261011` | C02 Common 迁包、CA01–03 header/事务强化、O02 只读断言迁移及旧测试参数适配、O04 订单项查询、M01 营业语义/M02 视图更名、A02 商家/骑手资格 |
-| 本次测试与文档适配 | 无 hash，未自动提交 | 第 5 节新增/更新测试与本文；提交后补充实际 hash，不使用 HEAD 代替 |
-| 同日后续工作区修改 | 无 hash，未提交 | 09:51 User 登录错误码；10:02 D02 参数化扣库存；10:07 D06 Merchant 标量化及相关测试同步。日期与验证边界见第 5.4 节 |
-| 同日检查报告续审 | 无 hash，未自动提交 | 仅更新两份文档；保留首次快照，新增 D01–D13 当前状态与 V01 测试缺口，未新增运行结果 |
-| 本次 D13 文档修订 | 无 hash，未自动提交 | IdempotencyDesign.md 3.2–3.4 按当前购物车数量条件消费和订单事务执行链更新；同步当前 D13 状态。未改业务/测试代码，未运行测试 |
-| 本次 D12 文档续审 | 无 hash，未自动提交 | 根据当前工作区 UserService.register 与 MerchantService.updateMerchant 的 DuplicateKeyException 转换，更新 D12 当前结论和测试覆盖缺口；仅改两份文档，未运行测试 |
+| 同日后续工作区修改 | 无 hash，未提交 | 09:51 User 登录错误码；10:02 D02 参数化扣库存；10:07 D06 Merchant 标量化及相关测试同步。日期与验证边界见第 5.3 节 |
 
 更早来源仅用于排除错误归因：`a775d63ff796de15bc106f649c22650748a2bbc5`（2026-06-09）引入 JWTUtils 且已显式接收账号 ID；`28a3edb49e5ae274e8d9e76a9e9e0eb40b7d4b81`（2026-07-29）拆订单事务执行器并建立数据库幂等；`638ff4177becc89fcd85a411edc3556e95913f03`（2026-08-18）增加 USER 实时资格检查，并将商家接单/出餐的订单命令委托至 OrderCommandService。它们不计入本轮首次新增量。
 

@@ -2,6 +2,7 @@ package org.example.takeout.Merchant.Service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Category.Service.CategoryCommandService;
 import org.example.takeout.Common.Auth.AuthRole;
 import org.example.takeout.Common.Auth.LoginAttemptLimiter;
@@ -37,6 +38,7 @@ import java.util.List;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class MerchantService {
     private final MerchantMapper merchantMapper;
     private final MerchantConverter merchantConverter;
@@ -220,11 +222,6 @@ public class MerchantService {
 
         deliveryTaskService.createWaitingTask(result.order(), merchant);
     }
-
-
-
-
-
 
 
 }

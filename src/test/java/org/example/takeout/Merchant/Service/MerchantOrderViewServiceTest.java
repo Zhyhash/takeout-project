@@ -27,9 +27,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class MerchantOrderViewServiceTest {
@@ -152,6 +150,34 @@ class MerchantOrderViewServiceTest {
 
         assertEquals("订单商品明细异常，查询失败", exception.getMessage());
         verifyNoInteractions(merchantOrderConverter);
+    }
+
+    @Test
+    void listUnseenOrdersUsesCurrentMerchant() {
+        MerchantContextHolder.setMerchantId(11L);
+        when(orderService.findMerchantUnseenOrders(11L)).thenReturn(List.of(101L, 102L));
+
+        List<Long> result = merchantOrderViewService.listUnseenOrders();
+
+        assertEquals(List.of(101L, 102L), result);
+        verify(orderService).findMerchantUnseenOrders(11L);
+    }
+
+    @Test
+    void markOrdersSeenUsesCurrentMerchantAndProvidedIds() {
+        MerchantContextHolder.setMerchantId(11L);
+
+        merchantOrderViewService.markOrdersSeen(List.of(101L, 102L));
+
+        verify(orderService).markMerchantOrdersSeen(11L, List.of(101L, 102L));
+    }
+
+    @Test
+    void unseenOperationsRejectMissingMerchant() {
+        assertThrows(BusinessException.class, () -> merchantOrderViewService.listUnseenOrders());
+        assertThrows(BusinessException.class,
+                () -> merchantOrderViewService.markOrdersSeen(List.of(101L)));
+        verifyNoInteractions(orderService);
     }
 
     private static OrderItem orderItem(Long orderId) {

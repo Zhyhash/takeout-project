@@ -25,8 +25,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
-import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.IllegalTransactionStateException;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 import javax.sql.DataSource;
@@ -104,6 +104,7 @@ class OrderCartHeaderTransactionTest {
                     update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     finish_time TIMESTAMP,
                     pay_time TIMESTAMP,
+                    merchant_seen BOOLEAN NOT NULL DEFAULT FALSE,
                     UNIQUE (user_id, request_id)
                 )
                 """);

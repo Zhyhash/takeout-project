@@ -26,4 +26,6 @@ public class MerchantOrderListVO {
     private String statusDesc;
 
     private LocalDateTime createTime;
+
+    private Boolean merchantSeen;
 }

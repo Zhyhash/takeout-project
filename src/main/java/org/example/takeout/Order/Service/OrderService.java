@@ -1,5 +1,6 @@
 package org.example.takeout.Order.Service;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
@@ -7,10 +8,10 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.Cart.Domain.CartAvailableResult;
 import org.example.takeout.Cart.Entity.CartItem;
 import org.example.takeout.Cart.Service.CartCheckoutService;
-import org.example.takeout.Cart.Service.CartService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.Merchant.Service.MerchantSseService;
 import org.example.takeout.Order.Assembler.OrderVOAssembler;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Domain.OrderDataContext;
@@ -28,6 +29,8 @@ import org.example.takeout.Product.Entity.Product;
 import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -46,6 +49,9 @@ public class OrderService {
     private final CartCheckoutService CartCheckoutService;
     private final OrderRequestFingerprint orderRequestFingerprint;
     private final BigDecimal MAX_ORDER_AMOUNT= BigDecimal.valueOf(1_000_000);
+    private final MerchantSseService merchantSseService;
+
+
 
     public CreateOrderVO createOrder(CreateOrderDTO dto) {
         Long userId = UserContextHolder.getUserId();
@@ -270,6 +276,13 @@ public class OrderService {
         }else {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
         }
+        Long merchantId = orderMapper.selectMerchantIdByOrderId(orderId);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                merchantSseService.notifyNewOrder( merchantId );
+            }
+        });
     }
 
     //NOTE:用户点击确认查收
@@ -364,6 +377,28 @@ public class OrderService {
         }
         restoreOrderStock(orderId);
         return true;
+    }
+
+    public void markMerchantOrdersSeen(Long merchantId, List<Long> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return;
+        }
+        LambdaUpdateWrapper<Order> wrapper = Wrappers.lambdaUpdate(Order.class)
+                .eq(Order::getMerchantId, merchantId)
+                .eq(Order::getStatus, OrderStatusEnum.PAID.getCode())
+                .eq(Order::getMerchantSeen, Boolean.FALSE)
+                .in(Order::getId, orderIds)
+                .set(Order::getMerchantSeen, true);
+
+        orderMapper.update(null, wrapper);
+    }
+
+    public List<Long> findMerchantUnseenOrders(Long merchantId) {
+        return orderMapper.selectMerchantUnseenOrders(
+                merchantId,
+                OrderStatusEnum.PAID.getCode(),
+                Boolean.FALSE
+        );
     }
 }
 

@@ -2,9 +2,9 @@ package org.example.takeout.Product.Service;
 
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Service.CategoryService;
+import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisCacheUnavailableException;
-import org.example.takeout.Common.Constants.DeleteConstant;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Product.Cache.ProductDetailCacheDTO;
 import org.example.takeout.Product.DTO.CreateProductDTO;
@@ -28,6 +28,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.util.function.Supplier;
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;

@@ -4,7 +4,7 @@
 
 本目录同步权威目录的所有 `B`、`V` SQL。`B20261008__initial_schema.sql` 用于已创建的空数据库，在应用启动时累计建表，再执行 `V20261009` 及以后的迁移；已有 Flyway 迁移历史的数据库会忽略该基线，继续升级。[Flyway 官方累计基线说明](https://documentation.red-gate.com/flyway/flyway-concepts/migrations/baseline-migrations)介绍了 `B` 脚本的选择和执行规则。
 
-当前两个目录各有 15 份 SQL，最新版本为 `V20261014`。空库执行累计基线后，再执行 `V20261009` 至 `V20261014` 共 6 份后续迁移；已处于 `20261008` 基线的旧库也升级这 6 个版本。
+当前两个目录各有 16 份 SQL，最新版本为 `V20261017`。空库执行累计基线后，再执行 `V20261009` 至 `V20261017` 共 7 份后续迁移；已处于 `20261008` 基线的旧库也升级这 7 个版本。
 
 新增变更时，在权威目录创建更高版本的 `V<版本>__<描述>.sql`，再同步到本目录。同类迁移的版本不得重复；累计基线可以与相同版本的 `V` 脚本并存。超时取消退避使用 `V20261008__timeout_cancel_backoff.sql`。
 
@@ -19,6 +19,8 @@
 `V20261013__login_name_binary_collation.sql` 是此前已执行过的二进制排序迁移，保留文件及校验和。当前方案由 `V20261014__restore_login_name_as_cs.sql` 恢复 `user.username`、`merchant.username`、`rider.name` 的 `utf8mb4_0900_as_cs`；输入边界由三个角色注册、登录共六个 DTO 的统一 `@Pattern` 限制为英文字母、数字、下划线、连字符，长度 1–50。Redis 原文 key、账号数据及基线/历史迁移均不改写。
 
 V14 在任何列修改前，先检查三张表是否有不同名称在 `as_cs` 下合并为同一唯一键。任一冲突会中止迁移；不得静默合并、删除或改名。预检只用会话临时表，不给业务表增加 CHECK 或改变其他字段。现有业务库是否已应用 V14，仍须以其 Flyway 历史和列定义为准。
+
+`V20261017__merchant_order_seen.sql` 为订单增加 `merchant_seen TINYINT(1) NOT NULL DEFAULT 0`，并增加 `idx_order_merchant_status_seen_create_time_id (merchant_id, status, merchant_seen, create_time, id)`，供商家首次打开页面或 SSE 重连后补查未查看待接单订单。迁移先补可空字段，再将缺失标记按 `WAIT_PAY=0`、`PAYING=1`、`PAID=2` 回填为 `false`，其他状态回填为 `true`；已有 `true` 保留，其他状态已有的 `false` 也归为 `true`，回填不改变 `update_time`。列与同序完整五列索引已有存在检查，但不能据此手工重跑 Flyway 已记录成功的版本。新订单默认未查看，页面展示后由 ACK 确认，SSE 发送成功不会提前更新该字段。
 
 | 失败约束名 | 数据问题 |
 |---|---|

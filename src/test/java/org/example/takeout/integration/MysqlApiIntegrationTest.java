@@ -19,9 +19,9 @@ import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
+import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
-import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
@@ -43,9 +43,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.context.WebApplicationContext;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -53,11 +53,7 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -1426,11 +1422,14 @@ class MysqlApiIntegrationTest {
                     `original_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
                     `discount_amount` decimal(10, 2) NOT NULL DEFAULT 0.00,
                     `pay_time` datetime NULL DEFAULT NULL,
+                    `merchant_seen` tinyint(1) NOT NULL DEFAULT 0,
                     PRIMARY KEY (`id`) USING BTREE,
                     UNIQUE INDEX `uk_order_no` (`order_no` ASC) USING BTREE,
                     UNIQUE INDEX `uk_orders_user_request_id` (`user_id` ASC, `request_id` ASC) USING BTREE,
                     INDEX `idx_order_user` (`user_id` ASC) USING BTREE,
-                    INDEX `idx_order_merchant` (`merchant_id` ASC) USING BTREE
+                    INDEX `idx_order_merchant` (`merchant_id` ASC) USING BTREE,
+                    INDEX `idx_order_merchant_status_seen_create_time_id`
+                        (`merchant_id`, `status`, `merchant_seen`, `create_time`, `id`) USING BTREE
                 ) ENGINE = InnoDB AUTO_INCREMENT = 16 CHARACTER SET = utf8mb4
                   COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic
                 """);

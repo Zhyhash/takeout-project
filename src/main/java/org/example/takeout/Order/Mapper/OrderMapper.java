@@ -153,4 +153,24 @@ public interface OrderMapper extends BaseMapper<Order> {
     int updateOrderStatusToDelivered(@Param("orderId") Long orderId,
                                      @Param("oldStatus") Integer oldStatus,
                                      @Param("newStatus") Integer newStatus);
+
+    @Select("""
+        SELECT merchant_id
+        FROM orders
+        WHERE id = #{orderId}
+    """)
+    Long selectMerchantIdByOrderId(@Param("orderId") Long orderId);
+
+
+    @Select("""
+        SELECT id FROM orders
+        WHERE merchant_id = #{merchantId}
+          AND status = #{paidStatus}
+          AND merchant_seen = #{unseen}
+        ORDER BY create_time ASC, id ASC
+    """)
+    List<Long> selectMerchantUnseenOrders(
+            @Param("merchantId") Long merchantId,
+            @Param("paidStatus") Integer paidStatus,
+            @Param("unseen") Boolean unseen);
 }

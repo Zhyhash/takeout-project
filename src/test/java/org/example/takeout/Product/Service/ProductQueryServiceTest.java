@@ -1,9 +1,9 @@
 package org.example.takeout.Product.Service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
-import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
@@ -18,7 +18,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;

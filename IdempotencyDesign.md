@@ -108,7 +108,7 @@
 
 履约重试的读取一致性由三个入口局部处理：`MerchantService.completePreparation`、`DeliveryTaskService.claimTask`、`DeliveryTaskService.completeDelivery` 使用 `@Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)`。这样，账号或商家预读之后，条件更新竞争失败的请求回读订单/任务时能看到其他事务已提交的状态，不继续受旧的可重复读快照影响。订单与任务的条件更新、归属检查和失败回滚均保留，全局数据库隔离级别没有变化。
 
-这不扩大重复请求的接受状态：商家出餐仅在订单为 `READY` 且任务为未领取的 `WAIT_ASSIGN` 时重放；骑手抢单仅在任务属于自己且任务/订单仍为 `DELIVERING` 时重放；完成仅在任务属于自己、任务已完成且订单为 `DELIVERED` 或 `FINISHED` 时重放。RC 的 MySQL 固定时序回归由 `MysqlFulfillmentRetryIntegrationTest` 覆盖，本轮实际执行结果见[当前风险复核](当前项目风险与架构复核_2026-10-11.md)第 3.5 节，不能引用旧测试结果代替。
+这不扩大重复请求的接受状态：商家出餐仅在订单为 `READY` 且任务为未领取的 `WAIT_ASSIGN` 时重放；骑手抢单仅在任务属于自己且任务/订单仍为 `DELIVERING` 时重放；完成仅在任务属于自己、任务已完成且订单为 `DELIVERED` 或 `FINISHED` 时重放。RC 的 MySQL 固定时序回归由 `MysqlFulfillmentRetryIntegrationTest` 覆盖。
 
 ### 4.2 接受重复指令语义
 

@@ -3,6 +3,7 @@ package org.example.takeout.Order.Service;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.Order.Entity.Order;
@@ -79,6 +80,44 @@ class OrderMerchantQueryTest {
         assertTrue(sql.contains("merchant_id ="));
         assertEquals(Set.of(501L, 101L), Set.copyOf(wrapper.getParamNameValuePairs().values()));
         verifyNoMoreInteractions(orderMapper);
+    }
+
+    @Test
+    void unseenOrderIdsAreScopedToMerchantPaidStatusAndFalseSeenFlag() {
+        when(orderMapper.selectMerchantUnseenOrders(101L, OrderStatusEnum.PAID.getCode(), false))
+                .thenReturn(List.of(501L, 502L));
+
+        assertEquals(List.of(501L, 502L), orderService.findMerchantUnseenOrders(101L));
+
+        verify(orderMapper).selectMerchantUnseenOrders(101L, OrderStatusEnum.PAID.getCode(), false);
+        verifyNoMoreInteractions(orderMapper);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void markSeenUpdatesOnlyCurrentMerchantsUnseenPaidOrders() {
+        orderService.markMerchantOrdersSeen(101L, List.of(501L, 502L));
+
+        ArgumentCaptor<Wrapper<Order>> update = ArgumentCaptor.forClass((Class) Wrapper.class);
+        verify(orderMapper).update(isNull(), update.capture());
+        LambdaUpdateWrapper<Order> wrapper = (LambdaUpdateWrapper<Order>) update.getValue();
+        String where = wrapper.getSqlSegment();
+        assertTrue(where.contains("merchant_id ="));
+        assertTrue(where.contains("status ="));
+        assertTrue(where.contains("merchant_seen ="));
+        assertTrue(where.contains("id IN"));
+        assertTrue(wrapper.getSqlSet().contains("merchant_seen"));
+        assertEquals(Set.of(101L, OrderStatusEnum.PAID.getCode(), false, 501L, 502L, true),
+                Set.copyOf(wrapper.getParamNameValuePairs().values()));
+        verifyNoMoreInteractions(orderMapper);
+    }
+
+    @Test
+    void markSeenSkipsNullOrEmptyIdLists() {
+        orderService.markMerchantOrdersSeen(101L, null);
+        orderService.markMerchantOrdersSeen(101L, List.of());
+
+        verifyNoInteractions(orderMapper);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

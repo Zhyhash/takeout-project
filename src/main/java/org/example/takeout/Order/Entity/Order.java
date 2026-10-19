@@ -108,4 +108,10 @@ public class Order {
      */
     private LocalDateTime timeoutCancelAvailableAt;
 
+    /**
+     * 商家是否查看过这个订单
+     */
+
+    private Boolean merchantSeen;
+
 }

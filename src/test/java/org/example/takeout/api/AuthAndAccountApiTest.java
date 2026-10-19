@@ -439,6 +439,43 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
+    void merchantListsUnseenOrderIdsForReconnectRecovery() throws Exception {
+        when(orderService.findMerchantUnseenOrders(201L)).thenReturn(List.of(501L, 502L));
+
+        mockMvc.perform(get("/merchant/orders/unseen")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data[0]").value(501L))
+                .andExpect(jsonPath("$.data[1]").value(502L));
+
+        verify(orderService).findMerchantUnseenOrders(201L);
+    }
+
+    @Test
+    void merchantMarksRenderedOrdersSeenWithIdArray() throws Exception {
+        mockMvc.perform(patch("/merchant/orders/seen")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("[501,502]"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value("success"));
+
+        verify(orderService).markMerchantOrdersSeen(201L, List.of(501L, 502L));
+    }
+
+    @Test
+    void unseenOrderRecoveryRejectsUserToken() throws Exception {
+        mockMvc.perform(get("/merchant/orders/unseen")
+                        .header("Authorization", userBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(UNAUTHORIZED));
+
+        verify(orderService, never()).findMerchantUnseenOrders(anyLong());
+    }
+
+    @Test
     void listCustomerShopsIsPublic() throws Exception {
         MerchantListVO shop = new MerchantListVO();
         shop.setId(201L);

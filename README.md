@@ -78,7 +78,7 @@ Spring Security 的过滤链目前配置为无状态并放行请求，实际 JWT
 | 模块 | 当前职责 |
 |---|---|
 | `User` | 用户注册、登录、旧 Token 对应账号状态复核 |
-| `Merchant` | 商家注册登录、店铺资料/营业状态、店铺查询、订单查询与接单出餐 |
+| `Merchant` | 商家注册登录、店铺资料/营业状态、店铺查询、订单查询与接单出餐、SSE 提醒与 NEW 标记确认 |
 | `Category` | 分类创建、查询、删除；删除普通分类时将商品迁移到默认分类 |
 | `Product` | 商品创建、列表、上下架、恢复、库存条件扣减及缓存相关服务 |
 | `Cart` | 单商家购物车校验、商品增减、列表、批量删除与清空 |
@@ -163,6 +163,23 @@ WAIT_PAY
 `MerchantService.completePreparation`、`DeliveryTaskService.claimTask` 和 `completeDelivery` 三个事务入口局部使用 `READ_COMMITTED`，避免重复请求在预先读取账号/商家之后，继续用旧的可重复读快照校验另一个事务已推进的订单或任务。归属、旧状态条件更新及失败回滚仍保留；没有修改全库隔离级别，也没有把所有已推进状态都改为可重放成功。
 
 对外 VO 中的业务状态统一同时返回数字 `status` 和中文 `statusDesc`，例如 `{"status":0,"statusDesc":"待支付"}`。数字状态用于程序判断和接口筛选，状态文案用于页面展示；无法识别的状态码返回“未知状态”并记录告警。
+
+### 4.5 商家新订单提醒与 NEW 标记
+
+用户支付成功的事务提交后，后端尝试通过 SSE 提醒在线商家刷新订单。订单的 `merchantSeen` 字段持久化 NEW 标记：只有 `PAID` 且 `merchantSeen = false` 的订单需要提示为新订单；商家接单后，该订单便离开待接单提醒范围。
+
+| 接口 | 行为 |
+|---|---|
+| `GET /merchant/events` | 建立 `text/event-stream` 连接；先发送 `CONNECTED: connected`，新订单发送 `NEW_ORDER: refresh`，每 30 秒发送 `heartbeat` 注释 |
+| `GET /merchant/orders?type=PENDING` | 获取待接单完整订单，列表包含 `merchantSeen` |
+| `GET /merchant/orders/unseen` | 按 `create_time ASC, id ASC` 返回当前商家未查看的 `PAID` 订单 ID |
+| `PATCH /merchant/orders/seen` | 请求体为订单 ID 数组，如 `[101,102]`；仅更新当前商家仍为 `PAID` 且未查看的订单，重复 ACK 无额外影响 |
+
+上述接口仅允许商家身份，SSE 也必须携带 `Authorization: Bearer <token>` 请求头，不支持把 Token 放入 URL。前端需使用能携带该请求头的 SSE 客户端，并设置 `Accept: text/event-stream, application/json`，同时接受正常事件流和鉴权失败的 JSON 结果。当前鉴权失败响应沿用 HTTP 200、业务 `code=401` 的约定；前端应检查响应类型及业务码，不把所有 HTTP 200 都当作建连成功。仅接受 `text/event-stream` 的严格 SSE 客户端尚无兼容保证。`JwtInterceptor.afterConcurrentHandlingStarted` 会在 SSE 转入异步处理后清理原请求线程的商家身份上下文。
+
+本仓库只有后端，以下是前端仍需实现的接入契约：首次打开页面及 SSE 重连后补查 `/merchant/orders/unseen`；收到 `NEW_ORDER` 后刷新订单；结合 `merchantSeen` 展示 NEW；订单实际进入可见界面后才提交 ACK。发送 SSE 或查询订单均不会自动标记已查看，设计理由见 [NEW 标记 ACK 决策](docs/merchant-order-new-marker-ack-decision.md)。
+
+当前每个商家在每个应用进程中只保存一条 SSE 连接，新连接会完成旧连接，多标签页会互相替换；连接表保存在内存中，支付请求只通知其所在进程的连接。SSE 不持久化事件，也不保证浏览器收到或展示，重启、断线和多实例分流后的恢复依赖前端主动补查。该方案尚未实现多端广播、跨实例通知或事件回放。
 
 ## 5. 环境配置
 
@@ -306,7 +323,19 @@ mvn test "-Dtest=RedisBasicIntegrationTest,RedisLoginAttemptStoreIntegrationTest
 
 默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表、重建购物车总表，并创建/清空缓存失效任务表，只能对专用测试库运行。Redis 不可用时，Redis 专用测试通过 JUnit assumption 跳过；要覆盖 Redis 行为则需提供 `127.0.0.1:6379`。如需让测试连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
 
-本轮角色路由与履约重试回归的实际运行结果统一记录在[当前风险复核](当前项目风险与架构复核_2026-10-11.md)第 3.5 节。历史 830 项通过记录对应之前的登录名专项，不能替代本轮修改后的测试结果。
+商家 SSE、NEW 标记 ACK 和支付提交后通知的定向回归可单独运行：
+
+```powershell
+mvn test "-Dtest=MerchantSseServiceTest,MerchantSseMvcTest,MerchantOrderSeenDatabaseTest,OrderPaymentNotificationTransactionTest"
+```
+
+`MerchantSseServiceTest`、`MerchantSseMvcTest` 分别隔离验证 SSE 服务和 MVC 鉴权/异步上下文清理；`MerchantOrderSeenDatabaseTest` 使用真实 H2 Mapper 与 MVC 验证未查看查询/ACK 闭环，`OrderPaymentNotificationTransactionTest` 使用真实 H2 SQL 和 Spring 事务验证支付提交、回滚的通知时机。这四个套件无需 MySQL 或 Redis，不能替代 `V20261017` 在真实 MySQL 上的迁移、历史数据回填及索引验证。
+
+本轮单元/API 与 H2 回归按以下类名规则运行，排除 `*IntegrationTest` 套件：
+
+```powershell
+mvn test "-Dtest=*Test,!*IntegrationTest"
+```
 
 三个局部 RC 事务的真实 MySQL 时序回归可单独运行：
 
@@ -350,7 +379,7 @@ mysql -u root -p --execute="source deploy/schema.sql"
 
 已有数据库由应用启动时的 Flyway 迁移，权威脚本位于 `src/main/resources/db/migration`，命名格式为 `V<版本>__<描述>.sql`。非空旧库尚无迁移历史时，当前配置会先建立版本 `1` 的基线；随后按版本顺序执行尚未成功应用的脚本，并将版本、校验和及执行结果写入 `flyway_schema_history`。已有成功记录的版本会校验内容并跳过执行。
 
-当前版本范围为 `V20260820` 至 `V20261014`，权威目录及部署镜像各有 15 份 `B`/`V` SQL：`V20261007` 调整用户登录名排序规则及订单索引，`V20261008` 增加超时取消退避字段和扫描索引，`V20261009` 补齐配送奖励及骑手、配送任务自增主键，`V20261010` 回填购物车总表，`V20261011` 修正运行时默认值及商品分类约束，`V20261012` 将商家和骑手登录名改为 `as_cs`。历史 `V20261013` 二进制排序迁移已执行过，保留原内容；`V20261014__restore_login_name_as_cs.sql` 在三类名称合并冲突预检通过后恢复三列 `utf8mb4_0900_as_cs`，当前合法输入由六个 DTO 的统一白名单限制。空库执行 `B20261008` 后应用 `V20261009` 至 `V20261014` 共 6 份后续迁移；不改写已执行版本的校验和。历史配送任务奖励快照仍按原规则回填，已有值保持不变。
+当前版本范围为 `V20260820` 至 `V20261017`，权威目录及部署镜像各有 16 份 `B`/`V` SQL：`V20261007` 调整用户登录名排序规则及订单索引，`V20261008` 增加超时取消退避字段和扫描索引，`V20261009` 补齐配送奖励及骑手、配送任务自增主键，`V20261010` 回填购物车总表，`V20261011` 修正运行时默认值及商品分类约束，`V20261012` 将商家和骑手登录名改为 `as_cs`。历史 `V20261013` 二进制排序迁移已执行过，保留原内容；`V20261014__restore_login_name_as_cs.sql` 在三类名称合并冲突预检通过后恢复三列 `utf8mb4_0900_as_cs`，当前合法输入由六个 DTO 的统一白名单限制。最新 `V20261017__merchant_order_seen.sql` 增加订单 `merchant_seen` 及商家未查看订单查询的五列复合索引；缺失标记的历史订单按状态 `0/1/2` 回填 `false`，其他状态回填 `true`，已有 `true` 保留，且不推进 `update_time`。空库执行 `B20261008` 后应用 `V20261009` 至 `V20261017` 共 7 份后续迁移；不改写已执行版本的校验和。历史配送任务奖励快照仍按原规则回填，已有值保持不变。
 
 购物车回填和分类约束迁移使用临时表的命名 `CHECK` 约束预检旧数据。失败时错误会指出具体约束，含义及排查 SQL 见 [`deploy/migrations/README.md`](deploy/migrations/README.md)。应先处理对应数据问题，再按失败迁移恢复流程重试；不要修改已成功脚本或使用 `repair` 更新其校验和来绕过检查。
 
@@ -461,6 +490,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 - **并发控制**：库存使用带库存下限和商品状态的条件更新；购物车、商家、商品使用唯一约束、版本列或条件更新避免常见竞态。
 - **最小履约状态机**：订单状态与配送任务状态分离，并在出餐、抢单、送达等关键动作中保持事务一致。
 - **超时补偿**：定时扫描 30 分钟未支付订单，使用条件状态更新避免重复取消和重复归还库存。
+- **商家订单提醒**：支付事务提交后尝试 SSE 唤醒，持久化 NEW 标记支持前端在首次打开或重连时补查，并在展示后 ACK。
 - **持久化缓存失效任务**：商品修改与 `PENDING` 缓存失效意图在同一本地事务中提交，Redis 删除失败后由定时任务退避重试。
 - **三角色 JWT 鉴权**：按用户、商家、骑手设置身份上下文，业务查询继续按主体 ID 做数据归属过滤。
 - **履约快照**：订单和配送任务保存商品、商家、收货人、地址和联系方式快照，降低基础数据变化对历史业务的影响。
@@ -468,7 +498,8 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 
 ## 11. 已知限制
 
-- `PATCH /order/{id}/pay` 是本地模拟支付，没有接入支付网关、回调验签、退款、对账或消息投递。
+- `PATCH /order/{id}/pay` 是本地模拟支付，没有接入支付网关、回调验签、退款、对账或持久化消息投递。
+- 商家 SSE 仅提供当前进程内的一商家一连接提醒；多标签页、多实例通知和事件可靠回放尚未实现，前端补查及展示后 ACK 也需由独立前端接入。
 - Flyway 迁移使用应用启动时的数据库连接；`deploy/schema.sql` 只能初始化空库，不能替代版本迁移。
 - 核心关联大多没有数据库外键，部分关联 ID 的有符号/无符号定义也不完全一致；当前入口如何维护关系、哪些异常仅在数据不变量被破坏后出现，见[当前项目风险与架构复核](当前项目风险与架构复核_2026-10-11.md)。
 - 单商家购物车由注册事务初始化的 CartHeader、同一用户 Header 行锁和商品真实归属维护；正常并发加购不会持久化跨商家购物车。准备阶段的多次读取仍可能交错，写入时按旧行 ID 和数量条件消费，变化不满足条件则整体回滚。
@@ -486,10 +517,11 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 | 文档 | 作用 |
 |---|---|
 | [`IdempotencyDesign.md`](IdempotencyDesign.md) | 订单及其他接口的幂等、重复请求与业务边界 |
+| [`docs/merchant-order-new-marker-ack-decision.md`](docs/merchant-order-new-marker-ack-decision.md) | 商家 SSE、NEW 标记、前端展示后 ACK 的接入契约与边界 |
 | [`数据库结构.md`](数据库结构.md) | 十一张业务及基础设施表的字段、索引、外键和关系说明 |
 | [`状态流转表.md`](状态流转表.md) | 订单与配送任务状态、动作契约和最小履约闭环 |
 | [`当前项目风险与架构复核_2026-10-11.md`](当前项目风险与架构复核_2026-10-11.md) | 当前源码风险、触发条件、已接受边界和冻结判断 |
-| [`docs/architecture-refactoring-history.md`](docs/architecture-refactoring-history.md) | 历史重构来源和当时的验证记录；不作为当前未修风险清单 |
+| [`docs/architecture-refactoring-history.md`](docs/architecture-refactoring-history.md) | 历史架构演进、职责边界与事务契约；不作为当前未修风险清单 |
 | [`REDIS_LEARNING_LOG.md`](REDIS_LEARNING_LOG.md) | Redis 学习进度、实现边界及后续 MQ 学习路线 |
 | [`项目面试准备报告.md`](项目面试准备报告.md) | 面试表达和复习顺序；历史核查以当前报告复核 |
 
