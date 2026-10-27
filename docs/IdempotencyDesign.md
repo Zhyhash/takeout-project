@@ -4,10 +4,14 @@
 
 本文记录当前项目对重复请求的判断、已经生效的保护和仍需接受的业务边界。判断依据是当前 Controller、Service、Mapper、实体、`MysqlApiIntegrationTest.recreateSchema()` 以及并发集成测试。
 
+复核日期：2026-10-26。本次按工作区源码和已有测试代码静态核对，没有运行测试。
+
 当前结论：
 
 - `POST /order` 已通过客户端 `requestId`、请求指纹、数据库唯一键和本地事务实现相同参数请求的结果重放；同一标识携带不同参数时拒绝请求；
-- 订单取消、支付、确认通过条件状态更新保证同一转换只执行一次；
+- 订单取消会记录取消来源；商家拒单的重复请求只在同一商家、同一拒单来源时幂等返回；
+- 库存回补以订单明细记录的库存基准版本为条件，避免把人工重设前订单的库存加到新基准上；
+- 支付、取消、确认等状态转换通过条件更新控制并发，但它们的重复请求返回语义各不相同；
 - 购物车数量指令、部分删除类接口只保证结果安全，或明确接受重复指令语义；
 - 真实支付等外部副作用尚未接入，因此不在现有数据库状态机的保障范围内。
 
@@ -57,6 +61,8 @@
 
 写入阶段会重新校验购物车行数量，以及商品未删除、在售和足量库存，但商品价格/名称及商家资料/营业状态仍使用准备阶段快照。准备后改价或打烊不要求本次请求重新准备，属于明确接受的业务语义；幂等链路不承诺提交时重新校验这些快照字段。
 
+扣减库存时，`ProductCommandService` 在创建事务内用 `SELECT ... FOR UPDATE` 读取商品当前的 `stock_version`，再按此版本条件扣减；写入 `order_item.stock_version` 的是实际扣减时读取到的基准，而不是事务外结算快照中的版本。商家显式提交库存值时（包括把数值重设为原值）会推进 `product.stock_version`；普通预扣、回补、改价等不推进该基准。这样，取消订单只有在明细版本仍等于当前商品基准时才回补；若商家在下单后重设过库存，该明细的回补会因版本不匹配而跳过，不把旧订单对应的数量加到新设库存上。此版本规则是库存补偿保护，`requestId` 与订单唯一键负责的仍是建单幂等，两者解决的问题不同。
+
 ### 3.3 并发语义
 
 相同 `(user_id, request_id)` 的两个事务并发插入时，InnoDB 唯一键负责等待和裁决：
@@ -77,6 +83,7 @@
 - 同一用户、同一 `requestId` 最多形成一张订单；
 - 同一 `requestId` 改变收货信息或备注时不能成功复用原订单；
 - 库存最多按该订单扣减一次；
+- 取消时仅对 `order_item.stock_version` 仍等于当前商品库存基准的明细回补；商家重设库存后产生版本不匹配的明细会跳过回补；
 - 订单明细最多写入一组；
 - 购物车按结算快照的行 ID 和数量条件减量；缺行或数量不足时订单事务失败，不会部分消费；数量减至 0 才删除购物车行；
 - 成功响应丢失后，重试能获得同一个 `orderId`；
@@ -92,7 +99,7 @@
 
 | 接口/操作 | 当前保护 | 幂等结论 |
 |---|---|---|
-| `PATCH /order/{id}/cancel` | `WAIT_PAY -> CANCELLED` 条件更新，随后在同一事务归还库存 | 重复或并发取消只有一次成功，库存只归还一次；不重放首次响应 |
+| `PATCH /order/{id}/cancel` | `WAIT_PAY -> CANCELLED` 条件更新并写 `cancel_source=1`；同一事务按订单明细的库存基准版本尝试回补 | 状态转换和回补副作用只执行一次；用户再次请求时，已取消订单直接返回，不重放首次响应；基准版本已变化的明细跳过回补 |
 | `PATCH /order/{id}/pay` | `WAIT_PAY -> PAYING -> PAID` 条件更新 | 当前模拟支付下结果安全；不代表真实渠道扣款幂等 |
 | `PATCH /order/{id}/confirm` | `DELIVERED -> FINISHED` 条件更新 | 重复或并发确认只有一次成功 |
 | `POST /category` | 服务层提前查重，数据库唯一键 `(merchant_id, category_name)` 最终兜底 | 并发重复分类被数据库阻止；重复调用不重放首次响应 |
@@ -100,13 +107,14 @@
 | 商家资料或营业状态更新 | `merchant.version` 乐观锁 | 防止旧版本静默覆盖新版本 |
 | `PATCH /merchant/orders/{id}/accept` | `PAID -> PREPARING` 条件更新并校验商家归属 | 已是 `PREPARING` 时幂等返回，其他状态返回业务错误 |
 | `PATCH /merchant/orders/{id}/ready` | 同一事务执行 `PREPARING -> READY` 并创建任务；`delivery_task.order_id` 唯一 | 已是 `READY` 且任务仍为未接取的 `WAIT_ASSIGN` 时幂等返回；任务缺失或不一致时拒绝 |
+| `PATCH /merchant/orders/{id}/reject` | `PAID -> CANCELLED` 条件更新，并在同一事务记录 `cancel_source=2`、模拟退款和按版本回补库存 | 只对该商家已以商家拒单来源取消的订单幂等返回；用户取消或系统超时取消不会被误判为拒单成功；版本已变化的明细不回补 |
 | `PATCH /rider/delivery-tasks/{id}/claim` | 任务按 `WAIT_ASSIGN + rider_id IS NULL` 条件更新，并在同一事务推进订单 | 当前骑手重试幂等；其他骑手并发只能一人成功 |
 | `PATCH /rider/delivery-tasks/{id}/complete` | 按任务归属及 `DELIVERING` 条件更新，并在同一事务推进订单 | 已完成且订单已送达/完成时，当前骑手重试幂等 |
 | `DELETE /cart/items` | 删除条件包含当前用户，删除行数必须匹配请求数量 | 首次成功后重复删除会报错，最终状态安全 |
 | `DELETE /cart/items/all` | 按当前用户清空 | 重复执行后仍为空 |
 | 分类删除与商品创建 | 双方对目标分类行 `FOR UPDATE`，并有分类外键 | 防止并发产生孤儿商品 |
 
-履约重试的读取一致性由三个入口局部处理：`MerchantService.completePreparation`、`DeliveryTaskService.claimTask`、`DeliveryTaskService.completeDelivery` 使用 `@Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)`。这样，账号或商家预读之后，条件更新竞争失败的请求回读订单/任务时能看到其他事务已提交的状态，不继续受旧的可重复读快照影响。订单与任务的条件更新、归属检查和失败回滚均保留，全局数据库隔离级别没有变化。
+履约重试的读取一致性由三个入口局部处理：`FulfillmentService.completePreparation`、`DeliveryTaskService.claimTask`、`DeliveryTaskService.completeDelivery` 使用 `@Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)`。这样，账号或商家预读之后，条件更新竞争失败的请求回读订单/任务时能看到其他事务已提交的状态，不继续受旧的可重复读快照影响。订单与任务的条件更新、归属检查和失败回滚均保留，全局数据库隔离级别没有变化。
 
 这不扩大重复请求的接受状态：商家出餐仅在订单为 `READY` 且任务为未领取的 `WAIT_ASSIGN` 时重放；骑手抢单仅在任务属于自己且任务/订单仍为 `DELIVERING` 时重放；完成仅在任务属于自己、任务已完成且订单为 `DELIVERED` 或 `FINISHED` 时重放。RC 的 MySQL 固定时序回归由 `MysqlFulfillmentRetryIntegrationTest` 覆盖。
 

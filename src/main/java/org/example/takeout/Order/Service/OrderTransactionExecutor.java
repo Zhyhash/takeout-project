@@ -20,9 +20,14 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
+/**
+ * 订单创建事务服务。
+ * 负责在同一事务内幂等创建订单、消费结算购物车、扣减库存并保存订单明细。
+ */
 @Service
 @RequiredArgsConstructor
 public class OrderTransactionExecutor {
@@ -79,9 +84,10 @@ public class OrderTransactionExecutor {
                 orderDataContext.getAvailableItems()
         );
 
-        orderItemService.decreaseStocksOrderedByProductId(orderDataContext.getAvailableItems());
+        Map<Long, Integer> stockVersions = orderItemService.decreaseStocksOrderedByProductId(
+                orderDataContext.getAvailableItems());
         List<OrderItem> orderItems = orderItemService.buildOrderItems(order,
-                orderDataContext.getAvailableItems(), orderDataContext.getProductMap());
+                orderDataContext.getAvailableItems(), orderDataContext.getProductMap(), stockVersions);
         orderItemService.saveBatch(orderItems);
         return order;
     }

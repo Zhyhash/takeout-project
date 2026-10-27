@@ -28,7 +28,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-//NOTE：只负责“查商家数据”（用户端也属于查询）
+/**
+ * 面向用户的店铺浏览服务。
+ * 负责分页筛选商家，并聚合商家、分类与可见商品数据，组装店铺详情。
+ */
 @Service
 @RequiredArgsConstructor
 public class CustomerShopQueryService {

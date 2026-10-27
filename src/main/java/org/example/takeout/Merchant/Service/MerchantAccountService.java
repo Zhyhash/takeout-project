@@ -12,7 +12,6 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
@@ -22,30 +21,25 @@ import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
-import org.example.takeout.Order.Record.MarkReadyResult;
-import org.example.takeout.Order.Service.OrderCommandService;
 import org.jspecify.annotations.NonNull;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
 /**
- * 商家服务类
- * 负责商家的登录、信息更新等业务逻辑
+ * 商家账号与店铺基础管理服务。
+ * 负责商家注册、登录、身份校验、店铺资料更新及手动营业状态维护。
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class MerchantService {
+public class MerchantAccountService {
     private final MerchantMapper merchantMapper;
     private final MerchantConverter merchantConverter;
     private final JWTUtils jwtUtils;
     private final LoginAttemptLimiter loginAttemptLimiter;
-    private final OrderCommandService orderCommandService;
-    private final DeliveryTaskService deliveryTaskService;
     private final CategoryCommandService categoryCommendService;
 
     /**
@@ -178,10 +172,13 @@ public class MerchantService {
     }
 
     //NOTE：手动更新营业状态
+    //TODO：若后续经营职责增多，再考虑迁入 MerchantOperationService；当前保留此方法。
     public void updateStatus(Integer manualStatus) {
-        if (manualStatus == null) {
-            return;
+        if (!MerchantStatusEnum.BUSINESS_OPEN.getCode().equals(manualStatus)
+                && !MerchantStatusEnum.BUSINESS_CLOSED.getCode().equals(manualStatus)) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "商家营业状态不合法");
         }
+
         Merchant merchant = merchantMapper.
                 selectById(MerchantContextHolder.getMerchantId());
         if (merchant == null) {
@@ -196,32 +193,7 @@ public class MerchantService {
     }
 
 
-    public void acceptOrder(@NonNull Long orderId) {
 
-        Long merchantId = MerchantContextHolder.getMerchantId();
-
-        orderCommandService.acceptOrderByMerchant(orderId, merchantId);
-    }
-
-    @Transactional(rollbackFor = Exception.class,
-            isolation = Isolation.READ_COMMITTED)
-    public void completePreparation(Long orderId){
-        Long merchantId = MerchantContextHolder.getMerchantId();
-
-        Merchant merchant = merchantMapper.selectById(merchantId);
-        if (merchant == null) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商户不存在");
-        }
-
-        MarkReadyResult result =
-                orderCommandService.markReadyByMerchant(orderId, merchantId);
-        if (!result.changed()) {
-            deliveryTaskService.assertWaitingDeliveryTask(orderId);
-            return;
-        }
-
-        deliveryTaskService.createWaitingTask(result.order(), merchant);
-    }
 
 
 }

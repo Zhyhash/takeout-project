@@ -58,7 +58,7 @@ class RiderAuthApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data").value("success"));
 
         verify(riderService).register(argThat(actual -> loginName.equals(actual.getName())));
-        verifyNoInteractions(userService, merchantService);
+        verifyNoInteractions(userService, merchantAccountService);
     }
 
     @ParameterizedTest
@@ -82,7 +82,7 @@ class RiderAuthApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data.token").value("rider-token"));
 
         verify(riderService).login(argThat(actual -> loginName.equals(actual.getName())));
-        verifyNoInteractions(userService, merchantService);
+        verifyNoInteractions(userService, merchantAccountService);
     }
 
     @Test
@@ -198,7 +198,7 @@ class RiderAuthApiTest extends AbstractMockMvcApiTest {
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
 
-        verifyNoInteractions(userService, merchantService, riderService);
+        verifyNoInteractions(userService, merchantAccountService, riderService);
     }
 
     private RiderRegisterDTO riderRegisterDTO() {

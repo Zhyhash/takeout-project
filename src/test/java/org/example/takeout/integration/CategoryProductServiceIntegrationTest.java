@@ -65,6 +65,7 @@ class CategoryProductServiceIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        StockVersionSchemaTestFixture.ensureStockVersionColumns(jdbcTemplate);
         deleteTestData();
         merchantMapper.insert(TestDataFactory.createOpenMerchant(TEST_MERCHANT_ID));
         insertCategory(DEFAULT_CATEGORY_ID, "默认分类", CategoryDefaultEnum.DEFAULT.getCode());

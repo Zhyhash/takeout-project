@@ -358,6 +358,7 @@ class DeliveryTaskLifecycleIntegrationTest {
                     merchant_name VARCHAR(255) NULL,
                     total_amount DECIMAL(10, 2) NULL,
                     status INT NOT NULL,
+                    cancel_source INT NULL,
                     receiver_name VARCHAR(20) NULL,
                     receiver_phone VARCHAR(20) NULL,
                     receiver_address VARCHAR(255) NULL,

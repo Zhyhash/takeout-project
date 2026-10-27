@@ -17,6 +17,7 @@ import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
+import org.example.takeout.Order.Enums.OrderCancelSourceEnum;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
@@ -37,6 +38,11 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 订单业务应用服务及对外订单能力入口。
+ * 负责用户下单、支付、取消、签收和查询，并协调下单事务、库存归还与支付后通知。
+ * 为商家提供订单查询与已读维护，为配送流程提供订单状态校验，并处理超时取消。
+ */
 @Service
 @RequiredArgsConstructor
 public class OrderService {
@@ -72,6 +78,11 @@ public class OrderService {
                 throw e;
             }
             // prepare 失败后的第二次幂等检查
+            //这里是为了避免以下时序：
+            //B 第一次 findOrder 查不到订单，此时 A 尚未提交。
+            //A 下单成功，创建订单和消费购物车一起提交。
+            //B 执行 prepareOrderDataContext，读到空购物车，抛出 CART_EMPTY。
+            //B 在 catch 中再次查单，就能找到 A 已提交的订单，校验参数指纹后返回它。
             existing = findOrder(userId, dto.getRequestId());
 
             if (existing != null) {
@@ -235,8 +246,16 @@ public class OrderService {
         ArrayList<Integer> canCancelList =new ArrayList<>(
                 List.of(OrderStatusEnum.WAIT_PAY.getCode())
         );
-        int rows = orderMapper.UpdateOrderStatusToCancel(orderId, userId, canCancelList, OrderStatusEnum.CANCELLED.getCode());
+        int rows = orderMapper.UpdateOrderStatusToCancel(orderId, userId, canCancelList,
+                OrderStatusEnum.CANCELLED.getCode(), OrderCancelSourceEnum.USER.getCode());
         if (rows != 1) {
+            // 已取消直接成功，不重复归还库存。
+            Order order = orderMapper.selectOne(Wrappers.<Order>lambdaQuery()
+                    .eq(Order::getId, orderId)
+                    .eq(Order::getUserId, userId));
+            if (order != null && OrderStatusEnum.CANCELLED.getCode().equals(order.getStatus())) {
+                return;
+            }
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或当前状态不可取消");
         }
 
@@ -370,7 +389,8 @@ public class OrderService {
                 orderId,
                 OrderStatusEnum.WAIT_PAY.getCode(),
                 OrderStatusEnum.CANCELLED.getCode(),
-                expiredBefore
+                expiredBefore,
+                OrderCancelSourceEnum.TIMEOUT.getCode()
         );
         if (rows != 1) {
             return false;

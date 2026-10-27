@@ -45,7 +45,7 @@ public class OrderCreateRateLimiter {
     public boolean tryAcquire(Long userId) {
         long now = System.currentTimeMillis();
         String key="rate:order:create:" + userId;
-        String member = now + ":" + UUID.randomUUID();
+        String member = String.valueOf(UUID.randomUUID());
         //执行Lua
         Long result;
         try {

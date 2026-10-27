@@ -70,6 +70,7 @@ class ProductDetailCacheInvalidationIntegrationTest {
     void setUp() {
         RedisTestSupport.assumeRedisAvailable(redisTemplate);
         redisAvailable = true;
+        StockVersionSchemaTestFixture.ensureStockVersionColumns(jdbcTemplate);
         deleteTestData();
         merchantMapper.insert(TestDataFactory.createOpenMerchant(TEST_MERCHANT_ID));
         insertCategory();

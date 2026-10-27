@@ -7,6 +7,10 @@ import org.example.takeout.Category.StatusEnum.CategoryDefaultEnum;
 import org.example.takeout.Category.StatusEnum.CategoryStatusEnum;
 import org.springframework.stereotype.Service;
 
+/**
+ * 分类初始化的写入入口。
+ * 面向商家注册流程，为新商家创建启用状态的默认商品分类。
+ */
 @Service
 @RequiredArgsConstructor
 public class CategoryCommandService {

@@ -23,6 +23,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
+/**
+ * 骑手账号与身份认证服务。
+ * 负责骑手注册、登录认证与 Token 签发，并复核当前骑手的账号状态。
+ */
 @Service
 @RequiredArgsConstructor
 public class RiderService {

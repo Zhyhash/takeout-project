@@ -41,8 +41,9 @@ public class MerchantProductController {
             @RequestParam(defaultValue = "1") @Min(1) int pageNum,
             @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
             @RequestParam(required = false) Integer status,
-            @RequestParam(required = false) @Positive Long categoryId) {
-        PageInfo<MerchantProductVO> productPage = productService.listProducts(pageNum, pageSize, status, categoryId);
+            @RequestParam(required = false) @Positive Long categoryId,
+            @RequestParam(required = false) String keyword) {
+        PageInfo<MerchantProductVO> productPage = productService.listProducts(pageNum, pageSize, status, categoryId, keyword);
         return Result.success(productPage);
     }
 
@@ -56,7 +57,7 @@ public class MerchantProductController {
         return Result.success(productService.getMerchantProductDetail(id));
     }
 
-    @PutMapping("/{id}")
+    @PatchMapping("/{id}")
     public Result<MerchantProductVO> update(
             @PathVariable @Positive Long id,
             @RequestBody @Valid UpdateProductDTO updateProductDTO) {

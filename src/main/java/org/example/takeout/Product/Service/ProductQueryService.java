@@ -12,6 +12,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * 商品模块的只读查询入口。
+ * 为购物车、结算和店铺展示提供商品批量查询、在售商品查询及可见商品查询。
+ */
 @Service
 @RequiredArgsConstructor
 public class ProductQueryService {

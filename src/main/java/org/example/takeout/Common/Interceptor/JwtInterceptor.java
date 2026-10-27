@@ -12,7 +12,7 @@ import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.example.takeout.Merchant.Service.MerchantService;
+import org.example.takeout.Merchant.Service.MerchantAccountService;
 import org.example.takeout.Rider.Service.RiderService;
 import org.example.takeout.User.Service.UserService;
 import org.jspecify.annotations.NonNull;
@@ -28,7 +28,7 @@ public class JwtInterceptor implements HandlerInterceptor, AsyncHandlerIntercept
 
     private final JWTUtils jwtUtils;
     private final UserService userService;
-    private final MerchantService merchantService;
+    private final MerchantAccountService merchantAccountService;
     private final RiderService riderService;
 
     @Override
@@ -68,7 +68,7 @@ public class JwtInterceptor implements HandlerInterceptor, AsyncHandlerIntercept
 
             if (AuthRole.MERCHANT.equals(role)) {
                 MerchantContextHolder.setMerchantId(id);
-                merchantService.requireActiveMerchantId();
+                merchantAccountService.requireActiveMerchantId();
             } else if (AuthRole.USER.equals(role)) {
                 UserContextHolder.setUserId(id);
                 userService.requireActiveUserId();

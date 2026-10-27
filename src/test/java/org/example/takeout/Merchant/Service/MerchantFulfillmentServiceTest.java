@@ -38,7 +38,10 @@ class MerchantFulfillmentServiceTest {
     private DeliveryTaskService deliveryTaskService;
 
     @InjectMocks
-    private MerchantService merchantService;
+    private MerchantAccountService merchantAccountService;
+
+    @InjectMocks
+    private FulfillmentService fulfillmentService;
 
     @AfterEach
     void clearMerchantContext() {
@@ -49,9 +52,18 @@ class MerchantFulfillmentServiceTest {
     void acceptOrderDelegatesToOrderCommandServiceWithCurrentMerchant() {
         MerchantContextHolder.setMerchantId(101L);
 
-        merchantService.acceptOrder(501L);
+        fulfillmentService.acceptOrder(501L);
 
         verify(orderCommandService).acceptOrderByMerchant(501L, 101L);
+    }
+
+    @Test
+    void rejectOrderDelegatesToOrderCommandServiceWithCurrentMerchant() {
+        MerchantContextHolder.setMerchantId(101L);
+
+        fulfillmentService.rejectOrder(501L);
+
+        verify(orderCommandService).rejectOrderByMerchant(501L, 101L);
     }
 
     @Test
@@ -61,7 +73,7 @@ class MerchantFulfillmentServiceTest {
         when(orderCommandService.markReadyByMerchant(501L, 101L))
                 .thenReturn(new MarkReadyResult(true, order));
 
-        merchantService.completePreparation(501L);
+        fulfillmentService.completePreparation(501L);
 
         verify(deliveryTaskService).createWaitingTask(order, merchant);
         verify(deliveryTaskService, never()).assertWaitingDeliveryTask(any());
@@ -74,7 +86,7 @@ class MerchantFulfillmentServiceTest {
         when(orderCommandService.markReadyByMerchant(501L, 101L))
                 .thenReturn(new MarkReadyResult(false, order));
 
-        assertDoesNotThrow(() -> merchantService.completePreparation(501L));
+        assertDoesNotThrow(() -> fulfillmentService.completePreparation(501L));
 
         verify(deliveryTaskService).assertWaitingDeliveryTask(501L);
         verify(deliveryTaskService, never()).createWaitingTask(any(), any());
@@ -93,7 +105,7 @@ class MerchantFulfillmentServiceTest {
 
         BusinessException actual = assertThrows(
                 BusinessException.class,
-                () -> merchantService.completePreparation(501L));
+                () -> fulfillmentService.completePreparation(501L));
 
         assertSame(expected, actual);
         verify(deliveryTaskService, never()).createWaitingTask(any(), any());
@@ -106,7 +118,7 @@ class MerchantFulfillmentServiceTest {
 
         BusinessException exception = assertThrows(
                 BusinessException.class,
-                () -> merchantService.completePreparation(501L));
+                () -> fulfillmentService.completePreparation(501L));
 
         assertEquals("商户不存在", exception.getMessage());
         verify(orderCommandService, never()).markReadyByMerchant(any(), any());
@@ -127,7 +139,7 @@ class MerchantFulfillmentServiceTest {
 
         BusinessException actual = assertThrows(
                 BusinessException.class,
-                () -> merchantService.completePreparation(501L));
+                () -> fulfillmentService.completePreparation(501L));
 
         assertSame(expected, actual);
     }
@@ -146,7 +158,7 @@ class MerchantFulfillmentServiceTest {
 
         BusinessException exception = assertThrows(
                 BusinessException.class,
-                () -> merchantService.updateMerchant(dto));
+                () -> merchantAccountService.updateMerchant(dto));
 
         assertEquals("手机号已被其他商家使用", exception.getMessage());
         verify(merchantMapper).selectCount(any());

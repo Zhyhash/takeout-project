@@ -7,6 +7,10 @@ import org.example.takeout.Common.Exception.LoginRateLimitException;
 import org.example.takeout.Common.Redis.RedisLoginAttemptStore;
 import org.springframework.stereotype.Service;
 
+/**
+ * 各角色共用的登录失败限流服务。
+ * 负责检查登录限制、记录或清除失败次数，并在计数存储异常时放行登录尝试。
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j

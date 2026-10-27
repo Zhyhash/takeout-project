@@ -45,6 +45,11 @@ public class OrderItem {
     private BigDecimal subtotal;
 
     /**
+     * 成功预扣库存时商品对应的 stock_version 快照。
+     */
+    private Integer stockVersion;
+
+    /**
      * 商品图片
      */
     private String productPicture;

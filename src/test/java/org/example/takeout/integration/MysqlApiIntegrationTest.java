@@ -20,6 +20,7 @@ import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Entity.Order;
+import org.example.takeout.Order.Enums.OrderCancelSourceEnum;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
 import org.example.takeout.Order.Mapper.OrderMapper;
@@ -118,7 +119,7 @@ class MysqlApiIntegrationTest {
         dto.setVersion(0);
         dto.setPrice(new BigDecimal(input));
 
-        MvcResult result = mockMvc.perform(put("/category/products/" + productId)
+        MvcResult result = mockMvc.perform(patch("/category/products/" + productId)
                         .header("Authorization", bearer(loginMerchant(merchant.username())))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
@@ -132,6 +133,53 @@ class MysqlApiIntegrationTest {
                 .isEqualByComparingTo(stored);
         assertThat(jdbcTemplate.queryForObject("SELECT status FROM product WHERE id = ?",
                 Integer.class, productId)).isEqualTo(ProductStatusEnum.ON_SALE.getCode());
+    }
+
+    @Test
+    void productPatchResetsStockBaselineOnlyWhenStockIsExplicitlyPresent() throws Exception {
+        MerchantSeed merchant = insertMerchant("stock_version_" + suffix());
+        Long categoryId = insertCategory(merchant.id(), "Stock version category");
+        Long productId = insertProduct(merchant.id(), categoryId, "Stock version product",
+                ProductStatusEnum.ON_SALE.getCode(), 10);
+        String token = bearer(loginMerchant(merchant.username()));
+
+        UpdateProductDTO stockOnly = new UpdateProductDTO();
+        stockOnly.setStock(25);
+        stockOnly.setVersion(0);
+        mockMvc.perform(patch("/category/products/" + productId)
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(stockOnly)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT product_name FROM product WHERE id = ?", String.class, productId))
+                .isEqualTo("Stock version product");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT stock FROM product WHERE id = ?", Integer.class, productId)).isEqualTo(25);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT stock_version FROM product WHERE id = ?", Integer.class, productId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT version FROM product WHERE id = ?", Integer.class, productId)).isEqualTo(1);
+
+        UpdateProductDTO priceOnly = new UpdateProductDTO();
+        priceOnly.setPrice(new BigDecimal("21.50"));
+        priceOnly.setVersion(1);
+        mockMvc.perform(patch("/category/products/" + productId)
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(priceOnly)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT stock FROM product WHERE id = ?", Integer.class, productId)).isEqualTo(25);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT stock_version FROM product WHERE id = ?", Integer.class, productId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT price FROM product WHERE id = ?", BigDecimal.class, productId))
+                .isEqualByComparingTo("21.50");
     }
 
     @ParameterizedTest
@@ -695,13 +743,14 @@ class MysqlApiIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200));
 
         Map<String, Object> row = jdbcTemplate.queryForMap(
-                "select status from orders where id = ?",
+                "select status, cancel_source from orders where id = ?",
                 seed.orderId());
         Integer stock = jdbcTemplate.queryForObject(
                 "select stock from product where id = ?",
                 Integer.class,
                 seed.productId());
         assertThat(row.get("status")).isEqualTo(OrderStatusEnum.CANCELLED.getCode());
+        assertThat(row.get("cancel_source")).isEqualTo(OrderCancelSourceEnum.USER.getCode());
         assertThat(stock).isEqualTo(10);
     }
 
@@ -1352,6 +1401,7 @@ class MysqlApiIntegrationTest {
                     `image_url` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品图片URL',
                     `price` decimal(10, 2) NOT NULL COMMENT '商品价格',
                     `stock` int NOT NULL COMMENT '库存数量',
+                    `stock_version` int NOT NULL DEFAULT 0 COMMENT '库存基准版本：商家显式重设库存时递增',
                     `merchant_id` bigint NOT NULL COMMENT '所属商家ID',
                     `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除: 0-未删除, 1-已删除',
                     `active_name_guard` tinyint GENERATED ALWAYS AS (
@@ -1410,6 +1460,8 @@ class MysqlApiIntegrationTest {
                     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `total_amount` decimal(10, 2) NOT NULL,
                     `status` tinyint NOT NULL DEFAULT 0,
+                    `cancel_source` tinyint NULL DEFAULT NULL
+                        COMMENT '订单取消原因：1用户主动取消，2商家拒单，3系统超时取消，4平台取消',
                     `receiver_name` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `receiver_phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `receiver_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
@@ -1442,6 +1494,7 @@ class MysqlApiIntegrationTest {
                     `product_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `product_price` decimal(10, 2) NOT NULL,
                     `quantity` int NOT NULL DEFAULT 1,
+                    `stock_version` int NOT NULL DEFAULT 0 COMMENT '预扣库存时的商品库存基准版本',
                     `subtotal` decimal(10, 2) NOT NULL,
                     `product_picture` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
                     PRIMARY KEY (`id`) USING BTREE,

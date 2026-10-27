@@ -7,6 +7,10 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 商家订单通知的 SSE 连接服务。
+ * 负责维护商家连接、推送新订单提醒、发送心跳，并清理失效连接。
+ */
 @Service
 @Slf4j
 public class MerchantSseService {

@@ -53,43 +53,48 @@ class OrderItemServiceTest {
     }
 
     @Test
-    void decreaseStocksOrdersLocksByProductIdWithoutChangingCartItemOrder() {
+    void decreaseStocksOrdersLocksByProductIdAndReturnsActualVersions() {
         List<CartItem> cartItems = new ArrayList<>(List.of(
                 cartItem(30L, 3),
                 cartItem(10L, 1),
                 cartItem(20L, 2)
         ));
+        when(productCommandService.decreaseStock(10L, 1)).thenReturn(11);
+        when(productCommandService.decreaseStock(20L, 2)).thenReturn(22);
+        when(productCommandService.decreaseStock(30L, 3)).thenReturn(33);
 
-        orderItemService.decreaseStocksOrderedByProductId(cartItems);
+        Map<Long, Integer> stockVersions =
+                orderItemService.decreaseStocksOrderedByProductId(cartItems);
 
         InOrder calls = inOrder(productCommandService);
         calls.verify(productCommandService).decreaseStock(10L, 1);
         calls.verify(productCommandService).decreaseStock(20L, 2);
         calls.verify(productCommandService).decreaseStock(30L, 3);
+        assertEquals(Map.of(10L, 11, 20L, 22, 30L, 33), stockVersions);
         assertEquals(List.of(30L, 10L, 20L),
                 cartItems.stream().map(CartItem::getProductId).toList());
     }
 
     @Test
-    void increaseStocksOrdersLocksByProductIdWithoutChangingOrderItemOrder() {
+    void increaseStocksOrdersLocksByProductIdAndUsesEachItemVersion() {
         List<OrderItem> orderItems = new ArrayList<>(List.of(
-                orderItem(30L, 3),
-                orderItem(10L, 1),
-                orderItem(20L, 2)
+                orderItem(30L, 3, 7),
+                orderItem(10L, 1, 5),
+                orderItem(20L, 2, 6)
         ));
 
         orderItemService.increaseStocksOrderedByProductId(orderItems);
 
         InOrder calls = inOrder(productCommandService);
-        calls.verify(productCommandService).increaseStock(10L, 1);
-        calls.verify(productCommandService).increaseStock(20L, 2);
-        calls.verify(productCommandService).increaseStock(30L, 3);
+        calls.verify(productCommandService).increaseStock(10L, 1, 5);
+        calls.verify(productCommandService).increaseStock(20L, 2, 6);
+        calls.verify(productCommandService).increaseStock(30L, 3, 7);
         assertEquals(List.of(30L, 10L, 20L),
                 orderItems.stream().map(OrderItem::getProductId).toList());
     }
 
     @Test
-    void orderItemSnapshotUsesCurrentProductDataAndImage() {
+    void orderItemSnapshotUsesCurrentProductDataAndDeductedStockVersion() {
         CartItem cartItem = cartItem(10L, 2);
         cartItem.setProductImage("/images/cart-old.png");
         OrderItem snapshot = buildSnapshot(cartItem, product("/images/product-current.png"));
@@ -101,6 +106,7 @@ class OrderItemServiceTest {
         assertEquals(2, snapshot.getQuantity());
         assertEquals(new BigDecimal("25.00"), snapshot.getSubtotal());
         assertEquals("/images/product-current.png", snapshot.getProductPicture());
+        assertEquals(4, snapshot.getStockVersion());
     }
 
     @Test
@@ -126,9 +132,23 @@ class OrderItemServiceTest {
         order.setId(501L);
 
         BusinessException failure = assertThrows(BusinessException.class,
-                () -> orderItemService.buildOrderItems(order, List.of(cartItem(10L, 1)), Map.of()));
+                () -> orderItemService.buildOrderItems(
+                        order, List.of(cartItem(10L, 1)), Map.of(), Map.of(10L, 0)));
 
         assertEquals("商品不存在", failure.getMessage());
+        verifyNoInteractions(orderItemMapper, productCommandService);
+    }
+
+    @Test
+    void missingDeductedStockVersionRejectsOrderItemSnapshot() {
+        Order order = new Order();
+        order.setId(501L);
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderItemService.buildOrderItems(
+                        order, List.of(cartItem(10L, 1)), Map.of(10L, product(null)), Map.of()));
+
+        assertEquals("库存版本缺失，无法保存订单明细", failure.getMessage());
         verifyNoInteractions(orderItemMapper, productCommandService);
     }
 
@@ -184,7 +204,8 @@ class OrderItemServiceTest {
     private OrderItem buildSnapshot(CartItem cartItem, Product product) {
         Order order = new Order();
         order.setId(501L);
-        return orderItemService.buildOrderItems(order, List.of(cartItem), Map.of(10L, product)).get(0);
+        return orderItemService.buildOrderItems(
+                order, List.of(cartItem), Map.of(10L, product), Map.of(10L, 4)).get(0);
     }
 
     private Product product(String image) {
@@ -204,9 +225,14 @@ class OrderItemServiceTest {
     }
 
     private OrderItem orderItem(Long productId, Integer quantity) {
+        return orderItem(productId, quantity, 0);
+    }
+
+    private OrderItem orderItem(Long productId, Integer quantity, Integer stockVersion) {
         OrderItem item = new OrderItem();
         item.setProductId(productId);
         item.setQuantity(quantity);
+        item.setStockVersion(stockVersion);
         return item;
     }
 }

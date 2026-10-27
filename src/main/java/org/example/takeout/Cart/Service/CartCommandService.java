@@ -12,6 +12,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
+/**
+ * 购物车结算后的写入入口。
+ * 在调用方已有事务中扣减已结算条目的数量、删除空条目，并在购物车清空后解除商家绑定。
+ */
 @Service
 @RequiredArgsConstructor
 public class CartCommandService {

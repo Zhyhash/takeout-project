@@ -60,7 +60,8 @@ class OrderCartHeaderTransactionTest {
     @BeforeEach
     void resetDatabase() {
         reset(orderItemService);
-        when(orderItemService.buildOrderItems(any(), anyList(), anyMap())).thenReturn(List.of());
+        when(orderItemService.decreaseStocksOrderedByProductId(anyList())).thenReturn(Map.of());
+        when(orderItemService.buildOrderItems(any(), anyList(), anyMap(), anyMap())).thenReturn(List.of());
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS cart_header (
                     user_id BIGINT PRIMARY KEY,
@@ -95,6 +96,7 @@ class OrderCartHeaderTransactionTest {
                     original_amount DECIMAL(10, 2),
                     discount_amount DECIMAL(10, 2),
                     status INT,
+                    cancel_source INT,
                     receiver_name VARCHAR(20),
                     receiver_phone VARCHAR(20),
                     receiver_address VARCHAR(255),

@@ -1,4 +1,4 @@
-package org.example.takeout.Cart.Service;
+package org.example.takeout.Experiment;
 
 import lombok.RequiredArgsConstructor;
 import org.jspecify.annotations.NonNull;
@@ -8,6 +8,10 @@ import org.springframework.stereotype.Service;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * 基于 Redis Set 的用户关注关系实验服务，不参与实际业务流程。
+ * 演示关注与取关、关注和粉丝查询，以及通过集合交集、差集查询共同关注及推荐候选。
+ */
 @Service
 @RequiredArgsConstructor
 

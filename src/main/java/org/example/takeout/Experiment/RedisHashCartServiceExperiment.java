@@ -1,4 +1,4 @@
-package org.example.takeout.Cart.Service;
+package org.example.takeout.Experiment;
 
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Exception.BusinessException;
@@ -12,6 +12,10 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * 基于 Redis Hash 的购物车实验服务，不参与实际业务流程。
+ * 演示按用户存储商品数量、使用 Lua 原子增减数量，以及购物车查询、清理和过期续期。
+ */
 @Service
 @RequiredArgsConstructor
 //NOTE：这个类是实验类，不参与任何实际相关业务代码

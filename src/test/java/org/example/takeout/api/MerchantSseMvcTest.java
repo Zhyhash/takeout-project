@@ -12,8 +12,9 @@ import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Merchant.Controller.MerchantControllerSold;
+import org.example.takeout.Merchant.Service.FulfillmentService;
+import org.example.takeout.Merchant.Service.MerchantAccountService;
 import org.example.takeout.Merchant.Service.MerchantOrderViewService;
-import org.example.takeout.Merchant.Service.MerchantService;
 import org.example.takeout.Merchant.Service.MerchantSseService;
 import org.example.takeout.Rider.Service.RiderService;
 import org.example.takeout.User.Service.UserService;
@@ -38,7 +39,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class MerchantSseMvcTest {
 
     private final JWTUtils jwtUtils = mock(JWTUtils.class);
-    private final MerchantService merchantService = mock(MerchantService.class);
+    private final MerchantAccountService merchantAccountService = mock(MerchantAccountService.class);
+    private final FulfillmentService fulfillmentService = mock(FulfillmentService.class);
     private final UserService userService = mock(UserService.class);
     private final RiderService riderService = mock(RiderService.class);
     private final MerchantOrderViewService orderViewService = mock(MerchantOrderViewService.class);
@@ -48,8 +50,9 @@ class MerchantSseMvcTest {
 
     @BeforeEach
     void setUp() {
-        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils, userService, merchantService, riderService);
-        MerchantControllerSold controller = new MerchantControllerSold(merchantService, orderViewService, sseService);
+        JwtInterceptor interceptor = new JwtInterceptor(jwtUtils, userService, merchantAccountService, riderService);
+        MerchantControllerSold controller = new MerchantControllerSold(
+                merchantAccountService, fulfillmentService, orderViewService, sseService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .addInterceptors(interceptor)
                 .setControllerAdvice(new GlobalExceptionHandle())
@@ -69,7 +72,7 @@ class MerchantSseMvcTest {
     @Test
     void merchantSubscriptionStartsRealSseAndClearsContextOnInitialAsyncDispatch() throws Exception {
         when(jwtUtils.parseToken("merchant-token")).thenReturn(claims(201L, AuthRole.MERCHANT));
-        when(merchantService.requireActiveMerchantId()).thenAnswer(invocation -> {
+        when(merchantAccountService.requireActiveMerchantId()).thenAnswer(invocation -> {
             assertEquals(201L, MerchantContextHolder.getMerchantId());
             return 201L;
         });
@@ -82,7 +85,7 @@ class MerchantSseMvcTest {
         assertNull(UserContextHolder.getUserId());
         assertNull(RiderContextHolder.getRiderId());
         assertEquals("event:CONNECTED\ndata:connected\n\n", stream.getResponse().getContentAsString());
-        verify(merchantService).requireActiveMerchantId();
+        verify(merchantAccountService).requireActiveMerchantId();
         verify(sseService).connect(201L);
         verifyNoInteractions(userService, riderService, orderViewService);
 
@@ -97,7 +100,7 @@ class MerchantSseMvcTest {
     void simultaneousMerchantSubscriptionsReceiveOnlyTheirOwnNewOrders() throws Exception {
         when(jwtUtils.parseToken("first-merchant")).thenReturn(claims(201L, AuthRole.MERCHANT));
         when(jwtUtils.parseToken("second-merchant")).thenReturn(claims(202L, AuthRole.MERCHANT));
-        when(merchantService.requireActiveMerchantId()).thenAnswer(invocation -> MerchantContextHolder.getMerchantId());
+        when(merchantAccountService.requireActiveMerchantId()).thenAnswer(invocation -> MerchantContextHolder.getMerchantId());
         MvcResult first = subscribe("first-merchant");
         MvcResult second = subscribe("second-merchant");
 
@@ -117,7 +120,7 @@ class MerchantSseMvcTest {
                 .andExpect(request().asyncNotStarted())
                 .andExpect(jsonPath("$.code").value(401));
 
-        verifyNoInteractions(jwtUtils, merchantService, userService, riderService, sseService);
+        verifyNoInteractions(jwtUtils, merchantAccountService, userService, riderService, sseService);
         assertNull(MerchantContextHolder.getMerchantId());
     }
 
@@ -131,7 +134,7 @@ class MerchantSseMvcTest {
                 .andExpect(request().asyncNotStarted())
                 .andExpect(jsonPath("$.code").value(401));
 
-        verifyNoInteractions(merchantService, userService, riderService, sseService);
+        verifyNoInteractions(merchantAccountService, userService, riderService, sseService);
         assertNull(MerchantContextHolder.getMerchantId());
     }
 
@@ -146,7 +149,7 @@ class MerchantSseMvcTest {
                 .andExpect(request().asyncNotStarted())
                 .andExpect(jsonPath("$.code").value(401));
 
-        verifyNoInteractions(merchantService, userService, riderService, sseService);
+        verifyNoInteractions(merchantAccountService, userService, riderService, sseService);
         assertNull(MerchantContextHolder.getMerchantId());
         assertNull(UserContextHolder.getUserId());
         assertNull(RiderContextHolder.getRiderId());
@@ -155,7 +158,7 @@ class MerchantSseMvcTest {
     @Test
     void deletedMerchantCannotSubscribeWithAnExistingToken() throws Exception {
         when(jwtUtils.parseToken("deleted-merchant")).thenReturn(claims(201L, AuthRole.MERCHANT));
-        when(merchantService.requireActiveMerchantId()).thenThrow(new AuthException("商家账号不存在"));
+        when(merchantAccountService.requireActiveMerchantId()).thenThrow(new AuthException("商家账号不存在"));
 
         mockMvc.perform(get("/merchant/events").header("Authorization", "Bearer deleted-merchant")
                         .accept(MediaType.TEXT_EVENT_STREAM, MediaType.APPLICATION_JSON))
@@ -163,7 +166,7 @@ class MerchantSseMvcTest {
                 .andExpect(request().asyncNotStarted())
                 .andExpect(jsonPath("$.code").value(401));
 
-        verify(merchantService).requireActiveMerchantId();
+        verify(merchantAccountService).requireActiveMerchantId();
         verifyNoInteractions(userService, riderService, sseService);
         assertNull(MerchantContextHolder.getMerchantId());
     }

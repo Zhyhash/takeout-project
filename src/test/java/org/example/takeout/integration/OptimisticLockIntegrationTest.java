@@ -32,6 +32,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
@@ -74,6 +75,8 @@ public class OptimisticLockIntegrationTest {
     void setUp() {
         OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
         OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
+        OrderCancelSourceSchemaTestFixture.ensureCancelSourceColumn(jdbcTemplate);
+        StockVersionSchemaTestFixture.ensureStockVersionColumns(jdbcTemplate);
         deleteTestData();
 
         UserContextHolder.setUserId(TEST_USER_ID);
@@ -164,14 +167,15 @@ public class OptimisticLockIntegrationTest {
         product.setCategoryId(TEST_CATEGORY_ID);
         productMapper.insert(product);
 
-        productCommandService.decreaseStock(TEST_PRODUCT_ID, 1);
+        int stockVersion = productCommandService.decreaseStock(TEST_PRODUCT_ID, 1);
 
         Product soldOut = productMapper.selectById(TEST_PRODUCT_ID);
         assertEquals(0, soldOut.getStock());
         assertEquals(ProductStatusEnum.SALE_OUT.getCode(), soldOut.getStatus());
         assertEquals(1, soldOut.getVersion());
+        assertEquals(stockVersion, soldOut.getStockVersion());
 
-        productCommandService.increaseStock(TEST_PRODUCT_ID, 2);
+        assertTrue(productCommandService.increaseStock(TEST_PRODUCT_ID, 2, stockVersion));
 
         Product onSale = productMapper.selectById(TEST_PRODUCT_ID);
         assertEquals(2, onSale.getStock());
@@ -181,7 +185,7 @@ public class OptimisticLockIntegrationTest {
         jdbcTemplate.update(
                 "UPDATE product SET status = ? WHERE id = ?",
                 ProductStatusEnum.OFF_SALE.getCode(), TEST_PRODUCT_ID);
-        productCommandService.increaseStock(TEST_PRODUCT_ID, 1);
+        assertTrue(productCommandService.increaseStock(TEST_PRODUCT_ID, 1, stockVersion));
 
         Product stillOffSale = productMapper.selectById(TEST_PRODUCT_ID);
         assertEquals(3, stillOffSale.getStock());
@@ -201,7 +205,7 @@ public class OptimisticLockIntegrationTest {
         staleReset.setStock(20);
         staleReset.setVersion(0);
 
-        productCommandService.increaseStock(TEST_PRODUCT_ID, 1);
+        assertTrue(productCommandService.increaseStock(TEST_PRODUCT_ID, 1, 0));
         MerchantContextHolder.setMerchantId(TEST_MERCHANT_ID);
 
         assertThrows(BusinessException.class,
@@ -223,7 +227,7 @@ public class OptimisticLockIntegrationTest {
 
         assertEquals(1, productMapper.deleteById(TEST_PRODUCT_ID));
 
-        productCommandService.increaseStock(TEST_PRODUCT_ID, 2);
+        assertTrue(productCommandService.increaseStock(TEST_PRODUCT_ID, 2, 0));
 
         assertEquals(1, jdbcTemplate.queryForObject(
                 "SELECT is_deleted FROM product WHERE id = ?", Integer.class, TEST_PRODUCT_ID));

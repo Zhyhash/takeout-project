@@ -32,6 +32,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+/**
+ * 配送任务服务。
+ * 负责待接配送任务的创建与校验、骑手任务查询、抢单及确认送达，并协调订单配送状态的一致性。
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor

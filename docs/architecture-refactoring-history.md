@@ -2,7 +2,7 @@
 
 首次整理：2026-10-11（Asia/Shanghai）。核查基准：`e72686c98b90ce2283d0881e085abe2233506c77` 加当日工作区。本文由 Git 差异、提交前后源码和当前源码回溯生成，不以提交标题或待办项被删除作为完成证据。
 
-**本文保留历史重构和对应测试职责，不作为当前未修风险清单。** 当前源码风险、A/B/C/D/E 定性及冻结判断统一以[当前项目风险与架构复核](../当前项目风险与架构复核_2026-10-11.md)为准；以下历史 D/R 状态不能直接沿用。
+**本文保留历史重构和对应测试职责，不作为当前未修风险清单。** 当前源码风险、A/B/C/D/E 定性及冻结判断统一以[当前项目风险与架构复核](当前项目风险与架构复核_2026-10-11.md)为准；以下历史 D/R 状态不能直接沿用。
 
 ## 1. 背景、目标与证据口径
 
@@ -132,8 +132,8 @@ rg -n '旧类名|旧方法名' src/main src/test
 
 - 原问题：Redis PROCESSING/SUCCEEDED 实验状态与实际数据库订单幂等并存；同 requestId 的不同请求需要明确裁决。
 - 实际变化：`90af04a` 删除 `RedisOrderCreationExperiment`、`RedisOrderIdempotencyStore`、`RedisIdempotencyState`，引入 [OrderRequestFingerprint](../src/main/java/org/example/takeout/Order/Support/OrderRequestFingerprint.java) 与 `orders.request_hash`，业务查询/重复键后回读校验姓名、电话、地址、备注四字段的 SHA-256 指纹（不包含购物车明细），新增迁移补齐/确认 `user_id + request_id` 唯一约束；父版本 deploy/schema.sql 已有该唯一键，不能写成本轮首次收紧。删除前 Controller 已直接调用 OrderService，不能记成生产从 Redis 切换到数据库。`28a3edb`（2026-07-29）已经拆出独立事务执行器并有数据库幂等，`1653171` 再将库存副作用从明细快照构建分离、按商品 ID 固定扣/退库存顺序。
-- 残留：删除的 Redis 订单实验类型无源码引用；[RedisHashCartServiceExperiment](../src/main/java/org/example/takeout/Cart/Service/RedisHashCartServiceExperiment.java) 及其单元/真实 Redis 集成测试仍保留，源码明确标注实验、不参与实际业务。是否计划删除该购物车实验无法确认，不能记为已清理。
-- 其他实验：[RedisSetFollowServiceExperiment](../src/main/java/org/example/takeout/Cart/Service/RedisSetFollowServiceExperiment.java) 也仍在 main 中，不属于此次已删除的订单 Redis 实验类型。
+- 残留：删除的 Redis 订单实验类型无源码引用；[RedisHashCartServiceExperiment](../src/main/java/org/example/takeout/Experiment/RedisHashCartServiceExperiment.java) 及其单元/真实 Redis 集成测试仍保留，源码明确标注实验、不参与实际业务。是否计划删除该购物车实验无法确认，不能记为已清理。
+- 其他实验：[RedisSetFollowServiceExperiment](../src/main/java/org/example/takeout/Experiment/RedisSetFollowServiceExperiment.java) 也仍在 main 中，不属于此次已删除的订单 Redis 实验类型。两个保留的实验类及购物车实验测试现统一归入 `Experiment` 包。
 - 测试：原 `RedisServiceIntegrationTest` 在 `90af04a` 删除；指纹测试、订单幂等单元/事务/集成测试新增或更新。测试替代范围不等于与旧套件逐用例等价，等价性无法确认。对应测试见 T-O。
 
 **O04：订单项查询与图片快照兜底收回 OrderItemService — 已完成（当前工作区，未提交）。**
@@ -193,7 +193,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 **DB01：手工 SQL 升级迁入 Flyway，增加累计基线及历史数据修复 — 已完成（源码）；环境执行无法确认。**
 
 - 原问题：修改 `deploy/schema.sql` 不会升级已有库，手工增量 SQL 与运行实体结构缺少统一版本记录。
-- 实际变化：`90af04a` 增加 flyway-core/mysql 依赖、[FlywayConfig](../src/main/java/org/example/takeout/Config/FlywayConfig.java)、classpath V 迁移及应用配置。`e72686c` 添加 `B20261008` 累计基线与 V20261007–11，部署目录统一为同名镜像并删除旧手工命名脚本。[迁移目录说明](../deploy/migrations/README.md) 明确 classpath 为权威来源。
+- 实际变化：`90af04a` 增加 flyway-core/mysql 依赖、[FlywayConfig](../src/main/java/org/example/takeout/Config/FlywayConfig.java)、classpath V 迁移及应用配置。`e72686c` 添加 `B20261008` 累计基线与 V20261007–11，部署目录统一为同名镜像并删除旧手工命名脚本。[迁移目录说明](database-migrations.md) 明确 classpath 为权威来源。
 - 迁移内容：V07 调整用户名称排序规则/订单扫描索引；V08 超时取消退避；V09 补配送奖励快照及 Rider/DeliveryTask 自增 ID；V10 预检异常购物车并补 header、修正商家绑定；V11 预检空/孤儿分类，再对齐 product/merchant/cache task 默认值与非空约束。历史数据预检用临时 CHECK 表，已有奖励/时间字段有保留逻辑，不能当成一次普通表重建。
 - 残留：实际部署的 `flyway_schema_history` 未读取，无法确认生产/开发库已升级。MySQL DDL 不应仅凭 Java `@Transactional` 判定整体可回滚。
 - 测试：`e72686c` 新增 `FlywayMigrationIntegrationTest`，默认 opt-in；普通 `mvn test` 不会执行该类的迁移用例。对应测试见 T-DB。
@@ -236,7 +236,7 @@ rg -n '旧类名|旧方法名' src/main src/test
 
 ### 4.2 同日早期续审时的状态（历史快照）
 
-以下依据当时源码逐项复核，HEAD 未变化。新增实现属于后续工作区，无对应 commit hash；D04 是依据既有分层约定修正定性，并非当时新增代码。旧报告已由[当前项目风险与架构复核](../当前项目风险与架构复核_2026-10-11.md)替代；表内 D05、D08、D10 等历史结论已重新定性，不能作为当前待办。
+以下依据当时源码逐项复核，HEAD 未变化。新增实现属于后续工作区，无对应 commit hash；D04 是依据既有分层约定修正定性，并非当时新增代码。旧报告已由[当前项目风险与架构复核](当前项目风险与架构复核_2026-10-11.md)替代；表内 D05、D08、D10 等历史结论已重新定性，不能作为当前待办。
 
 | 编号 | 当前状态 | 相对首次记录的变化 / 当前证据 |
 | --- | --- | --- |
@@ -309,3 +309,16 @@ rg -n '旧类名|旧方法名' src/main src/test
 3. 对每条更新同时记录原问题、实际变化、类/方法、旧入口/残留、实现状态、测试变化与运行结果。目标缩小时明确记录限定范围，不用一个“已完成”替代测试证据。
 4. 测试记录写执行日期、基准 hash/未提交状态、命令、Tests/Failures/Errors/Skipped，以及环境与跳过原因。新增/编译/静态检查/运行通过必须分别记录。
 5. Git 无法证明的设计意图继续标为「无法确认」；待需求或新的设计记录补齐后再更新，不按架构惯例推测。
+
+## 8. 当前工作区补充核对（2026-10-26）
+
+以下是本次读取工作区源码与测试后补充的当前状态，不改变前文按日期保存的历史快照。项目文档统一迁入 [`docs/`](README.md)；对应当前业务说明见[架构索引](architecture/README.md)、[商品缓存](architecture/04-product-cache.md)、[取消来源与履约](architecture/03-order-lifecycle.md)和[Redis 学习记录](REDIS_LEARNING_LOG.md)。
+
+| 主题 | 当前工作区实现与记录 | 验证边界 |
+| --- | --- | --- |
+| 商品缓存失效 | 第 5 次 worker 删除失败转 FAILED；新建商品取得 ID 后登记提交后失效；SUCCESS 记录按创建满 7 天清理，每轮至多 1000 条，均见当前 `CacheInvalidationTask*` 源码 | 阈值、创建事务与 SUCCESS 清理有对应集成测试源码；本次静态核对没有运行测试 |
+| 库存基准与取消来源 | `product.stock_version` 与 `order_item.stock_version` 隔离库存基准变更和乐观锁 `version`；取消会写入用户、商家或超时来源，商家重复拒单按商家归属与来源判定是否是合法重放 | 主要代码为 `OrderItemService`、`OrderService`、`OrderCommandService` 与 `ProductMapper`；现有订单及 MySQL 集成测试涵盖基准重设后的跳过/回补和取消来源，不代表本次已执行 |
+| 骑手位置 | 新增独立 `RiderLocationService`，用 Redis GEO + 最近活跃 ZSET 写入位置、查半径内最近的最多 100 名骑手和清理超过 5 分钟的陈旧位置；仍未接入 HTTP Controller 或配送派单调用 | 单元测试、真实 Redis 集成测试和调度器测试源码已存在；本次没有连接 Redis 或运行测试 |
+| Redis 实验代码 | Redis Hash 购物车及 Set 关注实验和对应测试归到 `Experiment` 包；它们没有进入当前正式业务调用链 | 以 `Experiment` 包下的源码调用情况为准，不把实验能力列为购物车或推荐功能 |
+
+当前工作区这些未提交变化没有新增 Git commit 可供归因。测试文件存在只能说明已编写测试，不说明本次或之前运行通过。

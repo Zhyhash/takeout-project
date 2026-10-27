@@ -41,6 +41,11 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 商品业务应用服务。
+ * 负责商家商品创建、编辑、上下架、删除恢复与分页查询，以及用户商品详情查询。
+ * 同时承接与商品业务关联的图片上传校验和本地存储。
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -91,6 +96,7 @@ public class ProductService {
         }
         Product product = createProductEntity(createProductDTO);
         product.setVersion(0);
+        product.setStockVersion(0);
         try {
             productMapper.insert(product);
         } catch (DuplicateKeyException e) {
@@ -99,6 +105,8 @@ public class ProductService {
                     ACTIVE_PRODUCT_NAME_CONFLICT_MESSAGE
             );
         }
+        // 新 ID 可能已有空值缓存；与商品同事务记录失效，提交后再删除缓存。
+        productDetailCacheService.evictProductDetailCache(product.getId());
         return productConverter.toMerchantProductVO(product, category);
     }
 
@@ -162,13 +170,10 @@ public class ProductService {
                     loadProductDetailFromMysqlOnly(productId);
         }
 
-        if (productDetailCache == null ||
-                !Objects.equals(
-                        productDetailCache.getMerchantId(),
-                        MerchantContextHolder.getMerchantId())) {
+        if (productDetailCache == null) {
             throw new BusinessException(
                     ResultCodeEnum.BUSINESS_ERROR,
-                    "商品不存在或不属于当前商家"
+                    "商品不存在"
             );
         }
         return productConverter.toProductVO(productDetailCache);
@@ -227,6 +232,11 @@ public class ProductService {
                 .eq(Product::getId, productId)
                 .eq(Product::getMerchantId, MerchantContextHolder.getMerchantId())
                 .eq(Product::getIsDeleted, DeleteConstant.NOT_DELETED);
+        if (product.getStock() != null) {
+            // 显式重设库存才推进库存基准版本；即使数值与旧库存相同也视为重新确认基准。
+            // 与 version 乐观锁条件写在同一 UPDATE 中，避免版本条件与库存写入分离。
+            updateWrapper.setSql("stock_version = stock_version + 1");
+        }
         int row = productMapper.update(product, updateWrapper);
         if (row != 1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
@@ -317,18 +327,34 @@ public class ProductService {
     }
 
     //NOTE：分页查询商品
-    public PageInfo<MerchantProductVO> listProducts(int pageNum, int pageSize, Integer status, Long categoryId) {
+    public PageInfo<MerchantProductVO> listProducts(int pageNum, int pageSize,
+            Integer status, Long categoryId, String keyword) {
         PageHelper.startPage(pageNum, pageSize);
 
+        List<Product> products = productMapper.selectList(
+                Wrappers.<Product>lambdaQuery()
+                        .eq(Product::getMerchantId,
+                                MerchantContextHolder.getMerchantId())
+                        .eq(Product::getIsDeleted,
+                                DeleteConstant.NOT_DELETED)
+                        .eq(status != null,
+                                Product::getStatus, status)
+                        .eq(categoryId != null,
+                                Product::getCategoryId, categoryId)
+                        .like(keyword != null && !keyword.isBlank(),
+                                Product::getProductName, keyword)
+                        .orderByDesc(Product::getId)
+        );
 
-        List<Product> products = productMapper.selectList(Wrappers.<Product>lambdaQuery()
-                .eq(Product::getMerchantId, MerchantContextHolder.getMerchantId())
-                .eq(Product::getIsDeleted, DeleteConstant.NOT_DELETED)
-                .eq(status != null, Product::getStatus, status)
-                .eq(categoryId != null, Product::getCategoryId, categoryId));
         PageInfo<Product> productPage = new PageInfo<>(products);
         Map<Long, Category> categoryMap = getCategoryMap(products);
-        return productPage.convert(product -> productConverter.toMerchantProductVO(product, categoryMap.get(product.getCategoryId())));
+
+        return productPage.convert(product ->
+                productConverter.toMerchantProductVO(
+                        product,
+                        categoryMap.get(product.getCategoryId())
+                )
+        );
     }
 
     private Map<Long, Category> getCategoryMap(List<Product> products) {

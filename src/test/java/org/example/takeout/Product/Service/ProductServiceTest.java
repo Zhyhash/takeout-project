@@ -1,5 +1,12 @@
 package org.example.takeout.Product.Service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.github.pagehelper.PageHelper;
+import com.github.pagehelper.PageInfo;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.Category.Entity.Category;
 import org.example.takeout.Category.Service.CategoryService;
 import org.example.takeout.Common.Constants.DeleteConstant;
@@ -16,10 +23,15 @@ import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mapstruct.factory.Mappers;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -27,6 +39,8 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -35,6 +49,13 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class ProductServiceTest {
+
+    @BeforeAll
+    static void initializeMybatisMetadata() {
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+                Product.class);
+    }
 
     private static final Long MERCHANT_ID = 201L;
     private static final Long PRODUCT_ID = 301L;
@@ -61,6 +82,7 @@ class ProductServiceTest {
     @AfterEach
     void tearDown() {
         MerchantContextHolder.clear();
+        PageHelper.clearPage();
     }
 
     @Test
@@ -107,6 +129,7 @@ class ProductServiceTest {
 
         assertEquals("当前店铺已存在同名商品", exception.getMessage());
         verify(productMapper).insert(product);
+        verifyNoInteractions(productDetailCacheService);
     }
 
     @Test
@@ -124,6 +147,7 @@ class ProductServiceTest {
             Product product = invocation.getArgument(0);
             assertEquals(ProductStatusEnum.OFF_SALE.getCode(), product.getStatus());
             assertEquals(DeleteConstant.NOT_DELETED, product.getIsDeleted());
+            assertEquals(0, product.getStockVersion());
             assertEquals(ProductService.DEFAULT_PRODUCT_IMAGE_URL, product.getImageUrl());
             product.setId(PRODUCT_ID);
             return 1;
@@ -133,6 +157,30 @@ class ProductServiceTest {
 
         assertEquals(PRODUCT_ID, created.getId());
         assertEquals(0, created.getVersion());
+        verify(productDetailCacheService).evictProductDetailCache(PRODUCT_ID);
+    }
+
+    @Test
+    void createProductPropagatesInvalidationRequestFailureBeforeReturningResult() {
+        Category category = new Category();
+        category.setId(1L);
+        CreateProductDTO dto = new CreateProductDTO();
+        dto.setCategoryId(category.getId());
+        Product product = new Product();
+        when(categoryService.lockActiveCategory(category.getId(), MERCHANT_ID)).thenReturn(category);
+        when(productConverter.toProduct(dto, MERCHANT_ID)).thenReturn(product);
+        when(productMapper.insert(product)).thenAnswer(invocation -> {
+            product.setId(PRODUCT_ID);
+            return 1;
+        });
+        IllegalStateException failure = new IllegalStateException("失效任务写入失败");
+        doThrow(failure).when(productDetailCacheService).evictProductDetailCache(PRODUCT_ID);
+
+        assertSame(failure, assertThrows(IllegalStateException.class,
+                () -> productService.createProduct(dto)));
+
+        verify(productMapper).insert(product);
+        verify(productConverter, never()).toMerchantProductVO(any(), any());
     }
 
     @Test
@@ -176,16 +224,16 @@ class ProductServiceTest {
     }
 
     @Test
-    void merchantStockResetMovesOnSaleProductToSaleOut() {
+    void merchantStockResetMovesOnSaleProductToSaleOutAndAdvancesStockVersion() {
         UpdateProductDTO dto = new UpdateProductDTO();
         dto.setStock(0);
         dto.setVersion(4);
 
-        Product currentProduct = product(ProductStatusEnum.ON_SALE.getCode(), 6, 4);
+        Product currentProduct = product(ProductStatusEnum.ON_SALE.getCode(), 6, 4, 2);
         Product updateEntity = new Product();
         updateEntity.setStock(0);
         updateEntity.setVersion(4);
-        Product updatedProduct = product(ProductStatusEnum.SALE_OUT.getCode(), 0, 5);
+        Product updatedProduct = product(ProductStatusEnum.SALE_OUT.getCode(), 0, 5, 3);
 
         when(productConverter.toProduct(dto)).thenReturn(updateEntity);
         when(productMapper.selectOne(any())).thenReturn(currentProduct, updatedProduct);
@@ -195,7 +243,110 @@ class ProductServiceTest {
         productService.updateProduct(PRODUCT_ID, dto);
 
         assertEquals(ProductStatusEnum.SALE_OUT.getCode(), updateEntity.getStatus());
+        verify(productMapper).update(any(Product.class), wrapperWithStockVersionIncrement());
         verify(productDetailCacheService).evictProductDetailCache(PRODUCT_ID);
+    }
+
+    @Test
+    void merchantStockResetAdvancesStockVersionEvenWhenValueIsUnchanged() {
+        UpdateProductDTO dto = new UpdateProductDTO();
+        dto.setStock(6);
+        dto.setVersion(4);
+
+        Product currentProduct = product(ProductStatusEnum.ON_SALE.getCode(), 6, 4, 2);
+        Product updateEntity = new Product();
+        updateEntity.setStock(6);
+        updateEntity.setVersion(4);
+        Product updatedProduct = product(ProductStatusEnum.ON_SALE.getCode(), 6, 5, 3);
+
+        when(productConverter.toProduct(dto)).thenReturn(updateEntity);
+        when(productMapper.selectOne(any())).thenReturn(currentProduct, updatedProduct);
+        when(productMapper.update(any(Product.class), any())).thenReturn(1);
+        when(categoryService.getCategory(1L)).thenReturn(new Category());
+
+        productService.updateProduct(PRODUCT_ID, dto);
+
+        verify(productMapper).update(any(Product.class), wrapperWithStockVersionIncrement());
+        verify(productDetailCacheService).evictProductDetailCache(PRODUCT_ID);
+    }
+
+    @Test
+    void merchantNonStockUpdateDoesNotAdvanceStockVersion() {
+        UpdateProductDTO dto = new UpdateProductDTO();
+        dto.setProductName("只改名称");
+        dto.setPrice(new BigDecimal("12.34"));
+        dto.setVersion(4);
+
+        Product currentProduct = product(ProductStatusEnum.ON_SALE.getCode(), 6, 4, 2);
+        Product updateEntity = new Product();
+        updateEntity.setProductName(dto.getProductName());
+        updateEntity.setPrice(dto.getPrice());
+        updateEntity.setVersion(4);
+        Product updatedProduct = product(ProductStatusEnum.ON_SALE.getCode(), 6, 5, 2);
+        updatedProduct.setProductName(dto.getProductName());
+
+        when(productConverter.toProduct(dto)).thenReturn(updateEntity);
+        when(productMapper.selectOne(any())).thenReturn(currentProduct, updatedProduct);
+        when(productMapper.update(any(Product.class), any())).thenReturn(1);
+        when(categoryService.getCategory(1L)).thenReturn(new Category());
+
+        productService.updateProduct(PRODUCT_ID, dto);
+
+        verify(productMapper).update(any(Product.class), wrapperWithoutStockVersionIncrement());
+        verify(productDetailCacheService).evictProductDetailCache(PRODUCT_ID);
+    }
+
+    @Test
+    void listProductsFiltersByKeywordAndPreservesMerchantVisibilityAndVoConversion() {
+        Product product = product(ProductStatusEnum.ON_SALE.getCode(), 4, 2);
+        Category category = new Category();
+        category.setId(1L);
+        category.setCategoryName("便当");
+        MerchantProductVO expected = new MerchantProductVO();
+        expected.setId(PRODUCT_ID);
+        expected.setProductName("鸡腿便当");
+        when(productMapper.selectList(any())).thenReturn(List.of(product));
+        when(categoryService.getCategoryMap(List.of(1L), MERCHANT_ID))
+                .thenReturn(Map.of(1L, category));
+        when(productConverter.toMerchantProductVO(product, category)).thenReturn(expected);
+
+        PageInfo<MerchantProductVO> result =
+                productService.listProducts(1, 10, null, null, "便当");
+
+        assertEquals(List.of(expected), result.getList());
+        verify(productConverter).toMerchantProductVO(product, category);
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        ArgumentCaptor<Wrapper<Product>> wrapperCaptor =
+                ArgumentCaptor.forClass((Class) Wrapper.class);
+        verify(productMapper).selectList(wrapperCaptor.capture());
+        AbstractWrapper<?, ?, ?> wrapper = (AbstractWrapper<?, ?, ?>) wrapperCaptor.getValue();
+        String sqlSegment = wrapper.getSqlSegment().toUpperCase();
+        assertTrue(sqlSegment.contains("PRODUCT_NAME LIKE"));
+        assertTrue(sqlSegment.contains("ORDER BY ID DESC"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(MERCHANT_ID));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(DeleteConstant.NOT_DELETED));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("%便当%"));
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"", " ", "\t"})
+    void listProductsOmitsKeywordFilterForNullOrBlankKeyword(String keyword) {
+        Product product = product(ProductStatusEnum.ON_SALE.getCode(), 4, 2);
+        when(productMapper.selectList(any())).thenReturn(List.of(product));
+        when(categoryService.getCategoryMap(List.of(1L), MERCHANT_ID)).thenReturn(Map.of());
+
+        productService.listProducts(1, 10, null, null, keyword);
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        ArgumentCaptor<Wrapper<Product>> wrapperCaptor =
+                ArgumentCaptor.forClass((Class) Wrapper.class);
+        verify(productMapper).selectList(wrapperCaptor.capture());
+        AbstractWrapper<?, ?, ?> wrapper = (AbstractWrapper<?, ?, ?>) wrapperCaptor.getValue();
+        assertFalse(wrapper.getSqlSegment().toUpperCase().contains("PRODUCT_NAME LIKE"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(MERCHANT_ID));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(DeleteConstant.NOT_DELETED));
     }
 
     @Test
@@ -225,21 +376,31 @@ class ProductServiceTest {
     }
 
     @Test
-    void getProductDetailRejectsCachedProductOwnedByAnotherMerchant() {
+    void getProductDetailReturnsProductOwnedByAnotherMerchantWithoutMerchantContext() {
         ProductDetailCacheDTO cachedProduct = new ProductDetailCacheDTO();
         cachedProduct.setId(PRODUCT_ID);
         cachedProduct.setMerchantId(MERCHANT_ID + 1);
+        cachedProduct.setProductName("公共字段商品");
+        cachedProduct.setPrice(new BigDecimal("15.50"));
         cachedProduct.setInStock(true);
+        cachedProduct.setStatus(ProductStatusEnum.ON_SALE.getCode());
+        ProductVO expected = new ProductVO();
+        expected.setId(PRODUCT_ID);
+        expected.setProductName("公共字段商品");
+        expected.setPrice(new BigDecimal("15.50"));
+        expected.setInStock(true);
+        expected.setStatus(ProductStatusEnum.ON_SALE.getCode());
+
         when(productDetailCacheService.getProductDetailCache(eq(PRODUCT_ID), any()))
                 .thenReturn(cachedProduct);
+        when(productConverter.toProductVO(cachedProduct)).thenReturn(expected);
+        MerchantContextHolder.clear();
 
-        BusinessException exception = assertThrows(
-                BusinessException.class,
-                () -> productService.getProductDetail(PRODUCT_ID)
-        );
+        ProductVO result = productService.getProductDetail(PRODUCT_ID);
 
-        assertEquals("商品不存在或不属于当前商家", exception.getMessage());
-        verify(productConverter, never()).toProductVO(any(ProductDetailCacheDTO.class));
+        assertSame(expected, result);
+        verify(productDetailCacheService).getProductDetailCache(eq(PRODUCT_ID), any());
+        verify(productConverter).toProductVO(cachedProduct);
     }
 
     @Test
@@ -272,7 +433,7 @@ class ProductServiceTest {
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> productService.getProductDetail(PRODUCT_ID));
 
-        assertEquals("商品不存在或不属于当前商家", exception.getMessage());
+        assertEquals("商品不存在", exception.getMessage());
         verifyNoInteractions(productMapper, productConverter);
     }
 
@@ -368,6 +529,10 @@ class ProductServiceTest {
     }
 
     private Product product(Integer status, Integer stock, Integer version) {
+        return product(status, stock, version, 0);
+    }
+
+    private Product product(Integer status, Integer stock, Integer version, Integer stockVersion) {
         Product product = new Product();
         product.setId(PRODUCT_ID);
         product.setMerchantId(MERCHANT_ID);
@@ -377,6 +542,23 @@ class ProductServiceTest {
         product.setStatus(status);
         product.setStock(stock);
         product.setVersion(version);
+        product.setStockVersion(stockVersion);
         return product;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Wrapper<Product> wrapperWithStockVersionIncrement() {
+        return argThat(wrapper -> {
+            String sqlSet = ((AbstractWrapper<?, ?, ?>) wrapper).getSqlSet();
+            return sqlSet != null && sqlSet.contains("stock_version = stock_version + 1");
+        });
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Wrapper<Product> wrapperWithoutStockVersionIncrement() {
+        return argThat(wrapper -> {
+            String sqlSet = ((AbstractWrapper<?, ?, ?>) wrapper).getSqlSet();
+            return sqlSet == null || !sqlSet.contains("stock_version = stock_version + 1");
+        });
     }
 }

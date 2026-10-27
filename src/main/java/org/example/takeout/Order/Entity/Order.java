@@ -46,6 +46,12 @@ public class Order {
     private Integer status;
 
     /**
+     * 订单取消来源
+     * 1：用户主动取消，2：商家拒单，3：系统超时取消，4：平台取消
+     */
+    private Integer cancelSource;
+
+    /**
      * 收货人姓名
      */
     private String receiverName;

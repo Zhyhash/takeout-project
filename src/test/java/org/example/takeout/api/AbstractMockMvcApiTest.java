@@ -15,7 +15,8 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.Service.CustomerShopQueryService;
-import org.example.takeout.Merchant.Service.MerchantService;
+import org.example.takeout.Merchant.Service.FulfillmentService;
+import org.example.takeout.Merchant.Service.MerchantAccountService;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
 import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
@@ -26,6 +27,7 @@ import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Service.ProductService;
 import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Rider.Service.RiderService;
+import org.example.takeout.User.Service.BrowseHistoryService;
 import org.example.takeout.User.Service.UserService;
 import org.example.takeout.User.VO.LoginVO;
 import org.junit.jupiter.api.AfterEach;
@@ -67,7 +69,10 @@ abstract class AbstractMockMvcApiTest {
     protected UserService userService;
 
     @MockitoBean
-    protected MerchantService merchantService;
+    protected MerchantAccountService merchantAccountService;
+
+    @MockitoBean
+    protected FulfillmentService fulfillmentService;
 
     @MockitoBean
     protected CustomerShopQueryService merchantQueryService;
@@ -77,6 +82,9 @@ abstract class AbstractMockMvcApiTest {
 
     @MockitoBean
     protected ProductService productService;
+
+    @MockitoBean
+    protected BrowseHistoryService browseHistoryService;
 
     @MockitoBean
     protected CartService cartService;
@@ -101,8 +109,8 @@ abstract class AbstractMockMvcApiTest {
 
     @AfterEach
     void resetMocks() {
-        reset(userService, merchantService, merchantQueryService, categoryService,
-                productService, cartService, orderService, orderCreateRateLimiter,
+        reset(userService, merchantAccountService, fulfillmentService, merchantQueryService, categoryService,
+                productService, browseHistoryService, cartService, orderService, orderCreateRateLimiter,
                 deliveryTaskService, riderService);
     }
 

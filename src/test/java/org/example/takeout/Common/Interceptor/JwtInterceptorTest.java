@@ -8,7 +8,7 @@ import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.example.takeout.Merchant.Service.MerchantService;
+import org.example.takeout.Merchant.Service.MerchantAccountService;
 import org.example.takeout.Rider.Service.RiderService;
 import org.example.takeout.User.Service.UserService;
 import org.junit.jupiter.api.AfterEach;
@@ -24,10 +24,10 @@ class JwtInterceptorTest {
 
     private final JWTUtils jwtUtils = mock(JWTUtils.class);
     private final UserService userService = mock(UserService.class);
-    private final MerchantService merchantService = mock(MerchantService.class);
+    private final MerchantAccountService merchantAccountService = mock(MerchantAccountService.class);
     private final RiderService riderService = mock(RiderService.class);
     private final JwtInterceptor interceptor =
-            new JwtInterceptor(jwtUtils, userService, merchantService, riderService);
+            new JwtInterceptor(jwtUtils, userService, merchantAccountService, riderService);
 
     @AfterEach
     void clearContext() {
@@ -52,7 +52,7 @@ class JwtInterceptorTest {
         assertNull(UserContextHolder.getUserId());
         assertNull(MerchantContextHolder.getMerchantId());
         verify(riderService).requireActiveRiderId();
-        verifyNoInteractions(userService, merchantService);
+        verifyNoInteractions(userService, merchantAccountService);
 
         interceptor.afterCompletion(request, new MockHttpServletResponse(), new Object(), null);
         assertNull(RiderContextHolder.getRiderId());
@@ -71,7 +71,7 @@ class JwtInterceptorTest {
         assertNull(UserContextHolder.getUserId());
         assertNull(MerchantContextHolder.getMerchantId());
         assertNull(RiderContextHolder.getRiderId());
-        verifyNoInteractions(userService, merchantService, riderService);
+        verifyNoInteractions(userService, merchantAccountService, riderService);
     }
 
     @Test
@@ -100,7 +100,7 @@ class JwtInterceptorTest {
                 () -> interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
         assertEquals("用户账号已禁用或不存在，请重新登录", exception.getMessage());
         verify(userService).requireActiveUserId();
-        verifyNoInteractions(merchantService, riderService);
+        verifyNoInteractions(merchantAccountService, riderService);
         assertNull(UserContextHolder.getUserId());
         assertNull(MerchantContextHolder.getMerchantId());
         assertNull(RiderContextHolder.getRiderId());
@@ -109,7 +109,7 @@ class JwtInterceptorTest {
     @Test
     void merchantTokenRequiresExistingAccountAndClearsContextAfterCompletion() {
         when(jwtUtils.parseToken("merchant-token")).thenReturn(claims(201L, AuthRole.MERCHANT));
-        when(merchantService.requireActiveMerchantId()).thenAnswer(invocation -> {
+        when(merchantAccountService.requireActiveMerchantId()).thenAnswer(invocation -> {
             assertEquals(201L, MerchantContextHolder.getMerchantId());
             return 201L;
         });
@@ -120,7 +120,7 @@ class JwtInterceptorTest {
         assertEquals(201L, MerchantContextHolder.getMerchantId());
         assertNull(UserContextHolder.getUserId());
         assertNull(RiderContextHolder.getRiderId());
-        verify(merchantService).requireActiveMerchantId();
+        verify(merchantAccountService).requireActiveMerchantId();
         verifyNoInteractions(userService, riderService);
 
         interceptor.afterCompletion(request, new MockHttpServletResponse(), new Object(), null);
@@ -130,14 +130,14 @@ class JwtInterceptorTest {
     @Test
     void deletedMerchantWithExistingTokenIsRejectedAndAllContextsAreCleared() {
         when(jwtUtils.parseToken("merchant-token")).thenReturn(claims(201L, AuthRole.MERCHANT));
-        when(merchantService.requireActiveMerchantId()).thenThrow(new AuthException("商家账号不存在"));
+        when(merchantAccountService.requireActiveMerchantId()).thenThrow(new AuthException("商家账号不存在"));
         MockHttpServletRequest request = mappedRequest("GET", "/merchant/info");
         request.addHeader("Authorization", "Bearer merchant-token");
 
         AuthException exception = assertThrows(AuthException.class,
                 () -> interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
         assertEquals("商家账号不存在", exception.getMessage());
-        verify(merchantService).requireActiveMerchantId();
+        verify(merchantAccountService).requireActiveMerchantId();
         verifyNoInteractions(userService, riderService);
         assertNull(UserContextHolder.getUserId());
         assertNull(MerchantContextHolder.getMerchantId());
@@ -155,7 +155,7 @@ class JwtInterceptorTest {
                 () -> interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
         assertEquals("骑手账号已禁用", exception.getMessage());
         verify(riderService).requireActiveRiderId();
-        verifyNoInteractions(userService, merchantService);
+        verifyNoInteractions(userService, merchantAccountService);
         assertNull(UserContextHolder.getUserId());
         assertNull(MerchantContextHolder.getMerchantId());
         assertNull(RiderContextHolder.getRiderId());
@@ -171,7 +171,7 @@ class JwtInterceptorTest {
                 () -> interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
 
         assertEquals("无法识别请求资源", exception.getMessage());
-        verifyNoInteractions(userService, merchantService, riderService);
+        verifyNoInteractions(userService, merchantAccountService, riderService);
         assertNull(UserContextHolder.getUserId());
         assertNull(MerchantContextHolder.getMerchantId());
         assertNull(RiderContextHolder.getRiderId());
@@ -183,7 +183,7 @@ class JwtInterceptorTest {
             MockHttpServletRequest request = new MockHttpServletRequest("POST", "/" + role + "/login");
             assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
         }
-        verifyNoInteractions(jwtUtils, userService, merchantService, riderService);
+        verifyNoInteractions(jwtUtils, userService, merchantAccountService, riderService);
     }
 
     @Test
@@ -195,7 +195,7 @@ class JwtInterceptorTest {
 
             assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
         }
-        verifyNoInteractions(jwtUtils, userService, merchantService, riderService);
+        verifyNoInteractions(jwtUtils, userService, merchantAccountService, riderService);
     }
 
     @Test
@@ -207,7 +207,7 @@ class JwtInterceptorTest {
             assertThrows(AuthException.class,
                     () -> interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
         }
-        verifyNoInteractions(jwtUtils, userService, merchantService, riderService);
+        verifyNoInteractions(jwtUtils, userService, merchantAccountService, riderService);
     }
 
     private MockHttpServletRequest mappedRequest(String method, String path) {

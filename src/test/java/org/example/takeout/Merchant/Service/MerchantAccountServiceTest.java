@@ -15,7 +15,6 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
-import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
@@ -25,13 +24,14 @@ import org.example.takeout.Merchant.Mapper.MerchantConverter;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Merchant.VO.MerchantUpdateVO;
 import org.example.takeout.Merchant.VO.loginVO;
-import org.example.takeout.Order.Service.OrderCommandService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -45,7 +45,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
-class MerchantServiceTest {
+class MerchantAccountServiceTest {
 
     @BeforeAll
     static void initializeMybatisMetadata() {
@@ -62,14 +62,10 @@ class MerchantServiceTest {
     @Mock
     private CategoryCommandService categoryCommandService;
     @Mock
-    private OrderCommandService orderCommandService;
-    @Mock
-    private DeliveryTaskService deliveryTaskService;
-    @Mock
     private LoginAttemptLimiter loginAttemptLimiter;
 
     @InjectMocks
-    private MerchantService merchantService;
+    private MerchantAccountService merchantAccountService;
 
     @AfterEach
     void clearContext() {
@@ -78,7 +74,7 @@ class MerchantServiceTest {
 
     @Test
     void requireActiveMerchantIdRejectsMissingIdentityBeforeQueryingDatabase() {
-        assertThrows(AuthException.class, () -> merchantService.requireActiveMerchantId());
+        assertThrows(AuthException.class, () -> merchantAccountService.requireActiveMerchantId());
         verifyNoInteractions(merchantMapper);
     }
 
@@ -87,7 +83,7 @@ class MerchantServiceTest {
         MerchantContextHolder.setMerchantId(201L);
         when(merchantMapper.selectById(201L)).thenReturn(null);
 
-        assertThrows(AuthException.class, () -> merchantService.requireActiveMerchantId());
+        assertThrows(AuthException.class, () -> merchantAccountService.requireActiveMerchantId());
     }
 
     @ParameterizedTest
@@ -99,7 +95,39 @@ class MerchantServiceTest {
         merchant.setStatus(status.getCode());
         when(merchantMapper.selectById(201L)).thenReturn(merchant);
 
-        assertEquals(201L, merchantService.requireActiveMerchantId());
+        assertEquals(201L, merchantAccountService.requireActiveMerchantId());
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(ints = {-1, 2, Integer.MIN_VALUE, Integer.MAX_VALUE})
+    void updateStatusRejectsInvalidStatusBeforeAccessingDatabase(Integer manualStatus) {
+        MerchantContextHolder.setMerchantId(201L);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> merchantAccountService.updateStatus(manualStatus));
+
+        assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
+        assertEquals("商家营业状态不合法", exception.getMessage());
+        verifyNoInteractions(merchantMapper);
+    }
+
+    @ParameterizedTest
+    @EnumSource(MerchantStatusEnum.class)
+    void updateStatusPersistsValidStatus(MerchantStatusEnum status) {
+        MerchantContextHolder.setMerchantId(201L);
+        Merchant merchant = new Merchant();
+        merchant.setId(201L);
+        merchant.setStatus(status == MerchantStatusEnum.BUSINESS_OPEN
+                ? MerchantStatusEnum.BUSINESS_CLOSED.getCode()
+                : MerchantStatusEnum.BUSINESS_OPEN.getCode());
+        when(merchantMapper.selectById(201L)).thenReturn(merchant);
+        when(merchantMapper.updateById(merchant)).thenReturn(1);
+
+        merchantAccountService.updateStatus(status.getCode());
+
+        assertEquals(status.getCode(), merchant.getStatus());
+        verify(merchantMapper).updateById(merchant);
     }
 
     @Test
@@ -113,7 +141,7 @@ class MerchantServiceTest {
             return 1;
         });
 
-        merchantService.register(dto);
+        merchantAccountService.register(dto);
 
         assertTrue(BCrypt.matches(dto.getPassword(), merchant.getPassword()));
         assertEquals(MerchantStatusEnum.BUSINESS_CLOSED.getCode(), merchant.getStatus());
@@ -138,7 +166,7 @@ class MerchantServiceTest {
         when(merchantMapper.updateById(merchant)).thenReturn(1);
         when(merchantConverter.toMerchantUpdateVO(merchant)).thenReturn(expected);
 
-        assertSame(expected, merchantService.updateMerchant(dto));
+        assertSame(expected, merchantAccountService.updateMerchant(dto));
 
         ArgumentCaptor<Wrapper<Merchant>> captor = ArgumentCaptor.forClass((Class) Wrapper.class);
         verify(merchantMapper).selectCount(captor.capture());
@@ -159,7 +187,7 @@ class MerchantServiceTest {
         when(merchantConverter.toMerchant(dto, merchant)).thenReturn(merchant);
         when(merchantMapper.updateById(merchant)).thenReturn(1);
 
-        merchantService.updateMerchant(dto);
+        merchantAccountService.updateMerchant(dto);
 
         verify(merchantMapper, never()).selectCount(any());
         verify(merchantMapper).updateById(merchant);
@@ -174,7 +202,7 @@ class MerchantServiceTest {
         when(merchantMapper.selectList(any())).thenReturn(List.of(conflict));
 
         BusinessException exception = assertThrows(BusinessException.class,
-                () -> merchantService.register(dto));
+                () -> merchantAccountService.register(dto));
 
         assertEquals("用户名已经存在", exception.getMessage());
         assertEquals(ResultCodeEnum.BUSINESS_ERROR, exception.getCodeEnum());
@@ -191,7 +219,7 @@ class MerchantServiceTest {
         when(merchantMapper.selectList(any())).thenReturn(List.of(conflict));
 
         BusinessException exception = assertThrows(BusinessException.class,
-                () -> merchantService.register(dto));
+                () -> merchantAccountService.register(dto));
 
         assertEquals("手机号已经存在", exception.getMessage());
         assertEquals(ResultCodeEnum.BUSINESS_ERROR, exception.getCodeEnum());
@@ -208,7 +236,7 @@ class MerchantServiceTest {
         when(merchantMapper.insert(merchant)).thenThrow(new DuplicateKeyException("duplicate phone"));
 
         BusinessException exception = assertThrows(BusinessException.class,
-                () -> merchantService.register(dto));
+                () -> merchantAccountService.register(dto));
 
         assertEquals("用户名或手机号已经存在", exception.getMessage());
         assertEquals(ResultCodeEnum.BUSINESS_ERROR, exception.getCodeEnum());
@@ -222,7 +250,7 @@ class MerchantServiceTest {
         when(merchantMapper.selectOne(any())).thenReturn(merchant);
         when(jwtUtils.createToken(201L, AuthRole.MERCHANT)).thenReturn("merchant-token");
 
-        loginVO result = merchantService.login(dto);
+        loginVO result = merchantAccountService.login(dto);
 
         assertEquals(201L, result.getId());
         assertEquals("merchant-token", result.getToken());
@@ -235,7 +263,7 @@ class MerchantServiceTest {
         MerchantLoginDTO dto = loginDTO();
         when(merchantMapper.selectOne(any())).thenReturn(null);
 
-        assertThrows(BusinessException.class, () -> merchantService.login(dto));
+        assertThrows(BusinessException.class, () -> merchantAccountService.login(dto));
 
         verify(loginAttemptLimiter).recordFailure(AuthRole.MERCHANT, dto.getUsername());
         verify(jwtUtils, never()).createToken(anyLong(), anyString());
@@ -246,7 +274,7 @@ class MerchantServiceTest {
         MerchantLoginDTO dto = loginDTO();
         when(merchantMapper.selectOne(any())).thenReturn(merchant("another-password"));
 
-        assertThrows(BusinessException.class, () -> merchantService.login(dto));
+        assertThrows(BusinessException.class, () -> merchantAccountService.login(dto));
 
         verify(loginAttemptLimiter).recordFailure(AuthRole.MERCHANT, dto.getUsername());
         verify(jwtUtils, never()).createToken(anyLong(), anyString());
@@ -259,7 +287,7 @@ class MerchantServiceTest {
         when(jwtUtils.createToken(201L, AuthRole.MERCHANT))
                 .thenThrow(new IllegalStateException("token signing failed"));
 
-        assertThrows(IllegalStateException.class, () -> merchantService.login(dto));
+        assertThrows(IllegalStateException.class, () -> merchantAccountService.login(dto));
 
         verify(loginAttemptLimiter).clearFailures(AuthRole.MERCHANT, dto.getUsername());
         verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());
@@ -272,7 +300,7 @@ class MerchantServiceTest {
                 .when(loginAttemptLimiter)
                 .checkAllowed(AuthRole.MERCHANT, dto.getUsername());
 
-        assertThrows(LoginRateLimitException.class, () -> merchantService.login(dto));
+        assertThrows(LoginRateLimitException.class, () -> merchantAccountService.login(dto));
 
         verifyNoInteractions(merchantMapper, jwtUtils);
         verify(loginAttemptLimiter, never()).recordFailure(anyString(), anyString());

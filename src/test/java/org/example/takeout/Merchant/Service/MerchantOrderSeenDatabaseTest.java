@@ -88,6 +88,7 @@ class MerchantOrderSeenDatabaseTest {
                     original_amount DECIMAL(10, 2),
                     discount_amount DECIMAL(10, 2),
                     status INT,
+                    cancel_source INT,
                     receiver_name VARCHAR(20),
                     receiver_phone VARCHAR(20),
                     receiver_address VARCHAR(255),
@@ -110,7 +111,7 @@ class MerchantOrderSeenDatabaseTest {
                 Mappers.getMapper(MerchantOrderConverter.class), orderItemService,
                 orderService, new OrderProductSummaryBuilder());
         mockMvc = MockMvcBuilders.standaloneSetup(new MerchantControllerSold(
-                mock(MerchantService.class), viewService, sseService)).build();
+                mock(MerchantAccountService.class), mock(FulfillmentService.class), viewService, sseService)).build();
         MerchantContextHolder.setMerchantId(MERCHANT_ID);
     }
 

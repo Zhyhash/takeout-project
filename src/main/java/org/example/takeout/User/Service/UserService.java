@@ -26,6 +26,10 @@ import java.util.List;
 
 import static org.example.takeout.Common.Utils.Tool.Random.random;
 
+/**
+ * 用户账号与身份认证服务。
+ * 负责注册时初始化账号及购物车、登录认证与 Token 签发，并复核当前用户的账号状态。
+ */
 @Service
 @RequiredArgsConstructor
 public class UserService {

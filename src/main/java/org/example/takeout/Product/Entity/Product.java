@@ -24,6 +24,13 @@ public class Product {
     @TableField(updateStrategy = FieldStrategy.NOT_NULL)
     private Integer stock;
 
+    /**
+     * 库存基准版本。仅商家显式重设库存时递增，普通订单预扣/回补及商品其他字段修改不改变该值。
+     * 不使用 updateStrategy 为 NOT_NULL 的常规更新，避免误伴随其他字段更新。
+     */
+    @TableField(updateStrategy = FieldStrategy.NEVER)
+    private Integer stockVersion;
+
     private Long merchantId;
 
     @TableLogic

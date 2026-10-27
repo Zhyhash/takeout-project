@@ -21,6 +21,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+/**
+ * 购物车结算准备服务。
+ * 面向订单创建流程，汇总购物车条目、商品及商家信息，筛选当前可下单的条目。
+ * 只提供结算所需的数据，不扣减购物车数量或创建订单。
+ */
 @Service
 @RequiredArgsConstructor
 public class CartCheckoutService {

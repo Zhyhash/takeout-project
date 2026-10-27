@@ -29,18 +29,8 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** Real H2 mapper and Spring transactions; only the external SSE notification is replaced. */
 @SpringJUnitConfig(OrderPaymentNotificationTransactionTest.TestConfig.class)
@@ -67,6 +57,7 @@ class OrderPaymentNotificationTransactionTest {
                     user_id BIGINT NOT NULL,
                     merchant_id BIGINT NOT NULL,
                     status INT NOT NULL,
+                    cancel_source INT,
                     create_time TIMESTAMP NOT NULL,
                     pay_time TIMESTAMP,
                     merchant_seen BOOLEAN NOT NULL DEFAULT FALSE

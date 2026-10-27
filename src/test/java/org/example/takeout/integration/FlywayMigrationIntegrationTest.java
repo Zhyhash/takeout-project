@@ -44,7 +44,7 @@ class FlywayMigrationIntegrationTest {
 
     private static final String BASELINE_VERSION = "20261008";
     private static final String VERSION_14 = "20261014";
-    private static final String LATEST_VERSION = "20261017";
+    private static final String LATEST_VERSION = "20261026";
     private static final String HISTORICAL_TIME = "2024-01-02 03:04:05";
     private static final List<String> BUSINESS_TABLES = List.of(
             "cache_invalidation_task", "cart", "cart_header", "category", "delivery_task",
@@ -70,7 +70,7 @@ class FlywayMigrationIntegrationTest {
             Map<String, List<List<String>>> before = database.businessRows();
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(7);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(9);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SELECT user_id, merchant_id FROM cart_header ORDER BY user_id"))
@@ -88,9 +88,15 @@ class FlywayMigrationIntegrationTest {
                     .isEqualTo(before.get("delivery_task"));
             for (String table : List.of("user", "cart", "rider", "category", "merchant", "product",
                     "cache_invalidation_task", "orders", "order_item")) {
-                assertThat(database.rows("SELECT * FROM `" + table + "` ORDER BY 1"))
+                // Compare only columns that existed before the upgrade; later migrations add columns.
+                assertThat(database.rows("SELECT " + baselineSelectColumns(table)
+                                + " FROM `" + table + "` ORDER BY 1"))
                         .as("historical rows in %s", table).isEqualTo(before.get(table));
             }
+            assertThat(database.rows("SELECT stock_version FROM product WHERE id = 30"))
+                    .containsExactly(row("0"));
+            assertThat(database.scalar("SELECT COUNT(*) FROM order_item WHERE stock_version <> 0"))
+                    .isEqualTo("0");
             assertLatestColumnDefinitions(database);
 
             insertDefaultedMerchant(database);
@@ -138,7 +144,7 @@ class FlywayMigrationIntegrationTest {
                     + HISTORICAL_TIME + "' WHERE id = 52");
             database.execute("UPDATE delivery_task SET update_time = NULL WHERE id = 53");
 
-            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(7);
+            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(9);
 
             assertThat(database.rows("SELECT id, delivery_reward, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM delivery_task ORDER BY id"))
@@ -228,7 +234,7 @@ class FlywayMigrationIntegrationTest {
             assertThat(database.rows("SHOW TABLES")).isEmpty();
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(8);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(10);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SHOW TABLES").stream().map(values -> values.get(0)))
@@ -248,7 +254,7 @@ class FlywayMigrationIntegrationTest {
             database.executeDeploymentScript(Path.of("deploy", "schema.sql"));
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(15);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(17);
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertLatestColumnDefinitions(database);
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
@@ -522,7 +528,7 @@ class FlywayMigrationIntegrationTest {
                     """);
 
             Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
 
             assertLatestColumnDefinitions(database);
             assertThat(database.rows("SELECT id, merchant_seen, "
@@ -533,6 +539,34 @@ class FlywayMigrationIntegrationTest {
                             row("103", "0", HISTORICAL_TIME),
                             row("104", "1", HISTORICAL_TIME));
             assertThat(flyway.migrate().migrationsExecuted).isZero();
+        }
+    }
+
+    @Test
+    void cancelSourceMigrationAddsNullableColumnAndLeavesHistoricalCancellationsUnknown() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            insertUser(database, 1);
+            insertMerchant(database, 10, 7);
+            database.execute("""
+                    INSERT INTO orders (
+                        id, order_no, user_id, request_id, request_hash, merchant_id, merchant_name,
+                        total_amount, status, receiver_name, receiver_phone, receiver_address,
+                        create_time, update_time
+                    ) VALUES
+                        (101, 'CANCEL-SOURCE-4', 1, 'cancel-source-4', REPEAT('a', 64), 10, 'merchant',
+                         10.00, 4, 'receiver', '13800000001', 'address',
+                         '2024-01-02 03:04:05', '2024-01-02 03:04:05')
+                    """);
+
+            Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(9);
+
+            assertThat(database.column("orders", "cancel_source", "is_nullable")).isEqualTo("YES");
+            assertThat(database.column("orders", "cancel_source", "column_default")).isNull();
+            assertThat(database.scalar("SELECT cancel_source FROM orders WHERE id = 101")).isNull();
+            database.execute("UPDATE orders SET cancel_source = 2 WHERE id = 101");
+            assertThat(database.scalar("SELECT cancel_source FROM orders WHERE id = 101")).isEqualTo("2");
         }
     }
 
@@ -687,6 +721,18 @@ class FlywayMigrationIntegrationTest {
         assertRuntimeColumnDefinitions(database);
         assertThat(database.column("orders", "merchant_seen", "is_nullable")).isEqualTo("NO");
         assertThat(database.column("orders", "merchant_seen", "column_default")).isEqualTo("0");
+        assertThat(database.column("orders", "cancel_source", "is_nullable")).isEqualTo("YES");
+        assertThat(database.column("orders", "cancel_source", "column_default")).isNull();
+        assertThat(database.column("orders", "cancel_source", "column_comment"))
+                .contains("1用户主动取消", "2商家拒单", "3系统超时取消", "4平台取消");
+        assertThat(database.column("product", "stock_version", "is_nullable")).isEqualTo("NO");
+        assertThat(database.column("product", "stock_version", "column_default")).isEqualTo("0");
+        assertThat(database.column("product", "stock_version", "column_comment"))
+                .contains("库存基准版本");
+        assertThat(database.column("order_item", "stock_version", "is_nullable")).isEqualTo("NO");
+        assertThat(database.column("order_item", "stock_version", "column_default")).isEqualTo("0");
+        assertThat(database.column("order_item", "stock_version", "column_comment"))
+                .contains("预扣库存");
         assertThat(database.rows("SELECT column_name FROM information_schema.statistics "
                 + "WHERE table_schema = DATABASE() AND table_name = 'orders' "
                 + "AND index_name = 'idx_order_merchant_status_seen_create_time_id' ORDER BY seq_in_index"))
@@ -747,6 +793,20 @@ class FlywayMigrationIntegrationTest {
                 + ", 'historical merchant', 1, '" + HISTORICAL_TIME + "', '" + HISTORICAL_TIME + "', '"
                 + HISTORICAL_TIME + "', 'receiver address', '13800000001', 'merchant address', "
                 + "'13800000010', 'receiver')");
+    }
+
+    private static String baselineSelectColumns(String table) {
+        return switch (table) {
+            case "product" -> "id, category_id, product_name, image_url, price, stock, merchant_id, "
+                    + "is_deleted, status, description, create_time, update_time, version, active_name_guard";
+            case "orders" -> "id, order_no, user_id, merchant_id, merchant_name, total_amount, status, "
+                    + "receiver_name, receiver_phone, receiver_address, remark, create_time, update_time, "
+                    + "finish_time, original_amount, discount_amount, pay_time, request_Id, request_hash, "
+                    + "timeout_cancel_available_at";
+            case "order_item" -> "id, order_id, product_id, product_name, product_price, quantity, "
+                    + "subtotal, product_picture";
+            default -> "*";
+        };
     }
 
     private static List<String> withHistoryTable() {

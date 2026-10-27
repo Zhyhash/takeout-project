@@ -20,12 +20,27 @@ public interface ProductMapper extends BaseMapper<Product> {
                                   @Param("offSaleStatus") Integer offSaleStatus);
 
     @Select("""
-            SELECT id, stock
+            SELECT id, stock, stock_version
             FROM product
             WHERE id = #{productId}
             """)
     Product selectStockByIdIncludingDeleted(@Param("productId") Long productId);
 
+    /**
+     * 锁定商品行并读取库存版本，供订单预扣库存时把版本快照与扣减放进同一事务/行锁区间。
+     */
+    @Select("""
+            SELECT id, stock, stock_version, status, is_deleted
+            FROM product
+            WHERE id = #{productId}
+            FOR UPDATE
+            """)
+    Product selectStockByIdForUpdate(@Param("productId") Long productId);
+
+    /**
+     * 取消订单回补库存：仅当订单明细记录的库存版本仍是当前基准时才执行，
+     * 版本不一致时影响行数为 0，由调用方跳过回补。
+     */
     @Update("""
             UPDATE product
             SET status = CASE
@@ -35,9 +50,11 @@ public interface ProductMapper extends BaseMapper<Product> {
                 stock = stock + #{quantity},
                 version = version + 1
             WHERE id = #{productId}
+              AND stock_version = #{stockVersion}
             """)
     int increaseStock(@Param("productId") Long productId,
                       @Param("quantity") Integer quantity,
+                      @Param("stockVersion") Integer stockVersion,
                       @Param("saleOutStatus") Integer saleOutStatus,
                       @Param("onSaleStatus") Integer onSaleStatus);
 
@@ -50,12 +67,14 @@ public interface ProductMapper extends BaseMapper<Product> {
                 stock = stock - #{quantity},
                 version = version + 1
             WHERE id = #{productId}
+              AND stock_version = #{stockVersion}
               AND is_deleted = #{notDeleted}
               AND status = #{onSaleStatus}
               AND stock >= #{quantity}
             """)
     int decreaseStock(@Param("productId") Long productId,
                       @Param("quantity") Integer quantity,
+                      @Param("stockVersion") Integer stockVersion,
                       @Param("notDeleted") Integer notDeleted,
                       @Param("onSaleStatus") Integer onSaleStatus,
                       @Param("saleOutStatus") Integer saleOutStatus);

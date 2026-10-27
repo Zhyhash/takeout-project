@@ -19,6 +19,10 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
+/**
+ * 商品详情缓存服务。
+ * 负责缓存读取与回填、空值缓存、互斥重建及缓存失效任务的提交。
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j

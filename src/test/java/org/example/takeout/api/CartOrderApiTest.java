@@ -449,7 +449,7 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
-    void cancelOrderRejectsRepeatedSubmit() throws Exception {
+    void cancelOrderRejectsNonCancellableStatus() throws Exception {
         doThrow(businessError("status mismatch")).when(orderService).cancelOrder(501L);
 
         mockMvc.perform(patch("/order/501/cancel")

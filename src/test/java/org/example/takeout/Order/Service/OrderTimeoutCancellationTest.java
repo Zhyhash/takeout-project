@@ -2,6 +2,7 @@ package org.example.takeout.Order.Service;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.example.takeout.Order.Entity.OrderItem;
+import org.example.takeout.Order.Enums.OrderCancelSourceEnum;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
@@ -48,7 +49,8 @@ class OrderTimeoutCancellationTest {
                 orderId,
                 OrderStatusEnum.WAIT_PAY.getCode(),
                 OrderStatusEnum.CANCELLED.getCode(),
-                expiredBefore
+                expiredBefore,
+                OrderCancelSourceEnum.TIMEOUT.getCode()
         )).thenReturn(1);
         when(orderItemMapper.selectList(ArgumentMatchers.<Wrapper<OrderItem>>any())).thenReturn(List.of(item));
         assertTrue(orderService.cancelTimeoutOrder(orderId, expiredBefore));
@@ -64,7 +66,8 @@ class OrderTimeoutCancellationTest {
                 eq(orderId),
                 eq(OrderStatusEnum.WAIT_PAY.getCode()),
                 eq(OrderStatusEnum.CANCELLED.getCode()),
-                eq(expiredBefore)
+                eq(expiredBefore),
+                eq(OrderCancelSourceEnum.TIMEOUT.getCode())
         )).thenReturn(0);
 
         assertFalse(orderService.cancelTimeoutOrder(orderId, expiredBefore));

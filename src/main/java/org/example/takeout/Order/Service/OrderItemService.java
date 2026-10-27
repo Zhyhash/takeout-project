@@ -19,9 +19,14 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 订单明细服务。
+ * 负责订单商品快照的构建、保存和查询，并按商品 ID 顺序协调下单扣库存与取消归还库存。
+ */
 @Service
 @RequiredArgsConstructor
 public class OrderItemService {
@@ -52,35 +57,53 @@ public class OrderItemService {
 
     // 以下订单明细查询、修改和构建接口提供给订单领域使用。
     // 按商品 ID 升序扣减库存，确保并发订单以相同顺序获取商品行锁。
+    // 返回的是每个商品实际预扣成功时的 stock_version，而不是准备阶段的商品快照版本。
     @Transactional(rollbackFor = Exception.class)
-    public void decreaseStocksOrderedByProductId(List<CartItem> cartItems) {
+    public Map<Long, Integer> decreaseStocksOrderedByProductId(List<CartItem> cartItems) {
         List<CartItem> orderedItems = new ArrayList<>(cartItems);
         orderedItems.sort(Comparator.comparing(CartItem::getProductId));
 
+        Map<Long, Integer> stockVersions = new HashMap<>();
         for (CartItem item : orderedItems) {
-            productCommandService.decreaseStock(item.getProductId(), item.getQuantity());
+            int stockVersion = productCommandService.decreaseStock(
+                    item.getProductId(), item.getQuantity());
+            stockVersions.put(item.getProductId(), stockVersion);
         }
+        return stockVersions;
     }
 
     // 库存归还使用相同的商品 ID 锁顺序，避免与扣减库存形成反向等待。
+    // 每条明细带自己的库存版本；商家重设库存后版本不一致的明细会被跳过。
     @Transactional(rollbackFor = Exception.class)
     public void increaseStocksOrderedByProductId(List<OrderItem> orderItems) {
         List<OrderItem> orderedItems = new ArrayList<>(orderItems);
         orderedItems.sort(Comparator.comparing(OrderItem::getProductId));
 
         for (OrderItem item : orderedItems) {
-            productCommandService.increaseStock(item.getProductId(), item.getQuantity());
+            productCommandService.increaseStock(
+                    item.getProductId(), item.getQuantity(), item.getStockVersion());
         }
     }
 
+    // 取消订单前读取明细，供订单状态命令归还库存使用。
+    public List<OrderItem> findOrderItemsByOrderId(Long orderId) {
+        return selectOrderItemsByOrderIds(List.of(orderId));
+    }
+
     public List<OrderItem> buildOrderItems(Order order, List<CartItem> availableCartItems,
-                                           Map<Long, Product> productMap) {
+                                           Map<Long, Product> productMap,
+                                           Map<Long, Integer> stockVersions) {
         List<OrderItem> orderItems = new ArrayList<>();
 
         for (CartItem cartItem : availableCartItems) {
             Product product = productMap.get(cartItem.getProductId());
             if (product == null) {
                 throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "商品不存在");
+            }
+            Integer stockVersion = stockVersions.get(product.getId());
+            if (stockVersion == null) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                        "库存版本缺失，无法保存订单明细");
             }
 
             OrderItem item = new OrderItem();
@@ -91,6 +114,7 @@ public class OrderItemService {
             item.setQuantity(cartItem.getQuantity());
             item.setSubtotal(product.getPrice().multiply(new BigDecimal(cartItem.getQuantity())));
             item.setProductPicture(resolveProductPicture(product, cartItem));
+            item.setStockVersion(stockVersion);
             orderItems.add(item);
         }
 

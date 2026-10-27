@@ -6,18 +6,14 @@ import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.springframework.stereotype.Service;
 
+/**
+ * 面向跨模块调用的商家基础只读查询服务。
+ * 负责按 ID 查询商家及检查营业状态，避免调用方引入商家业务编排依赖。
+ * 历史上曾将查询合并到 MerchantService，形成以下循环依赖，需保留独立查询边界：
+ * CartCheckoutService -> MerchantService -> DeliveryTaskService -> OrderService -> CartCheckoutService。
+ */
 @Service
 @RequiredArgsConstructor
-/**
- * Merchant 模块的只读查询入口。
- * 面向仅需要商家数据的跨模块调用方，
- * 不引入 MerchantService 中的订单、配送等业务编排依赖。
- */
-// WARNING:
-// 该查询边界不能直接合并回 MerchantService。
-// 曾合并过，会形成：
-// CartCheckoutService （该类可以切断这里）-> MerchantService -> DeliveryTaskService
-// -> OrderService -> CartCheckoutService
 public class MerchantQueryService {
     private final MerchantMapper merchantMapper;
 

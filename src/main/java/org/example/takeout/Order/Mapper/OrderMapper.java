@@ -27,7 +27,8 @@ public interface OrderMapper extends BaseMapper<Order> {
 
     @Update("""
         UPDATE orders
-        SET status = #{newStatus}
+        SET status = #{newStatus},
+            cancel_source = #{cancelSource}
         WHERE id = #{orderId}
           AND status = #{oldStatus}
           AND create_time <= #{expiredBefore}
@@ -35,7 +36,8 @@ public interface OrderMapper extends BaseMapper<Order> {
     int updateTimeoutOrderToCancelled(@Param("orderId") Long orderId,
                                       @Param("oldStatus") Integer oldStatus,
                                       @Param("newStatus") Integer newStatus,
-                                      @Param("expiredBefore") LocalDateTime expiredBefore);
+                                      @Param("expiredBefore") LocalDateTime expiredBefore,
+                                      @Param("cancelSource") Integer cancelSource);
 
     @Update("""
         UPDATE orders
@@ -53,7 +55,8 @@ public interface OrderMapper extends BaseMapper<Order> {
     @Update("""
         <script>
         UPDATE orders
-        SET status = #{newStatus}
+        SET status = #{newStatus},
+            cancel_source = #{cancelSource}
         WHERE id = #{orderId}
         AND user_id = #{userId}
         AND status IN
@@ -65,7 +68,8 @@ public interface OrderMapper extends BaseMapper<Order> {
     int UpdateOrderStatusToCancel(@Param("orderId") Long orderId,
                                   @Param("userId") Long userId,
                                   @Param("oldStatusList") List<Integer> oldStatusList,
-                                  @Param("newStatus") Integer newStatus);
+                                  @Param("newStatus") Integer newStatus,
+                                  @Param("cancelSource") Integer cancelSource);
 
     @Update("""
         UPDATE orders
@@ -133,6 +137,20 @@ public interface OrderMapper extends BaseMapper<Order> {
                                  @Param("merchantId") Long merchantId,
                                  @Param("oldStatus") Integer oldStatus,
                                  @Param("newStatus") Integer newStatus);
+
+    @Update("""
+        UPDATE orders
+        SET status = #{newStatus},
+            cancel_source = #{cancelSource}
+        WHERE id = #{orderId}
+        AND merchant_id = #{merchantId}
+        AND status = #{oldStatus}
+    """)
+    int updateOrderStatusToCancelledByMerchant(@Param("orderId") Long orderId,
+                                               @Param("merchantId") Long merchantId,
+                                               @Param("oldStatus") Integer oldStatus,
+                                               @Param("newStatus") Integer newStatus,
+                                               @Param("cancelSource") Integer cancelSource);
 
     @Update("""
         UPDATE orders

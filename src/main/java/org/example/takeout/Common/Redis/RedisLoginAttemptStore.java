@@ -9,6 +9,10 @@ import org.springframework.stereotype.Service;
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * 登录失败计数的 Redis 存储服务。
+ * 负责按角色和登录名隔离计数，原子递增失败次数，并维护过期时间、读取及清除记录。
+ */
 @Service
 @RequiredArgsConstructor
 public class RedisLoginAttemptStore {

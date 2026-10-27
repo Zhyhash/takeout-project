@@ -30,6 +30,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 用户购物车管理服务。
+ * 负责当前用户购物车条目的增删、数量调整和列表展示，校验商品及商家可购买状态，
+ * 并维护购物车只能绑定一家商家的约束及可购买金额汇总。
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor

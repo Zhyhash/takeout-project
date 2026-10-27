@@ -11,8 +11,9 @@ import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
 import org.example.takeout.Merchant.DTO.MerchantRegisterDTO;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Enums.MerchantOrderListType;
+import org.example.takeout.Merchant.Service.FulfillmentService;
+import org.example.takeout.Merchant.Service.MerchantAccountService;
 import org.example.takeout.Merchant.Service.MerchantOrderViewService;
-import org.example.takeout.Merchant.Service.MerchantService;
 import org.example.takeout.Merchant.Service.MerchantSseService;
 import org.example.takeout.Merchant.VO.MerchantOrderDetailVO;
 import org.example.takeout.Merchant.VO.MerchantOrderListVO;
@@ -35,13 +36,14 @@ import java.util.List;
 @RequiredArgsConstructor
 public class MerchantControllerSold {
     
-    private final MerchantService merchantService;
+    private final MerchantAccountService merchantAccountService;
+    private final FulfillmentService fulfillmentService;
     private final MerchantOrderViewService merchantOrderViewService;
     private final MerchantSseService merchantSseService;
 
     @PostMapping("/register")
     public Result<?> register(@Valid  @RequestBody MerchantRegisterDTO dto){
-        merchantService.register(dto);
+        merchantAccountService.register(dto);
         return Result.success("success");
     }
 
@@ -50,7 +52,7 @@ public class MerchantControllerSold {
      */
     @PostMapping("/login")
     public Result<?> login(@RequestBody @Valid MerchantLoginDTO dto) {
-        loginVO loginVO = merchantService.login(dto);
+        loginVO loginVO = merchantAccountService.login(dto);
         return Result.success(loginVO);
     }
 
@@ -59,7 +61,7 @@ public class MerchantControllerSold {
      */
     @PutMapping("/info")
     public Result<?> updateMerchantInfo(@RequestBody @Valid MerchantUpdateDTO dto) {
-        MerchantUpdateVO merchantUpdateVO = merchantService.updateMerchant(dto);
+        MerchantUpdateVO merchantUpdateVO = merchantAccountService.updateMerchant(dto);
         return Result.success(merchantUpdateVO);
     }
 
@@ -68,7 +70,7 @@ public class MerchantControllerSold {
      */
     @PatchMapping("/info")
     public Result<?> updateMerchantStatus(@RequestParam @Min(0) @Max(1) Integer status) {
-        merchantService.updateStatus(status);
+        merchantAccountService.updateStatus(status);
         return Result.success("success");
     }
 
@@ -109,13 +111,22 @@ public class MerchantControllerSold {
 
     @PatchMapping("/orders/{orderId}/accept")
     public Result<?> acceptOrder(@PathVariable @Min(1) Long orderId) {
-        merchantService.acceptOrder(orderId);
+        fulfillmentService.acceptOrder(orderId);
+        return Result.success("success");
+    }
+
+    /**
+     * 商家拒单：仅允许取消本商家已支付的订单，成功后模拟退款并归还库存。
+     */
+    @PatchMapping("/orders/{orderId}/reject")
+    public Result<?> rejectOrder(@PathVariable @Min(1) Long orderId) {
+        fulfillmentService.rejectOrder(orderId);
         return Result.success("success");
     }
 
     @PatchMapping("/orders/{orderId}/ready")
     public Result<?> completePreparation(@PathVariable @Min(1) Long orderId) {
-        merchantService.completePreparation(orderId);
+        fulfillmentService.completePreparation(orderId);
         return Result.success("success");
     }
 

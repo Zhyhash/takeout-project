@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS `product` (
     `image_url` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '商品图片URL',
     `price` decimal(10, 2) NOT NULL COMMENT '商品价格',
     `stock` int NOT NULL DEFAULT 0 COMMENT '库存数量',
+    `stock_version` int NOT NULL DEFAULT 0 COMMENT '库存基准版本：商家显式重设库存时递增',
     `merchant_id` bigint NOT NULL COMMENT '所属商家ID',
     `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除: 0-未删除, 1-已删除',
     `active_name_guard` tinyint GENERATED ALWAYS AS (
@@ -127,6 +128,8 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `total_amount` decimal(10, 2) NOT NULL,
     `status` tinyint NOT NULL DEFAULT 0,
+    `cancel_source` tinyint NULL DEFAULT NULL
+        COMMENT '订单取消原因：1用户主动取消，2商家拒单，3系统超时取消，4平台取消',
     `receiver_name` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `receiver_phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `receiver_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
@@ -160,6 +163,7 @@ CREATE TABLE IF NOT EXISTS `order_item` (
     `product_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `product_price` decimal(10, 2) NOT NULL,
     `quantity` int NOT NULL DEFAULT 1,
+    `stock_version` int NOT NULL DEFAULT 0 COMMENT '预扣库存时的商品库存基准版本',
     `subtotal` decimal(10, 2) NOT NULL,
     `product_picture` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
     PRIMARY KEY (`id`) USING BTREE,

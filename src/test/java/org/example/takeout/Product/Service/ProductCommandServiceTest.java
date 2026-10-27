@@ -13,7 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -21,6 +21,7 @@ import static org.mockito.Mockito.*;
 class ProductCommandServiceTest {
 
     private static final Long PRODUCT_ID = 301L;
+    private static final Integer STOCK_VERSION = 3;
 
     @Mock
     private ProductMapper productMapper;
@@ -32,19 +33,22 @@ class ProductCommandServiceTest {
     private ProductCommandService productCommandService;
 
     @Test
-    void decreaseStockEvictsProductDetailCacheWhenAvailabilityChanges() {
-        Product updatedProduct = productWithStock(0);
+    void decreaseStockReturnsDeductedBaselineVersionAndEvictsCacheWhenAvailabilityChanges() {
+        when(productMapper.selectStockByIdForUpdate(PRODUCT_ID))
+                .thenReturn(productWithStock(1, STOCK_VERSION));
         when(productMapper.decreaseStock(
-                PRODUCT_ID, 1,
+                PRODUCT_ID, 1, STOCK_VERSION,
                 DeleteConstant.NOT_DELETED,
                 ProductStatusEnum.ON_SALE.getCode(),
                 ProductStatusEnum.SALE_OUT.getCode())).thenReturn(1);
-        when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID)).thenReturn(updatedProduct);
+        when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID))
+                .thenReturn(productWithStock(0, STOCK_VERSION));
 
-        productCommandService.decreaseStock(PRODUCT_ID, 1);
+        assertEquals(STOCK_VERSION, productCommandService.decreaseStock(PRODUCT_ID, 1));
 
+        verify(productMapper).selectStockByIdForUpdate(PRODUCT_ID);
         verify(productMapper).decreaseStock(
-                PRODUCT_ID, 1,
+                PRODUCT_ID, 1, STOCK_VERSION,
                 DeleteConstant.NOT_DELETED,
                 ProductStatusEnum.ON_SALE.getCode(),
                 ProductStatusEnum.SALE_OUT.getCode());
@@ -54,33 +58,63 @@ class ProductCommandServiceTest {
 
     @Test
     void decreaseStockKeepsProductDetailCacheWhenAvailabilityDoesNotChange() {
+        when(productMapper.selectStockByIdForUpdate(PRODUCT_ID))
+                .thenReturn(productWithStock(5, STOCK_VERSION));
         when(productMapper.decreaseStock(
-                PRODUCT_ID, 1,
+                PRODUCT_ID, 1, STOCK_VERSION,
                 DeleteConstant.NOT_DELETED,
                 ProductStatusEnum.ON_SALE.getCode(),
                 ProductStatusEnum.SALE_OUT.getCode())).thenReturn(1);
         when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID))
-                .thenReturn(productWithStock(4));
+                .thenReturn(productWithStock(4, STOCK_VERSION));
 
-        productCommandService.decreaseStock(PRODUCT_ID, 1);
+        assertEquals(STOCK_VERSION, productCommandService.decreaseStock(PRODUCT_ID, 1));
 
         verify(productMapper).selectStockByIdIncludingDeleted(PRODUCT_ID);
         verify(productDetailCacheService, never()).evictProductDetailCache(any());
     }
 
     @Test
-    void increaseStockEvictsProductDetailCacheWhenAvailabilityChanges() {
+    void decreaseStockFailsWithoutReturningVersionWhenConditionalUpdateMisses() {
+        when(productMapper.selectStockByIdForUpdate(PRODUCT_ID))
+                .thenReturn(productWithStock(5, STOCK_VERSION));
+        when(productMapper.decreaseStock(
+                PRODUCT_ID, 1, STOCK_VERSION,
+                DeleteConstant.NOT_DELETED,
+                ProductStatusEnum.ON_SALE.getCode(),
+                ProductStatusEnum.SALE_OUT.getCode())).thenReturn(0);
+
+        assertThrows(BusinessException.class,
+                () -> productCommandService.decreaseStock(PRODUCT_ID, 1));
+
+        verify(productMapper, never()).selectStockByIdIncludingDeleted(any());
+        verifyNoInteractions(productDetailCacheService);
+    }
+
+    @Test
+    void decreaseStockFailsWhenProductRowIsMissing() {
+        when(productMapper.selectStockByIdForUpdate(PRODUCT_ID)).thenReturn(null);
+
+        assertThrows(BusinessException.class,
+                () -> productCommandService.decreaseStock(PRODUCT_ID, 1));
+
+        verify(productMapper, never()).decreaseStock(any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(productDetailCacheService);
+    }
+
+    @Test
+    void increaseStockOnlyRestoresMatchingBaselineVersion() {
         when(productMapper.increaseStock(
-                PRODUCT_ID, 2,
+                PRODUCT_ID, 2, STOCK_VERSION,
                 ProductStatusEnum.SALE_OUT.getCode(),
                 ProductStatusEnum.ON_SALE.getCode())).thenReturn(1);
         when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID))
-                .thenReturn(productWithStock(2));
+                .thenReturn(productWithStock(2, STOCK_VERSION));
 
-        productCommandService.increaseStock(PRODUCT_ID, 2);
+        assertTrue(productCommandService.increaseStock(PRODUCT_ID, 2, STOCK_VERSION));
 
         verify(productMapper).increaseStock(
-                PRODUCT_ID, 2,
+                PRODUCT_ID, 2, STOCK_VERSION,
                 ProductStatusEnum.SALE_OUT.getCode(),
                 ProductStatusEnum.ON_SALE.getCode());
         verify(productMapper).selectStockByIdIncludingDeleted(PRODUCT_ID);
@@ -88,15 +122,35 @@ class ProductCommandServiceTest {
     }
 
     @Test
+    void increaseStockSkipsStaleVersionWithoutReadingOrInvalidating() {
+        when(productMapper.increaseStock(
+                PRODUCT_ID, 2, STOCK_VERSION,
+                ProductStatusEnum.SALE_OUT.getCode(),
+                ProductStatusEnum.ON_SALE.getCode())).thenReturn(0);
+
+        assertFalse(productCommandService.increaseStock(PRODUCT_ID, 2, STOCK_VERSION));
+
+        verify(productMapper, never()).selectStockByIdIncludingDeleted(any());
+        verifyNoInteractions(productDetailCacheService);
+    }
+
+    @Test
+    void increaseStockSkipsWhenOrderItemHasNoStockVersion() {
+        assertFalse(productCommandService.increaseStock(PRODUCT_ID, 2, null));
+
+        verifyNoInteractions(productMapper, productDetailCacheService);
+    }
+
+    @Test
     void increaseStockKeepsProductDetailCacheWhenAvailabilityDoesNotChange() {
         when(productMapper.increaseStock(
-                PRODUCT_ID, 2,
+                PRODUCT_ID, 2, STOCK_VERSION,
                 ProductStatusEnum.SALE_OUT.getCode(),
                 ProductStatusEnum.ON_SALE.getCode())).thenReturn(1);
         when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID))
-                .thenReturn(productWithStock(7));
+                .thenReturn(productWithStock(7, STOCK_VERSION));
 
-        productCommandService.increaseStock(PRODUCT_ID, 2);
+        assertTrue(productCommandService.increaseStock(PRODUCT_ID, 2, STOCK_VERSION));
 
         verify(productMapper).selectStockByIdIncludingDeleted(PRODUCT_ID);
         verify(productDetailCacheService, never()).evictProductDetailCache(any());
@@ -105,29 +159,15 @@ class ProductCommandServiceTest {
     @Test
     void increaseStockReadsDeletedProductStockToPreserveOrderReturnBehavior() {
         when(productMapper.increaseStock(
-                PRODUCT_ID, 2,
+                PRODUCT_ID, 2, STOCK_VERSION,
                 ProductStatusEnum.SALE_OUT.getCode(),
                 ProductStatusEnum.ON_SALE.getCode())).thenReturn(1);
         when(productMapper.selectStockByIdIncludingDeleted(PRODUCT_ID))
-                .thenReturn(productWithStock(2));
+                .thenReturn(productWithStock(2, STOCK_VERSION));
 
-        productCommandService.increaseStock(PRODUCT_ID, 2);
+        assertTrue(productCommandService.increaseStock(PRODUCT_ID, 2, STOCK_VERSION));
 
         verify(productMapper).selectStockByIdIncludingDeleted(PRODUCT_ID);
-    }
-
-    @Test
-    void failedStockUpdateDoesNotReadBackStockOrEvictCache() {
-        when(productMapper.increaseStock(
-                PRODUCT_ID, 2,
-                ProductStatusEnum.SALE_OUT.getCode(),
-                ProductStatusEnum.ON_SALE.getCode())).thenReturn(0);
-
-        assertThrows(BusinessException.class,
-                () -> productCommandService.increaseStock(PRODUCT_ID, 2));
-
-        verify(productMapper, never()).selectStockByIdIncludingDeleted(any());
-        verifyNoInteractions(productDetailCacheService);
     }
 
     @Test
@@ -165,9 +205,10 @@ class ProductCommandServiceTest {
         verifyNoInteractions(productDetailCacheService);
     }
 
-    private Product productWithStock(Integer stock) {
+    private Product productWithStock(Integer stock, Integer stockVersion) {
         Product product = new Product();
         product.setStock(stock);
+        product.setStockVersion(stockVersion);
         return product;
     }
 }

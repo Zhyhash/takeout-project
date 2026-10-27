@@ -116,6 +116,12 @@ public class GlobalExceptionHandle {
         log.warn("文件上传失败{}",e.getMessage());
         return Result.error(ResultCodeEnum.FILE_UPLOAD_ERROR,"文件上传异常，请稍后再试");
     }
+
+    @ExceptionHandler(value = RedisGeoOperationException.class)
+    public Result<?> handleRedisGeoOperationException(RedisGeoOperationException e) {
+        log.error("Redis GEO 位置数据处理失败：{}", e.getMessage(), e);
+        return Result.error(ResultCodeEnum.SERVER_ERROR, e.getMessage());
+    }
     @ExceptionHandler(value = Exception.class)
     public  Result<?> GloballyExceptionHandle(Exception e) {
         log.error("未明确异常：", e);

@@ -10,6 +10,7 @@ import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.Cart.Service.CartService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
+import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
@@ -17,16 +18,20 @@ import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
+import org.example.takeout.Order.Enums.OrderCancelSourceEnum;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
 import org.example.takeout.Order.Mapper.OrderMapper;
+import org.example.takeout.Order.Service.OrderCommandService;
 import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Order.Service.OrderTransactionExecutor;
 import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Product.Config.ProductImageCleanupService;
+import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
+import org.example.takeout.Product.Service.ProductService;
 import org.example.takeout.dataFactory.TestDataFactory;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.AfterEach;
@@ -42,6 +47,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import javax.sql.DataSource;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -84,11 +90,15 @@ class OrderServiceIntegrationTest {
 
     private final OrderService orderService;
 
+    private final OrderCommandService orderCommandService;
+
     private final OrderMapper orderMapper;
 
     private final OrderItemMapper orderItemMapper;
 
     private final ProductMapper productMapper;
+
+    private final ProductService productService;
 
     private final CartMapper cartMapper;
 
@@ -111,6 +121,8 @@ class OrderServiceIntegrationTest {
         CartHeaderTestFixture.ensureTable(jdbcTemplate);
         OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
         OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
+        OrderCancelSourceSchemaTestFixture.ensureCancelSourceColumn(jdbcTemplate);
+        StockVersionSchemaTestFixture.ensureStockVersionColumns(jdbcTemplate);
         deleteTestData();
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_USER_ID);
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_OTHER_USER_ID);
@@ -139,29 +151,92 @@ class OrderServiceIntegrationTest {
 
         orderService.cancelOrder(order.getId());
 
-        assertEquals(OrderStatusEnum.CANCELLED.getCode(), orderMapper.selectById(order.getId()).getStatus());
+        Order cancelled = orderMapper.selectById(order.getId());
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(), cancelled.getStatus());
+        assertEquals(OrderCancelSourceEnum.USER.getCode(), cancelled.getCancelSource());
         assertEquals(
                 stockBeforeCancellation + item.getQuantity(),
                 productMapper.selectById(product.getId()).getStock()
         );
+
+        assertDoesNotThrow(() -> orderService.cancelOrder(order.getId()));
+
+        assertEquals(stockBeforeCancellation + item.getQuantity(),
+                productMapper.selectById(product.getId()).getStock());
     }
 
-    //NOTE：测试重复取消已取消订单时操作会失败且不会再次归还库存
+    //NOTE：测试重复取消已取消订单时操作成功且不会再次归还库存
     @Test
-    void cancelOrder_shouldFailWhenOrderAlreadyCancelled() {
+    void cancelOrder_shouldSucceedWhenOrderAlreadyCancelled() {
         insertMerchant();
         // 不插入 OrderItem / Product。
         // 如果错误地继续执行归还库存，这里应该会因为缺少关联数据而失败。
         // 测试通过说明状态校验后已直接返回，没有进入库存归还流程。
         Order order = insertOrder(OrderStatusEnum.CANCELLED.getCode());
 
-        assertThrows(BusinessException.class, () -> orderService.cancelOrder(order.getId()));
+        assertDoesNotThrow(() -> orderService.cancelOrder(order.getId()));
 
         assertEquals(OrderStatusEnum.CANCELLED.getCode(), orderMapper.selectById(order.getId()).getStatus());
 
     }
 
-    //NOTE：测试并发取消同一订单时仅一次成功且库存只恢复一次
+    //NOTE：测试商家拒单取消已支付订单、记录取消来源并恢复库存，重复拒单不重复退库存
+    @Test
+    void rejectOrderByMerchant_shouldCancelPaidOrderAndRestoreStock() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        Order order = insertOrder(OrderStatusEnum.PAID.getCode());
+        OrderItem item = TestDataFactory.createOrderItem(order.getId(), product, 3);
+        orderItemMapper.insert(item);
+        int stockBeforeRejection = productMapper.selectById(product.getId()).getStock();
+
+        orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID);
+
+        Order rejected = orderMapper.selectById(order.getId());
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(), rejected.getStatus());
+        assertEquals(OrderCancelSourceEnum.MERCHANT.getCode(), rejected.getCancelSource());
+        assertEquals(stockBeforeRejection + item.getQuantity(),
+                productMapper.selectById(product.getId()).getStock());
+
+        assertDoesNotThrow(() -> orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID));
+
+        assertEquals(stockBeforeRejection + item.getQuantity(),
+                productMapper.selectById(product.getId()).getStock());
+    }
+
+    //NOTE：商家拒单与用户取消共用版本判断，重设库存后不覆盖新基准
+    @Test
+    void rejectOrderByMerchant_shouldSkipRestoreAfterMerchantStockReset() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        Order order = insertOrder(OrderStatusEnum.PAID.getCode());
+        OrderItem item = TestDataFactory.createOrderItem(order.getId(), product, 3);
+        item.setStockVersion(0);
+        orderItemMapper.insert(item);
+        resetStock(product, 100);
+
+        orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID);
+
+        Order rejected = orderMapper.selectById(order.getId());
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(), rejected.getStatus());
+        assertEquals(100, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+    }
+
+    //NOTE：测试其他商家不能拒单
+    @Test
+    void rejectOrderByMerchant_shouldRejectOrderOwnedByAnotherMerchant() {
+        insertMerchant();
+        Order order = insertOrder(OrderStatusEnum.PAID.getCode());
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderCommandService.rejectOrderByMerchant(order.getId(), TEST_OTHER_MERCHANT_ID));
+
+        assertEquals("订单不存在或无权操作该订单", failure.getMessage());
+        assertEquals(OrderStatusEnum.PAID.getCode(), orderMapper.selectById(order.getId()).getStatus());
+    }
+
+    //NOTE：测试并发取消同一订单时均成功且库存只恢复一次
     @Test
     void cancelOrder_ConcurrentOrder() throws InterruptedException {
         insertMerchant();
@@ -218,13 +293,208 @@ class OrderServiceIntegrationTest {
         //库存一致
         assertEquals(stockBeforeCancellation + item.getQuantity(),
                 productMapper.selectById(product.getId()).getStock());
-        //并发应该一次成功一次失败
-        assertEquals(1, success.get());
-        assertEquals(1, fail.get());
-        assertExpectedConcurrentCancelFailure(firstFailure.get(), secondFailure.get());
-        //第n次取消应该会有异常（第二次也有，就是不知道怎么抓）
-        assertThrows(BusinessException.class, () -> orderService.cancelOrder(cancledOrder.getId()));
+        //并发请求均成功
+        assertEquals(2, success.get());
+        assertEquals(0, fail.get());
+        assertNull(firstFailure.get());
+        assertNull(secondFailure.get());
+        //后续重复取消仍成功，库存不再增加
+        assertDoesNotThrow(() -> orderService.cancelOrder(cancledOrder.getId()));
+        assertEquals(stockBeforeCancellation + item.getQuantity(),
+                productMapper.selectById(product.getId()).getStock());
 
+    }
+
+    //NOTE：商家重设库存后再取消旧订单，库存保持新基准，不再回补旧预扣
+    @Test
+    void cancelOrder_shouldKeepResetBaselineAfterMerchantStockReset() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 50);
+        CreateOrderVO created = createOrderFor(product, 10);
+        OrderItem item = singleOrderItem(created.getOrderId());
+        assertEquals(0, item.getStockVersion());
+        assertEquals(40, currentStock(product));
+        assertEquals(0, currentStockVersion(product));
+
+        resetStock(product, 100);
+
+        assertEquals(100, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+
+        orderService.cancelOrder(created.getOrderId());
+
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(),
+                orderMapper.selectById(created.getOrderId()).getStatus());
+        assertEquals(100, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+    }
+
+    //NOTE：只修改名称/价格等非库存字段，不推进库存基准版本，取消仍能正常回补
+    @Test
+    void cancelOrder_shouldRestoreStockAfterNonStockProductUpdate() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 50);
+        CreateOrderVO created = createOrderFor(product, 10);
+        Product afterDeduction = productMapper.selectById(product.getId());
+        assertEquals(40, afterDeduction.getStock());
+        assertEquals(0, afterDeduction.getStockVersion());
+
+        UpdateProductDTO update = new UpdateProductDTO();
+        update.setProductName("改名水杯");
+        update.setPrice(new BigDecimal("12.34"));
+        update.setVersion(afterDeduction.getVersion());
+        MerchantContextHolder.setMerchantId(TEST_MERCHANT_ID);
+        try {
+            productService.updateProduct(product.getId(), update);
+        } finally {
+            MerchantContextHolder.clear();
+        }
+
+        Product afterUpdate = productMapper.selectById(product.getId());
+        assertEquals(40, afterUpdate.getStock());
+        assertEquals(0, afterUpdate.getStockVersion());
+
+        orderService.cancelOrder(created.getOrderId());
+
+        assertEquals(50, currentStock(product));
+        assertEquals(0, currentStockVersion(product));
+    }
+
+    //NOTE：显式提交与旧库存相同的数值也视为重新确认库存基准
+    @Test
+    void merchantStockReset_shouldAdvanceVersionEvenWhenValueIsUnchanged() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 50);
+
+        resetStock(product, 50);
+
+        assertEquals(50, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+        assertEquals(1, productMapper.selectById(product.getId()).getVersion());
+    }
+
+    //NOTE：重设库存后创建的新订单记录新版本，取消时按新基准回补
+    @Test
+    void cancelOrder_shouldRestoreNewOrderAgainstBaselineCreatedAfterReset() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 50);
+        CreateOrderVO oldOrder = createOrderFor(product, 10);
+        resetStock(product, 100);
+        orderService.cancelOrder(oldOrder.getOrderId());
+        assertEquals(100, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+
+        CreateOrderVO newOrder = createOrderFor(product, 20);
+        OrderItem newItem = singleOrderItem(newOrder.getOrderId());
+        assertEquals(1, newItem.getStockVersion());
+        assertEquals(80, currentStock(product));
+
+        orderService.cancelOrder(newOrder.getOrderId());
+
+        assertEquals(100, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+    }
+
+    //NOTE：下单准备阶段之后、真正扣减之前发生库存重设，明细必须记录扣减时的版本而不是准备快照版本
+    @Test
+    void createOrder_shouldRecordVersionReadAtDeductionNotPreparationSnapshot() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
+        insertCartItem(product, 3);
+        CreateOrderDTO dto = TestDataFactory.createOrderDTO();
+        doAnswer(invocation -> {
+            resetStock(product, 100);
+            return invocation.callRealMethod();
+        }).when(orderTransactionExecutor).executeOrderCreation(
+                any(OrderDataContext.class), eq(dto), eq(TEST_USER_ID), anyString());
+
+        CreateOrderVO created = orderService.createOrder(dto);
+
+        OrderItem item = singleOrderItem(created.getOrderId());
+        assertEquals(1, item.getStockVersion(), "应记录扣减时读到的库存基准版本");
+        assertEquals(97, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+    }
+
+    //NOTE：超时自动取消路径同样按库存版本判断，不覆盖商家新基准
+    @Test
+    void timeoutCancel_shouldSkipRestoreAfterMerchantStockReset() {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 50);
+        CreateOrderVO created = createOrderFor(product, 10);
+        resetStock(product, 100);
+        LocalDateTime now = LocalDateTime.now();
+        jdbcTemplate.update("""
+                UPDATE orders
+                SET create_time = ?, timeout_cancel_available_at = ?
+                WHERE id = ?
+                """, now.minusMinutes(31), now.minusMinutes(1), created.getOrderId());
+
+        assertTrue(orderService.cancelTimeoutOrder(created.getOrderId(), now.minusMinutes(30)));
+
+        Order cancelled = orderMapper.selectById(created.getOrderId());
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(), cancelled.getStatus());
+        assertEquals(OrderCancelSourceEnum.TIMEOUT.getCode(), cancelled.getCancelSource());
+        assertEquals(100, currentStock(product));
+        assertEquals(1, currentStockVersion(product));
+    }
+
+    //NOTE：重设库存与取消并发时，最终库存只能是新基准或被取消恢复后的旧基准，绝不能叠加成 110
+    @Test
+    void concurrentStockResetAndCancelShouldNeverRestoreOntoNewBaseline() throws Exception {
+        insertMerchant();
+        Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 50);
+        CreateOrderVO created = createOrderFor(product, 10);
+
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicReference<Throwable> resetFailure = new AtomicReference<>();
+        AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
+        Thread resetThread = new Thread(() -> {
+            try {
+                start.await();
+                resetStock(product, 100);
+            } catch (Throwable failure) {
+                resetFailure.set(failure);
+            } finally {
+                MerchantContextHolder.clear();
+            }
+        });
+        Thread cancelThread = new Thread(() -> {
+            UserContextHolder.setUserId(TEST_USER_ID);
+            try {
+                start.await();
+                orderService.cancelOrder(created.getOrderId());
+            } catch (Throwable failure) {
+                cancelFailure.set(failure);
+            } finally {
+                UserContextHolder.clear();
+            }
+        });
+
+        resetThread.start();
+        cancelThread.start();
+        start.countDown();
+        resetThread.join(10_000);
+        cancelThread.join(10_000);
+
+        assertFalse(resetThread.isAlive(), "库存重设线程未结束");
+        assertFalse(cancelThread.isAlive(), "取消线程未结束");
+        assertNull(cancelFailure.get(), "取消订单不应失败");
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(),
+                orderMapper.selectById(created.getOrderId()).getStatus());
+
+        int finalStock = currentStock(product);
+        int finalStockVersion = currentStockVersion(product);
+        if (resetFailure.get() == null) {
+            assertEquals(100, finalStock, "商家重设成功后库存不得再叠加旧订单回补");
+            assertEquals(1, finalStockVersion);
+        } else {
+            assertInstanceOf(BusinessException.class, resetFailure.get(),
+                    "库存重设失败应来自乐观锁冲突");
+            assertEquals(50, finalStock, "重设失败时取消应正常回补旧基准");
+            assertEquals(0, finalStockVersion);
+        }
+        assertNotEquals(110, finalStock);
     }
 
     //NOTE：测试库存不足时创建订单会失败且不修改库存、购物车和订单数据
@@ -364,6 +634,8 @@ class OrderServiceIntegrationTest {
         assertEquals(1, orderItems.size());
         assertEquals(5, orderItems.get(0).getQuantity());
         assertEquals(product.getImageUrl(), orderItems.get(0).getProductPicture());
+        assertEquals(productMapper.selectById(product.getId()).getStockVersion(),
+                orderItems.get(0).getStockVersion());
         assertEquals(0L, countTestUserCartItems());
         assertNull(CartHeaderTestFixture.merchantId(jdbcTemplate, TEST_USER_ID));
     }
@@ -1093,11 +1365,6 @@ class OrderServiceIntegrationTest {
                 }).firstResult();
     }
 
-    private void assertExpectedConcurrentCancelFailure(Throwable firstFailure, Throwable secondFailure) {
-        Throwable failure = firstFailure == null ? secondFailure : firstFailure;
-        assertInstanceOf(BusinessException.class, failure);
-    }
-
     private void assertExpectedConcurrentPayFailure(Throwable firstFailure, Throwable secondFailure) {
         Throwable failure = firstFailure == null ? secondFailure : firstFailure;
         assertInstanceOf(BusinessException.class, failure);
@@ -1182,6 +1449,39 @@ class OrderServiceIntegrationTest {
         insertCategory();
         productMapper.insert(product);
         return product;
+    }
+
+    private CreateOrderVO createOrderFor(Product product, int quantity) {
+        insertCartItem(product, quantity);
+        return orderService.createOrder(TestDataFactory.createOrderDTO());
+    }
+
+    private OrderItem singleOrderItem(Long orderId) {
+        List<OrderItem> items = orderItemMapper.selectList(Wrappers.<OrderItem>lambdaQuery()
+                .eq(OrderItem::getOrderId, orderId));
+        assertEquals(1, items.size());
+        return items.get(0);
+    }
+
+    private int currentStock(Product product) {
+        return productMapper.selectById(product.getId()).getStock();
+    }
+
+    private int currentStockVersion(Product product) {
+        return productMapper.selectById(product.getId()).getStockVersion();
+    }
+
+    private void resetStock(Product product, int newStock) {
+        Product current = productMapper.selectById(product.getId());
+        UpdateProductDTO update = new UpdateProductDTO();
+        update.setStock(newStock);
+        update.setVersion(current.getVersion());
+        MerchantContextHolder.setMerchantId(TEST_MERCHANT_ID);
+        try {
+            productService.updateProduct(product.getId(), update);
+        } finally {
+            MerchantContextHolder.clear();
+        }
     }
 
     private Order insertOrder(Integer status) {

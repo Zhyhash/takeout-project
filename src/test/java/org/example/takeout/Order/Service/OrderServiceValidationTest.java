@@ -12,6 +12,7 @@ import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
+import org.example.takeout.Order.Enums.OrderCancelSourceEnum;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderConvertor;
 import org.example.takeout.Order.Mapper.OrderItemMapper;
@@ -183,13 +184,49 @@ class OrderServiceValidationTest {
     }
 
     @Test
+    void cancelOrderReturnsSuccessWithoutRestoringStockWhenAlreadyCancelled() {
+        UserContextHolder.setUserId(22L);
+        Order cancelledOrder = new Order();
+        cancelledOrder.setStatus(OrderStatusEnum.CANCELLED.getCode());
+        when(orderMapper.selectOne(any())).thenReturn(cancelledOrder);
+
+        assertDoesNotThrow(() -> orderService.cancelOrder(501L));
+
+        verifyNoInteractions(orderItemMapper, orderItemService);
+    }
+
+    @Test
+    void cancelOrderRejectsMissingOrOtherUsersOrder() {
+        UserContextHolder.setUserId(22L);
+
+        BusinessException failure = assertThrows(BusinessException.class, () -> orderService.cancelOrder(501L));
+
+        assertEquals("订单不存在或当前状态不可取消", failure.getMessage());
+        verifyNoInteractions(orderItemMapper, orderItemService);
+    }
+
+    @Test
+    void cancelOrderRejectsPaidOrder() {
+        UserContextHolder.setUserId(22L);
+        Order paidOrder = new Order();
+        paidOrder.setStatus(OrderStatusEnum.PAID.getCode());
+        when(orderMapper.selectOne(any())).thenReturn(paidOrder);
+
+        BusinessException failure = assertThrows(BusinessException.class, () -> orderService.cancelOrder(501L));
+
+        assertEquals("订单不存在或当前状态不可取消", failure.getMessage());
+        verifyNoInteractions(orderItemMapper, orderItemService);
+    }
+
+    @Test
     void cancelOrderRejectsOrderWithoutDetails() {
         UserContextHolder.setUserId(22L);
         when(orderMapper.UpdateOrderStatusToCancel(
                 eq(501L),
                 eq(22L),
                 anyList(),
-                eq(OrderStatusEnum.CANCELLED.getCode())
+                eq(OrderStatusEnum.CANCELLED.getCode()),
+                eq(OrderCancelSourceEnum.USER.getCode())
         )).thenReturn(1);
         when(orderItemMapper.selectList(ArgumentMatchers.<Wrapper<OrderItem>>any())).thenReturn(List.of());
 

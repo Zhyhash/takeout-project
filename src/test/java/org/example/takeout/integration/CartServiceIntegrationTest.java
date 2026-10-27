@@ -81,6 +81,8 @@ public class CartServiceIntegrationTest {
         CartHeaderTestFixture.ensureTable(jdbcTemplate);
         OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
         OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
+        OrderCancelSourceSchemaTestFixture.ensureCancelSourceColumn(jdbcTemplate);
+        StockVersionSchemaTestFixture.ensureStockVersionColumns(jdbcTemplate);
         deleteTestData();
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, USER_1_ID);
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, USER_2_ID);

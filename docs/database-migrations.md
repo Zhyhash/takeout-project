@@ -1,12 +1,14 @@
-# 数据库迁移脚本镜像
+# 数据库迁移与脚本镜像
+
+最近复核：2026-10-26。本说明由 `deploy/migrations/README.md` 移至文档包，SQL 文件没有移动；本文命令均在项目根目录执行。本次仅静态核对，未运行迁移或连接业务数据库。
 
 `src/main/resources/db/migration` 是 Flyway 迁移的权威来源。应用启动时仅扫描该 classpath 目录，`deploy/migrations` 保存同名、同内容的 SQL 镜像，便于部署审阅。
 
-本目录同步权威目录的所有 `B`、`V` SQL。`B20261008__initial_schema.sql` 用于已创建的空数据库，在应用启动时累计建表，再执行 `V20261009` 及以后的迁移；已有 Flyway 迁移历史的数据库会忽略该基线，继续升级。[Flyway 官方累计基线说明](https://documentation.red-gate.com/flyway/flyway-concepts/migrations/baseline-migrations)介绍了 `B` 脚本的选择和执行规则。
+部署镜像目录 `deploy/migrations` 同步权威目录的所有 `B`、`V` SQL。`B20261008__initial_schema.sql` 用于已创建的空数据库，在应用启动时累计建表，再执行 `V20261009` 及以后的迁移；已有 Flyway 迁移历史的数据库会忽略该基线，继续升级。[Flyway 官方累计基线说明](https://documentation.red-gate.com/flyway/flyway-concepts/migrations/baseline-migrations)介绍了 `B` 脚本的选择和执行规则。
 
-当前两个目录各有 16 份 SQL，最新版本为 `V20261017`。空库执行累计基线后，再执行 `V20261009` 至 `V20261017` 共 7 份后续迁移；已处于 `20261008` 基线的旧库也升级这 7 个版本。
+当前两个目录各有 18 份 SQL，最新版本为 `V20261026`。空库执行累计基线后，再执行 `V20261009` 至 `V20261026` 共 9 份后续迁移；已处于 `20261008` 基线的旧库也升级这 9 个版本。
 
-新增变更时，在权威目录创建更高版本的 `V<版本>__<描述>.sql`，再同步到本目录。同类迁移的版本不得重复；累计基线可以与相同版本的 `V` 脚本并存。超时取消退避使用 `V20261008__timeout_cancel_backoff.sql`。
+新增变更时，在权威目录创建更高版本的 `V<版本>__<描述>.sql`，再同步到 `deploy/migrations`。同类迁移的版本不得重复；累计基线可以与相同版本的 `V` 脚本并存。超时取消退避使用 `V20261008__timeout_cancel_backoff.sql`。
 
 `flyway_schema_history` 已记录成功的版本必须保持文件名和内容不变。Flyway 会校验其校验和；不要通过修改旧脚本或直接修改迁移历史来修复结构差异，应新增版本迁移。不要手工重复执行已有成功记录的 SQL。
 
@@ -21,6 +23,10 @@
 V14 在任何列修改前，先检查三张表是否有不同名称在 `as_cs` 下合并为同一唯一键。任一冲突会中止迁移；不得静默合并、删除或改名。预检只用会话临时表，不给业务表增加 CHECK 或改变其他字段。现有业务库是否已应用 V14，仍须以其 Flyway 历史和列定义为准。
 
 `V20261017__merchant_order_seen.sql` 为订单增加 `merchant_seen TINYINT(1) NOT NULL DEFAULT 0`，并增加 `idx_order_merchant_status_seen_create_time_id (merchant_id, status, merchant_seen, create_time, id)`，供商家首次打开页面或 SSE 重连后补查未查看待接单订单。迁移先补可空字段，再将缺失标记按 `WAIT_PAY=0`、`PAYING=1`、`PAID=2` 回填为 `false`，其他状态回填为 `true`；已有 `true` 保留，其他状态已有的 `false` 也归为 `true`，回填不改变 `update_time`。列与同序完整五列索引已有存在检查，但不能据此手工重跑 Flyway 已记录成功的版本。新订单默认未查看，页面展示后由 ACK 确认，SSE 发送成功不会提前更新该字段。
+
+`V20261018__order_cancel_source.sql` 只增加可空的 `cancel_source TINYINT NULL DEFAULT NULL`，用于记录 `1` 用户主动取消、`2` 商家拒单、`3` 系统超时取消、`4` 平台取消。迁移不回填历史数据：旧订单无法可靠区分用户取消与超时取消，因此已取消订单保持 `NULL`；非取消订单也为 `NULL`。列存在检查保证重复执行安全，已成功记录的版本不要手工重跑。应用侧用户取消、超时任务和商家拒单分别在条件更新中写入 `1`、`3`、`2`，平台取消 `4` 尚无入口。
+
+`V20261026__stock_version.sql` 为 `product` 增加独立的 `stock_version INT NOT NULL DEFAULT 0` 库存基准版本，为 `order_item` 增加 `stock_version INT NOT NULL DEFAULT 0` 预扣版本快照。历史行默认 `0`，与迁移前商品的初始基准一致；商家第一次显式重设库存后才推进到 `1`。迁移不改变历史订单行，也不回填无法还原的旧版本关系。应用侧只在商家显式提交 `stock` 的更新中执行 `stock_version = stock_version + 1`，订单预扣、取消回补、名称/价格修改和上下架均不推进该列。回补库存 SQL 以 `stock_version` 为条件，版本不一致时跳过。两个列都有存在检查，可在 `deploy/schema.sql` 已建列的新库上重复安全执行；已成功记录的版本不要手工重跑。
 
 | 失败约束名 | 数据问题 |
 |---|---|

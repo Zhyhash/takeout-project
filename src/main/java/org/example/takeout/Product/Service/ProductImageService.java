@@ -17,6 +17,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * 商品图片清理服务。
+ * 扫描上传超过 24 小时的本地商品图片，删除未被商品记录引用的文件。
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j

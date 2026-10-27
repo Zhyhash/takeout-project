@@ -8,8 +8,11 @@ import java.math.BigDecimal;
 
 @Data
 public class UpdateProductDTO {
+    /**
+     * PATCH 部分更新：null 表示不修改该字段；显式提交时仍要求非空白。
+     */
     @Size(max = 15, message = "商品名称长度不能超过15个字符")
-    @NotBlank(message = "商品名称不得为空")
+    @Pattern(regexp = ".*\\S.*", message = "商品名称不得为空")
     private String productName;
 
     @Size(max = 100, message = "商品描述长度不能超过100个字符")
@@ -19,6 +22,9 @@ public class UpdateProductDTO {
     @DecimalMax(value = "99999.99", message = "商品价格不能超过99999.99")
     private BigDecimal price;
 
+    /**
+     * null 表示不修改库存；显式提交时按绝对值重设库存基准。
+     */
     @Min(value = 0, message = "库存数量不能为负数")
     @Max(value = 10000, message = "库存不能超过10000")
     private Integer stock;

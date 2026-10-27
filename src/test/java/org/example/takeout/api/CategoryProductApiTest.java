@@ -10,7 +10,6 @@ import org.example.takeout.Product.VO.MerchantProductVO;
 import org.example.takeout.Product.VO.ProductVO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -94,7 +93,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                         "/category/products/image"));
 
         verify(productService).uploadImage(file);
-        verify(merchantService).requireActiveMerchantId();
+        verify(merchantAccountService).requireActiveMerchantId();
     }
 
     @Test
@@ -342,7 +341,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
     void listProductsReturnsPage() throws Exception {
         MerchantProductVO listedProduct = merchantProductVO(301L, "Rice");
         listedProduct.setVersion(2);
-        when(productService.listProducts(1, 10, null, null))
+        when(productService.listProducts(1, 10, null, null, null))
                 .thenReturn(new PageInfo<>(List.of(listedProduct)));
 
         mockMvc.perform(get("/category/products")
@@ -353,6 +352,25 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data.list[0].status").value(0))
                 .andExpect(jsonPath("$.data.list[0].statusDesc").value("正在销售"))
                 .andExpect(jsonPath("$.data.list[0].version").value(2));
+    }
+
+    @Test
+    void listProductsPassesKeywordAndFiltersToService() throws Exception {
+        when(productService.listProducts(2, 20, 0, 1L, "Rice"))
+                .thenReturn(new PageInfo<>(List.of(merchantProductVO(301L, "Rice"))));
+
+        mockMvc.perform(get("/category/products")
+                        .header("Authorization", merchantBearer())
+                        .param("pageNum", "2")
+                        .param("pageSize", "20")
+                        .param("status", "0")
+                        .param("categoryId", "1")
+                        .param("keyword", "Rice"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data.list[0].productName").value("Rice"));
+
+        verify(productService).listProducts(2, 20, 0, 1L, "Rice");
     }
 
     @Test
@@ -423,7 +441,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
                 .thenReturn(updatedProduct);
 
-        mockMvc.perform(put("/category/products/301")
+        mockMvc.perform(patch("/category/products/301")
                         .header("Authorization", merchantBearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(dto)))
@@ -438,7 +456,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         UpdateProductDTO dto = updateProductDTO();
         dto.setVersion(null);
 
-        mockMvc.perform(put("/category/products/301")
+        mockMvc.perform(patch("/category/products/301")
                         .header("Authorization", merchantBearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(dto)))
@@ -446,14 +464,30 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(PARAM_ERROR));
     }
 
+    @Test
+    void updateProductAllowsOmittedNameForPartialPatch() throws Exception {
+        UpdateProductDTO dto = updateProductDTO();
+        dto.setProductName(null);
+        when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
+                .thenReturn(merchantProductVO(301L, "Updated Rice"));
+
+        mockMvc.perform(patch("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS));
+
+        verify(productService).updateProduct(eq(301L), argThat(update -> update.getProductName() == null));
+    }
+
     @ParameterizedTest
-    @NullAndEmptySource
-    @ValueSource(strings = "   ")
-    void updateProductRequiresNonblankName(String name) throws Exception {
+    @ValueSource(strings = {"", "   "})
+    void updateProductRejectsExplicitlyBlankName(String name) throws Exception {
         UpdateProductDTO dto = updateProductDTO();
         dto.setProductName(name);
 
-        mockMvc.perform(put("/category/products/301")
+        mockMvc.perform(patch("/category/products/301")
                         .header("Authorization", merchantBearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(dto)))
@@ -461,6 +495,25 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(PARAM_ERROR));
 
         verifyNoInteractions(productService);
+    }
+
+    @Test
+    void updateProductAllowsStockOnlyPatchWithoutOtherFields() throws Exception {
+        UpdateProductDTO dto = new UpdateProductDTO();
+        dto.setStock(20);
+        dto.setVersion(0);
+        when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
+                .thenReturn(merchantProductVO(301L, "Updated Rice"));
+
+        mockMvc.perform(patch("/category/products/301")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS));
+
+        verify(productService).updateProduct(eq(301L), argThat(update ->
+                update.getStock() == 20 && update.getProductName() == null));
     }
 
     @ParameterizedTest
@@ -471,7 +524,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
                 .thenReturn(merchantProductVO(301L, "Updated Rice"));
 
-        mockMvc.perform(put("/category/products/301")
+        mockMvc.perform(patch("/category/products/301")
                         .header("Authorization", merchantBearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(dto)))
@@ -488,7 +541,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         UpdateProductDTO dto = updateProductDTO();
         dto.setPrice(new BigDecimal(price));
 
-        mockMvc.perform(put("/category/products/301")
+        mockMvc.perform(patch("/category/products/301")
                         .header("Authorization", merchantBearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(dto)))
@@ -506,7 +559,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         when(productService.updateProduct(any(Long.class), any(UpdateProductDTO.class)))
                 .thenReturn(merchantProductVO(301L, "Updated Rice"));
 
-        mockMvc.perform(put("/category/products/301")
+        mockMvc.perform(patch("/category/products/301")
                         .header("Authorization", merchantBearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(dto)))
@@ -520,7 +573,7 @@ class CategoryProductApiTest extends AbstractMockMvcApiTest {
         UpdateProductDTO dto = updateProductDTO();
         dto.setStock(stock);
 
-        mockMvc.perform(put("/category/products/301")
+        mockMvc.perform(patch("/category/products/301")
                         .header("Authorization", merchantBearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(dto)))

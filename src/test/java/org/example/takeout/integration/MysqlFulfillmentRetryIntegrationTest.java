@@ -5,7 +5,7 @@ import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
-import org.example.takeout.Merchant.Service.MerchantService;
+import org.example.takeout.Merchant.Service.FulfillmentService;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Service.OrderCommandService;
 import org.example.takeout.Product.Config.ProductImageCleanupService;
@@ -64,7 +64,7 @@ class MysqlFulfillmentRetryIntegrationTest {
     private JdbcTemplate jdbcTemplate;
 
     @Autowired
-    private MerchantService merchantService;
+    private FulfillmentService fulfillmentService;
 
     @Autowired
     private DeliveryTaskService deliveryTaskService;
@@ -131,13 +131,13 @@ class MysqlFulfillmentRetryIntegrationTest {
         seedOrder(OrderStatusEnum.PREPARING.getCode());
         RetryGate gate = new RetryGate();
         doAnswer(invocation -> {
-            // MerchantService already performed its real merchant SELECT in this transaction.
+            // FulfillmentService already performed its real merchant SELECT in this transaction.
             gate.pauseAfterAccountRead();
             return invocation.callRealMethod();
         }).when(orderCommandService).markReadyByMerchant(ORDER_ID, MERCHANT_ID);
 
         TaskState committedTask = runReplayAfterCommit(gate,
-                () -> asMerchant(() -> merchantService.completePreparation(ORDER_ID)));
+                () -> asMerchant(() -> fulfillmentService.completePreparation(ORDER_ID)));
 
         assertThat(orderStatus()).isEqualTo(OrderStatusEnum.READY.getCode());
         assertThat(committedTask.status()).isEqualTo(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
@@ -362,6 +362,7 @@ class MysqlFulfillmentRetryIntegrationTest {
                             request_id VARCHAR(64) NULL, request_hash CHAR(64) NOT NULL,
                             merchant_id BIGINT NOT NULL, merchant_name VARCHAR(255) NOT NULL,
                             total_amount DECIMAL(10,2) NULL, status TINYINT NOT NULL,
+                            cancel_source TINYINT NULL,
                             receiver_name VARCHAR(20) NOT NULL, receiver_phone VARCHAR(20) NOT NULL,
                             receiver_address VARCHAR(255) NOT NULL, remark VARCHAR(255) NULL,
                             create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

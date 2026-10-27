@@ -1,13 +1,33 @@
 package org.example.takeout.CacheInvalidationTask.Mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
 import org.example.takeout.CacheInvalidationTask.Entity.CacheInvalidationTask;
 
+import java.time.LocalDateTime;
+
 @Mapper
 public interface CacheInvalidationTaskMapper extends BaseMapper<CacheInvalidationTask> {
+    @Delete("""
+            DELETE FROM cache_invalidation_task
+            WHERE status = #{successStatus}
+              AND created_time <= #{createdBefore}
+              AND id IN (
+                  SELECT id FROM (
+                      SELECT id FROM cache_invalidation_task
+                      WHERE status = #{successStatus}
+                        AND created_time <= #{createdBefore}
+                      ORDER BY created_time ASC, id ASC
+                      LIMIT 1000
+                  ) expired_success_tasks
+              )
+            """)
+    int deleteExpiredSuccessfulTasks(@Param("successStatus") Integer successStatus,
+                                    @Param("createdBefore") LocalDateTime createdBefore);
+
     @Update("""
             UPDATE cache_invalidation_task
             SET status = 1
@@ -20,11 +40,11 @@ public interface CacheInvalidationTaskMapper extends BaseMapper<CacheInvalidatio
     @Update("""
             UPDATE cache_invalidation_task
             SET status = CASE
-                    WHEN retry_count >= 5 THEN #{failedStatus}
+                    WHEN retry_count >= 4 THEN #{failedStatus}
                     ELSE #{pendingStatus}
                 END,
                 next_retry_time = CASE
-                    WHEN retry_count >= 5 THEN next_retry_time
+                    WHEN retry_count >= 4 THEN next_retry_time
                     ELSE TIMESTAMPADD(
                         SECOND,
                         CASE retry_count
@@ -40,6 +60,7 @@ public interface CacheInvalidationTaskMapper extends BaseMapper<CacheInvalidatio
                 retry_count = retry_count + 1
             WHERE id = #{id}
               AND status = #{status}
+            ORDER BY next_retry_time
             """)
     int recordShortPeriodRetryFailure(@Param("id") Long id,
                                       @Param("status") Integer status,
@@ -53,6 +74,7 @@ public interface CacheInvalidationTaskMapper extends BaseMapper<CacheInvalidatio
                  next_retry_time = TIMESTAMPADD(HOUR, 1, NOW())
              WHERE id = #{id}
                AND status = #{status}
+            ORDER BY next_retry_time
              """)
     int recordLongIntervalRetryFailure(@Param("id") Long id,
                             @Param("status") Integer status);

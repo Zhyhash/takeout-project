@@ -19,7 +19,7 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Local Codex mentoring context
-/REDIS_LEARNING_LOG.md
-/Java后端实习面试题库.md
-/项目面试准备报告.md
+# Keep relocated local documents out of Git as well
+/docs/REDIS_LEARNING_LOG.md
+/docs/Java后端实习面试题库.md
+/docs/项目面试准备报告.md

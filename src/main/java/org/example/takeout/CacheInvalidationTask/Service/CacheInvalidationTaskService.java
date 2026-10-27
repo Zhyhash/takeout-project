@@ -17,6 +17,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.LocalDateTime;
 import java.util.List;
 
+/**
+ * 缓存失效任务服务。
+ * 在业务事务内记录失效任务，提交后尝试删除缓存，并按任务状态重试未完成的删除。
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -102,6 +106,16 @@ public class CacheInvalidationTaskService {
                 }
             }
         }
+    }
+
+    /**
+     * 每轮最多删除 1000 条创建已满 7 天的成功任务；待处理和失败任务始终保留。
+     */
+    public int cleanupSuccessfulTasks() {
+        return cacheInvalidationTaskMapper.deleteExpiredSuccessfulTasks(
+                CacheInvalidationTaskStatus.SUCCESS.getCode(),
+                LocalDateTime.now().minusDays(7)
+        );
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

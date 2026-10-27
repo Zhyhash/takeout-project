@@ -84,7 +84,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data").value("success"));
 
         verify(userService).register(argThat(actual -> loginName.equals(actual.getUsername())));
-        verifyNoInteractions(merchantService, riderService);
+        verifyNoInteractions(merchantAccountService, riderService);
     }
 
     @ParameterizedTest
@@ -103,7 +103,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data.token").value("user-token"));
 
         verify(userService).login(argThat(actual -> loginName.equals(actual.getUsername())));
-        verifyNoInteractions(merchantService, riderService);
+        verifyNoInteractions(merchantAccountService, riderService);
     }
 
     @ParameterizedTest
@@ -119,7 +119,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data").value("success"));
 
-        verify(merchantService).register(argThat(actual -> loginName.equals(actual.getUsername())));
+        verify(merchantAccountService).register(argThat(actual -> loginName.equals(actual.getUsername())));
         verifyNoInteractions(userService, riderService);
     }
 
@@ -128,7 +128,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     void merchantLoginPreservesLegalLoginName(String loginName) throws Exception {
         MerchantLoginDTO dto = merchantLoginDTO();
         dto.setUsername(loginName);
-        when(merchantService.login(any(MerchantLoginDTO.class))).thenReturn(merchantLoginVO());
+        when(merchantAccountService.login(any(MerchantLoginDTO.class))).thenReturn(merchantLoginVO());
 
         mockMvc.perform(post("/merchant/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -138,7 +138,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data.id").value(201))
                 .andExpect(jsonPath("$.data.token").value("merchant-token"));
 
-        verify(merchantService).login(argThat(actual -> loginName.equals(actual.getUsername())));
+        verify(merchantAccountService).login(argThat(actual -> loginName.equals(actual.getUsername())));
         verifyNoInteractions(userService, riderService);
     }
 
@@ -268,7 +268,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Test
     void merchantRegisterRejectsDuplicateUsername() throws Exception {
         MerchantRegisterDTO dto = merchantRegisterDTO();
-        doThrow(businessError("merchant exists")).when(merchantService).register(any(MerchantRegisterDTO.class));
+        doThrow(businessError("merchant exists")).when(merchantAccountService).register(any(MerchantRegisterDTO.class));
 
         mockMvc.perform(post("/merchant/register")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -280,7 +280,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Test
     void merchantLoginReturnsToken() throws Exception {
         MerchantLoginDTO dto = merchantLoginDTO();
-        when(merchantService.login(any(MerchantLoginDTO.class))).thenReturn(merchantLoginVO());
+        when(merchantAccountService.login(any(MerchantLoginDTO.class))).thenReturn(merchantLoginVO());
 
         mockMvc.perform(post("/merchant/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -330,7 +330,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Test
     void merchantLoginRejectsWrongCredentials() throws Exception {
         MerchantLoginDTO dto = merchantLoginDTO();
-        when(merchantService.login(any(MerchantLoginDTO.class))).thenThrow(businessError("bad credentials"));
+        when(merchantAccountService.login(any(MerchantLoginDTO.class))).thenThrow(businessError("bad credentials"));
 
         mockMvc.perform(post("/merchant/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -342,7 +342,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
     @Test
     void updateMerchantInfoReturnsUpdatedInfo() throws Exception {
         MerchantUpdateDTO dto = merchantUpdateDTO();
-        when(merchantService.updateMerchant(any(MerchantUpdateDTO.class))).thenReturn(merchantUpdateVO());
+        when(merchantAccountService.updateMerchant(any(MerchantUpdateDTO.class))).thenReturn(merchantUpdateVO());
 
         mockMvc.perform(put("/merchant/info")
                         .header("Authorization", merchantBearer())
@@ -416,7 +416,18 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data").value("success"));
 
-        verify(merchantService).acceptOrder(501L);
+        verify(fulfillmentService).acceptOrder(501L);
+    }
+
+    @Test
+    void merchantRejectOrderReturnsSuccess() throws Exception {
+        mockMvc.perform(patch("/merchant/orders/501/reject")
+                        .header("Authorization", merchantBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").value("success"));
+
+        verify(fulfillmentService).rejectOrder(501L);
     }
 
     @Test
@@ -427,7 +438,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data").value("success"));
 
-        verify(merchantService).completePreparation(501L);
+        verify(fulfillmentService).completePreparation(501L);
     }
 
     @Test
@@ -557,7 +568,7 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
 
-        verifyNoInteractions(userService, merchantService, riderService);
+        verifyNoInteractions(userService, merchantAccountService, riderService);
     }
 
     private RegisterDTO userRegisterDTO() {
@@ -609,6 +620,6 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
 
-        verify(merchantService, never()).updateMerchant(any(MerchantUpdateDTO.class));
+        verify(merchantAccountService, never()).updateMerchant(any(MerchantUpdateDTO.class));
     }
 }

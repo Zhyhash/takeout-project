@@ -22,7 +22,9 @@ public enum ResultCodeEnum {
 
     CART_EMPTY(2001, "购物车为空，无法创建订单"),
 
-    FILE_UPLOAD_ERROR(2001,"文件上传异常，请稍后再试"),
+    FILE_UPLOAD_ERROR(2002,"文件上传异常，请稍后再试"),
+
+    SERVICE_UNAVAILABLE(2003,"当前服务不可用，请稍后再试"),
 
     SERVER_ERROR(5000, "服务器异常");
 

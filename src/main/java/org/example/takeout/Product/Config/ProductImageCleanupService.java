@@ -5,6 +5,10 @@ import org.example.takeout.Product.Service.ProductImageService;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+/**
+ * 商品图片清理的定时调度入口。
+ * 每隔 12 小时调用图片服务，清理未被商品记录引用的过期上传图片。
+ */
 @Component
 @RequiredArgsConstructor
 public class ProductImageCleanupService {

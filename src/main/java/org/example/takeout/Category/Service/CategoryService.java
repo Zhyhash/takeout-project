@@ -24,6 +24,11 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+/**
+ * 商家商品分类管理服务。
+ * 负责当前商家的分类查询、创建与删除，删除分类时将其商品迁移到默认分类，
+ * 并为商品管理和店铺展示提供分类校验、加锁及批量查询能力。
+ */
 @Service
 @RequiredArgsConstructor
 public class CategoryService {

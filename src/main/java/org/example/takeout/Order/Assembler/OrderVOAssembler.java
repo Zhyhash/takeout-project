@@ -17,6 +17,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 //NOTE:构建类，构建对象（Order/OrderItem组装），事实上，这个类可能是多余的，就像我下面写的t odo一样
+/**
+ * 订单视图组装服务。
+ * 负责将订单和订单明细组装为详情视图与包含商品摘要的列表视图。
+ */
 @Service
 @RequiredArgsConstructor
 public class OrderVOAssembler {

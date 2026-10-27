@@ -24,7 +24,9 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * 商家订单查询。所有查询都按当前登录商家的 ID 过滤，避免跨店读取订单和收货信息。
+ * 商家订单展示与已读状态管理服务。
+ * 负责聚合订单列表、详情和商品明细，查询未读订单并标记已读。
+ * 所有操作都限定当前登录商家，避免跨店读取或修改订单数据。
  */
 @Service
 @RequiredArgsConstructor

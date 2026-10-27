@@ -22,6 +22,9 @@ public final class AuthPathMatcher {
         if (HttpMethod.OPTIONS.matches(method)) {
             return true;
         }
+        if (isBrowseHistoryPath(path)) {
+            return false;
+        }
         if (HttpMethod.GET.matches(method)
                 && PATH_MATCHER.match("/uploads/products/**", path)) {
             return true;
@@ -70,7 +73,13 @@ public final class AuthPathMatcher {
     }
 
     public static boolean requiresUser(String path) {
-        return PATH_MATCHER.match("/cart/**", path) || PATH_MATCHER.match("/order/**", path);
+        return PATH_MATCHER.match("/cart/**", path) || PATH_MATCHER.match("/order/**", path)
+                || isBrowseHistoryPath(path);
+    }
+
+    private static boolean isBrowseHistoryPath(String path) {
+        return PATH_MATCHER.match("/user/browse-history", path)
+                || PATH_MATCHER.match("/user/browse-history/**", path);
     }
 
     public static boolean requiresMerchant(String path) {

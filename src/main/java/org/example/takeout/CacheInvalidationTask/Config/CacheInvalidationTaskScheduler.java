@@ -22,4 +22,9 @@ public class CacheInvalidationTaskScheduler {
         cacheInvalidationTaskService.retryFailedTasks();
     }
 
+    @Scheduled(fixedDelay = 1000*60*60)
+    public void cleanupSuccessfulTasks() {
+        cacheInvalidationTaskService.cleanupSuccessfulTasks();
+    }
+
 }
