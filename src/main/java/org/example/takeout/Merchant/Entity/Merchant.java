@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 
@@ -21,6 +22,11 @@ public class Merchant {
     private String phone;
 
     private String address;
+
+    // 店铺取货坐标，用于把配送任务写入可接任务 GEO；未配置时任务不进入附近查询。
+    private BigDecimal longitude;
+
+    private BigDecimal latitude;
 
     @TableField(value = "picture")
     private String pictureURL;

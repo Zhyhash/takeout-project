@@ -10,6 +10,10 @@ spring:
     url: ${DB_URL}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+  data:
+    redis:
+      connect-timeout: 2s
+      timeout: 2s
   jackson:
     time-zone: Asia/Shanghai
   flyway:

@@ -6,16 +6,19 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
+import org.example.takeout.DeliveryTask.Service.DeliveryTaskGeoService;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Service.OrderCommandService;
 import org.example.takeout.Order.Service.OrderService;
+import org.example.takeout.Rider.Service.RiderLocationService;
 import org.example.takeout.Rider.Service.RiderService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -25,6 +28,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 
@@ -54,6 +59,12 @@ class DeliveryTaskServiceTest {
 
     @Mock
     private RiderService riderService;
+
+    @Mock
+    private DeliveryTaskGeoService deliveryTaskGeoService;
+
+    @Mock
+    private RiderLocationService riderLocationService;
 
     @Mock
     private DeliveryFeeCalculator deliveryFeeCalculator;
@@ -121,6 +132,100 @@ class DeliveryTaskServiceTest {
 
         assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
         verifyNoInteractions(orderService);
+    }
+
+    @Test
+    void claimRemovesGeoOnlyAfterCommitAndReconcilesWhenRemovalFails() {
+        mockActiveRider();
+        mockTaskUpdate(1);
+        when(deliveryTaskMapper.selectOne(any()))
+                .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
+        doThrow(new RedisGeoOperationException("remove failed"))
+                .when(deliveryTaskGeoService).removeAvailableTask(501L);
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertDoesNotThrow(() -> deliveryTaskService.claimTask(501L));
+            verifyNoInteractions(deliveryTaskGeoService);
+
+            TransactionSynchronization synchronization = TransactionSynchronizationManager
+                    .getSynchronizations().get(0);
+            synchronization.afterCommit();
+
+            verify(deliveryTaskGeoService).removeAvailableTask(501L);
+            verify(deliveryTaskGeoService).reconcileAvailableTaskGeo(501L);
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+        }
+    }
+
+    @Test
+    void claimGeoFailureAfterCommitDoesNotChangeSuccessfulClaimResult() {
+        mockActiveRider();
+        mockTaskUpdate(1);
+        when(deliveryTaskMapper.selectOne(any()))
+                .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
+        doThrow(new RedisGeoOperationException("remove failed"))
+                .when(deliveryTaskGeoService).removeAvailableTask(501L);
+        doThrow(new RedisGeoOperationException("reconcile failed"))
+                .when(deliveryTaskGeoService).reconcileAvailableTaskGeo(501L);
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertDoesNotThrow(() -> deliveryTaskService.claimTask(501L));
+            TransactionSynchronizationManager.getSynchronizations().get(0).afterCommit();
+
+            verify(orderCommandService).updateOrderStatusToDelivering(601L);
+            verify(deliveryTaskGeoService).reconcileAvailableTaskGeo(501L);
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+        }
+    }
+
+    @Test
+    void claimGeoRemovalIsNotRunWhenTheTransactionRollsBack() {
+        mockActiveRider();
+        mockTaskUpdate(1);
+        when(deliveryTaskMapper.selectOne(any()))
+                .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertDoesNotThrow(() -> deliveryTaskService.claimTask(501L));
+            TransactionSynchronizationManager.getSynchronizations().get(0)
+                    .afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+
+            verifyNoInteractions(deliveryTaskGeoService);
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+        }
+    }
+
+    @Test
+    void failedOrderTransitionDoesNotRegisterGeoRemoval() {
+        mockActiveRider();
+        mockTaskUpdate(1);
+        when(deliveryTaskMapper.selectOne(any()))
+                .thenReturn(deliveryTask(DeliveryTaskEnums.DELIVERING.getCode()));
+        doThrow(businessFailure()).when(orderCommandService)
+                .updateOrderStatusToDelivering(601L);
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThrows(BusinessException.class, () -> deliveryTaskService.claimTask(501L));
+            assertTrue(TransactionSynchronizationManager.getSynchronizations().isEmpty());
+            verifyNoInteractions(deliveryTaskGeoService);
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+        }
     }
 
     @Test
@@ -216,6 +321,8 @@ class DeliveryTaskServiceTest {
         Merchant merchant = new Merchant();
         merchant.setAddress("商家地址");
         merchant.setPhone("13900139000");
+        merchant.setLongitude(BigDecimal.valueOf(121.4737));
+        merchant.setLatitude(BigDecimal.valueOf(31.2304));
         when(deliveryFeeCalculator.calculateDeliveryReward())
                 .thenReturn(BigDecimal.valueOf(5));
         when(deliveryTaskMapper.insert(any(DeliveryTask.class))).thenReturn(1);
@@ -232,8 +339,26 @@ class DeliveryTaskServiceTest {
         assertEquals("测试地址", task.getReceiverAddress());
         assertEquals("商家地址", task.getMerchantAddress());
         assertEquals("13900139000", task.getMerchantPhone());
+        assertEquals(0, BigDecimal.valueOf(121.4737).compareTo(task.getPickupLongitude()));
+        assertEquals(0, BigDecimal.valueOf(31.2304).compareTo(task.getPickupLatitude()));
         assertEquals(0, BigDecimal.valueOf(5).compareTo(task.getDeliveryReward()));
         assertEquals(DeliveryTaskEnums.WAIT_ASSIGN.getCode(), task.getStatus());
+    }
+
+    @Test
+    void taskCreationReturnsGeneratedTaskId() {
+        when(deliveryFeeCalculator.calculateDeliveryReward())
+                .thenReturn(BigDecimal.valueOf(5));
+        when(deliveryTaskMapper.insert(any(DeliveryTask.class)))
+                .thenAnswer(invocation -> {
+                    DeliveryTask task = invocation.getArgument(0);
+                    task.setId(501L);
+                    return 1;
+                });
+
+        Long taskId = deliveryTaskService.createWaitingTask(new Order(), new Merchant());
+
+        assertEquals(501L, taskId);
     }
 
     @Test

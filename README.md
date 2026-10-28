@@ -8,11 +8,11 @@
 | --- | --- |
 | [完整项目说明](docs/project-guide.md) | 技术栈、模块、环境变量、启动、测试与数据库初始化 |
 | [架构与业务流程](docs/architecture/README.md) | 模块依赖、订单创建、履约、缓存、购物车与实现边界 |
-| [Redis 学习与实现](docs/REDIS_LEARNING_LOG.md) | 缓存锁租期/看门狗边界、登录与下单限流、GEO、独立实验和学习路线 |
+| [Redis 接入与故障边界](docs/project-guide.md#8-redis-的接入范围与故障边界) | 商品缓存、登录与下单限流、骑手位置、任务 GEO 与降级策略 |
 | [数据库结构](docs/数据库结构.md) / [迁移说明](docs/database-migrations.md) | 表、索引、版本化升级与部署 SQL 镜像 |
 | [状态流转](docs/状态流转表.md) / [幂等设计](docs/IdempotencyDesign.md) | 订单、配送、取消来源与重复请求处理 |
 | [当前风险复核](docs/当前项目风险与架构复核_2026-10-11.md) | 尚未修复风险、已接受边界与历史验证记录 |
-| [本次文档核查](docs/documentation-review-2026-10-26.md) | 2026-10-26 发现的过期内容、更新范围与核验方式 |
+| [本次文档核查](docs/documentation-review-2026-10-28.md) | GEO 接入、全量对账、测试证据与仓库文档链接核验 |
 
 本地启动需要 JDK 17、MySQL 8，以及 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD`、`JWT_SECRET`；具体命令见[启动说明](docs/project-guide.md#6-启动方式)。数据库核心交易约束不依赖 Redis，缓存、限流和 GEO 行为的验证需要 Redis。
 

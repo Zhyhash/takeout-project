@@ -8,17 +8,25 @@ import org.example.takeout.Common.Result.Result;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.util.Objects;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandle {
+
+    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
+    public Result<?> handleMalformedRequest(Exception e) {
+        log.warn("请求体格式或参数类型错误：{}", e.getClass().getSimpleName());
+        return Result.error(ResultCodeEnum.PARAM_ERROR, "请求体格式或参数类型不正确");
+    }
 
     @ExceptionHandler(value = BusinessException.class)
     public Result<?> BusinessExceptionHandle(BusinessException e) {
@@ -120,7 +128,7 @@ public class GlobalExceptionHandle {
     @ExceptionHandler(value = RedisGeoOperationException.class)
     public Result<?> handleRedisGeoOperationException(RedisGeoOperationException e) {
         log.error("Redis GEO 位置数据处理失败：{}", e.getMessage(), e);
-        return Result.error(ResultCodeEnum.SERVER_ERROR, e.getMessage());
+        return Result.error(ResultCodeEnum.SERVER_ERROR, "位置服务暂时不可用，请稍后重试");
     }
     @ExceptionHandler(value = Exception.class)
     public  Result<?> GloballyExceptionHandle(Exception e) {

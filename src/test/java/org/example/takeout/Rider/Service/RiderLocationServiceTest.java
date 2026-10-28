@@ -4,21 +4,12 @@ import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
-import org.example.takeout.Rider.VO.RiderDistanceVO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
-import org.springframework.data.geo.Circle;
-import org.springframework.data.geo.Distance;
-import org.springframework.data.geo.GeoResult;
-import org.springframework.data.geo.GeoResults;
-import org.springframework.data.geo.Metrics;
 import org.springframework.data.geo.Point;
-import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.GeoOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -75,14 +66,14 @@ class RiderLocationServiceTest {
     }
 
     @Test
-    void updateLocationAcceptsZeroAndBoundaryCoordinates() {
+    void updateLocationAcceptsZeroAndRedisGeoBoundaryCoordinates() {
         givenActiveRider(301L);
         doReturn(1L).when(redisTemplate).execute(
                 any(RedisScript.class), anyList(), any(), any(), any(), any());
 
         riderLocationService.updateLocation(301L, 0, 0);
-        riderLocationService.updateLocation(301L, 180, 90);
-        riderLocationService.updateLocation(301L, -180, -90);
+        riderLocationService.updateLocation(301L, 180, 85.05112878);
+        riderLocationService.updateLocation(301L, -180, -85.05112878);
 
         verify(redisTemplate, times(3)).execute(
                 any(RedisScript.class), anyList(), any(), any(), any(), any());
@@ -127,6 +118,8 @@ class RiderLocationServiceTest {
         double[][] invalidCoordinates = {
                 {180.0001, LATITUDE},
                 {-180.0001, LATITUDE},
+                {LONGITUDE, 85.05112879},
+                {LONGITUDE, -85.05112879},
                 {LONGITUDE, 90.0001},
                 {LONGITUDE, -90.0001},
                 {Double.NaN, LATITUDE},
@@ -138,7 +131,7 @@ class RiderLocationServiceTest {
                     () -> riderLocationService.updateLocation(301L, coordinate[0], coordinate[1]));
 
             assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
-            assertEquals("经纬度不合法：经度必须在-180到180之间，纬度必须在-90到90之间",
+            assertEquals("经纬度不合法：经度必须在-180到180之间，纬度必须在-85.05112878到85.05112878之间",
                     exception.getMessage());
         }
 
@@ -170,128 +163,6 @@ class RiderLocationServiceTest {
     }
 
     @Test
-    void findNearbyRidersReturnsRidersInRedisOrder() {
-        Distance firstDistance = new Distance(1.5, Metrics.KILOMETERS);
-        Distance secondDistance = new Distance(3.2, Metrics.KILOMETERS);
-        GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults = geoResults(List.of(
-                geoResult("301", 121.48, 31.23, firstDistance),
-                geoResult("302", 121.50, 31.25, secondDistance)
-        ));
-        when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
-        when(geoOperations.radius(eq(LOCATION_KEY), any(Circle.class),
-                any(RedisGeoCommands.GeoRadiusCommandArgs.class))).thenReturn(geoResults);
-
-        List<RiderDistanceVO> nearbyRiders =
-                riderLocationService.findNearbyRiders(LONGITUDE, LATITUDE, 5.0);
-
-        assertEquals(2, nearbyRiders.size());
-        assertEquals("301", nearbyRiders.get(0).getRiderId());
-        assertEquals(firstDistance.toString(), nearbyRiders.get(0).getDistance());
-        assertEquals("302", nearbyRiders.get(1).getRiderId());
-        assertEquals(secondDistance.toString(), nearbyRiders.get(1).getDistance());
-    }
-
-    @Test
-    void findNearbyRidersBuildsDistanceSortedLimitedQuery() {
-        when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
-        when(geoOperations.radius(eq(LOCATION_KEY), any(Circle.class),
-                any(RedisGeoCommands.GeoRadiusCommandArgs.class)))
-                .thenReturn(geoResults(List.of()));
-
-        riderLocationService.findNearbyRiders(LONGITUDE, LATITUDE, 5.0);
-
-        ArgumentCaptor<Circle> circleCaptor = ArgumentCaptor.forClass(Circle.class);
-        ArgumentCaptor<RedisGeoCommands.GeoRadiusCommandArgs> commandArgsCaptor =
-                ArgumentCaptor.forClass(RedisGeoCommands.GeoRadiusCommandArgs.class);
-        verify(geoOperations).radius(
-                eq(LOCATION_KEY), circleCaptor.capture(), commandArgsCaptor.capture());
-
-        Circle searchArea = circleCaptor.getValue();
-        assertEquals(LONGITUDE, searchArea.getCenter().getX(), 1e-9);
-        assertEquals(LATITUDE, searchArea.getCenter().getY(), 1e-9);
-        assertEquals(5.0, searchArea.getRadius().getValue(), 1e-9);
-        assertEquals(Metrics.KILOMETERS, searchArea.getRadius().getMetric());
-
-        RedisGeoCommands.GeoRadiusCommandArgs commandArgs = commandArgsCaptor.getValue();
-        assertEquals(100L, commandArgs.getLimit().longValue());
-        assertEquals(Sort.Direction.ASC, commandArgs.getSortDirection());
-        assertTrue(commandArgs.getFlags().contains(
-                RedisGeoCommands.GeoCommandArgs.GeoCommandFlag.withDist()));
-    }
-
-    @Test
-    void findNearbyRidersReturnsEmptyListWhenNoRiderMatches() {
-        when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
-        when(geoOperations.radius(eq(LOCATION_KEY), any(Circle.class),
-                any(RedisGeoCommands.GeoRadiusCommandArgs.class)))
-                .thenReturn(geoResults(List.of()));
-
-        List<RiderDistanceVO> nearbyRiders =
-                riderLocationService.findNearbyRiders(LONGITUDE, LATITUDE, 5.0);
-
-        assertTrue(nearbyRiders.isEmpty());
-    }
-
-    @Test
-    void findNearbyRidersFailsWhenRedisReturnsNoResult() {
-        when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
-        when(geoOperations.radius(eq(LOCATION_KEY), any(Circle.class),
-                any(RedisGeoCommands.GeoRadiusCommandArgs.class))).thenReturn(null);
-
-        RedisGeoOperationException exception = assertThrows(RedisGeoOperationException.class,
-                () -> riderLocationService.findNearbyRiders(LONGITUDE, LATITUDE, 5.0));
-
-        assertEquals("GEO查询未返回结果", exception.getMessage());
-    }
-
-    @Test
-    void findNearbyRidersWrapsRedisFailure() {
-        IllegalStateException redisFailure = new IllegalStateException("redis down");
-        when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
-        when(geoOperations.radius(eq(LOCATION_KEY), any(Circle.class),
-                any(RedisGeoCommands.GeoRadiusCommandArgs.class))).thenThrow(redisFailure);
-
-        RedisGeoOperationException exception = assertThrows(RedisGeoOperationException.class,
-                () -> riderLocationService.findNearbyRiders(LONGITUDE, LATITUDE, 5.0));
-
-        assertEquals("附近骑手查询失败，请稍后重试", exception.getMessage());
-        assertSame(redisFailure, exception.getCause());
-    }
-
-    @Test
-    void findNearbyRidersRejectsInvalidRadius() {
-        for (double radiusKm : new double[]{0, -1, Double.NaN, Double.POSITIVE_INFINITY}) {
-            BusinessException exception = assertThrows(BusinessException.class,
-                    () -> riderLocationService.findNearbyRiders(LONGITUDE, LATITUDE, radiusKm));
-
-            assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
-            assertEquals("附近距离必须大于0", exception.getMessage());
-        }
-
-        verifyNoInteractions(redisTemplate);
-    }
-
-    @Test
-    void findNearbyRidersRejectsInvalidCoordinates() {
-        double[][] invalidCoordinates = {
-                {180.0001, LATITUDE},
-                {-180.0001, LATITUDE},
-                {LONGITUDE, 90.0001},
-                {LONGITUDE, -90.0001},
-                {LONGITUDE, Double.NaN}
-        };
-
-        for (double[] coordinate : invalidCoordinates) {
-            BusinessException exception = assertThrows(BusinessException.class,
-                    () -> riderLocationService.findNearbyRiders(coordinate[0], coordinate[1], 5.0));
-
-            assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
-        }
-
-        verifyNoInteractions(redisTemplate);
-    }
-
-    @Test
     void getRiderLocationReturnsStoredPoint() {
         Point storedPoint = new Point(LONGITUDE, LATITUDE);
         when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
@@ -312,11 +183,14 @@ class RiderLocationServiceTest {
     }
 
     @Test
-    void getRiderLocationReturnsEmptyWhenRedisReturnsNull() {
+    void getRiderLocationFailsWhenRedisReturnsNull() {
         when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
         when(geoOperations.position(LOCATION_KEY, RIDER_ID)).thenReturn(null);
 
-        assertTrue(riderLocationService.getRiderLocation(301L).isEmpty());
+        RedisGeoOperationException exception = assertThrows(RedisGeoOperationException.class,
+                () -> riderLocationService.getRiderLocation(301L));
+
+        assertEquals("骑手位置查询未得到执行结果", exception.getMessage());
     }
 
     @Test
@@ -366,6 +240,8 @@ class RiderLocationServiceTest {
 
     @Test
     void removeRiderLocationDeletesGeoAndLastActiveEntries() {
+        doReturn(1L).when(redisTemplate).execute(any(RedisScript.class), anyList(), any());
+
         riderLocationService.removeRiderLocation(301L);
 
         verify(redisTemplate).execute(
@@ -386,6 +262,14 @@ class RiderLocationServiceTest {
         }
 
         verifyNoInteractions(redisTemplate);
+    }
+
+    @Test
+    void removeRiderLocationFailsWhenScriptReturnsNoResult() {
+        RedisGeoOperationException exception = assertThrows(RedisGeoOperationException.class,
+                () -> riderLocationService.removeRiderLocation(301L));
+
+        assertEquals("删除骑手位置未得到执行结果", exception.getMessage());
     }
 
     @Test
@@ -465,18 +349,5 @@ class RiderLocationServiceTest {
 
     private void givenActiveRider(Long riderId) {
         when(riderService.requireActiveRiderId()).thenReturn(riderId);
-    }
-
-    private GeoResult<RedisGeoCommands.GeoLocation<String>> geoResult(
-            String riderId, double longitude, double latitude, Distance distance) {
-        return new GeoResult<>(
-                new RedisGeoCommands.GeoLocation<>(riderId, new Point(longitude, latitude)),
-                distance
-        );
-    }
-
-    private GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults(
-            List<GeoResult<RedisGeoCommands.GeoLocation<String>>> results) {
-        return new GeoResults<>(results);
     }
 }

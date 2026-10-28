@@ -3,33 +3,40 @@ package org.example.takeout.DeliveryTask.Service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.github.pagehelper.PageHelper;
-import com.github.pagehelper.PageInfo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskConverter;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
+import org.example.takeout.DeliveryTask.VO.DeliveryTaskDistanceVO;
 import org.example.takeout.DeliveryTask.VO.RiderDeliveryDetailVO;
 import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Service.OrderCommandService;
 import org.example.takeout.Order.Service.OrderService;
+import org.example.takeout.Rider.Service.RiderLocationService;
 import org.example.takeout.Rider.Service.RiderService;
+import org.springframework.data.geo.Point;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
@@ -40,12 +47,16 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class DeliveryTaskService {
+    private static final int FALLBACK_TASK_LIMIT = 500;
+
     private final DeliveryTaskMapper deliveryTaskMapper;
     private final OrderCommandService  orderCommandService;
     private final OrderService orderService;
     private final DeliveryTaskConverter deliveryTaskConverter;
     private final DeliveryFeeCalculator deliveryFeeCalculator;
     private final RiderService  riderService;
+    private final DeliveryTaskGeoService deliveryTaskGeoService;
+    private final RiderLocationService riderLocationService;
 
     @Transactional(rollbackFor = Exception.class,
             isolation = Isolation.READ_COMMITTED)
@@ -82,6 +93,26 @@ public class DeliveryTaskService {
 
         //修改订单状态
         orderCommandService.updateOrderStatusToDelivering(deliveryTask.getOrderId());
+        removeAvailableTaskGeoAfterCommit(taskId);
+    }
+
+    private void removeAvailableTaskGeoAfterCommit(Long taskId) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    deliveryTaskGeoService.removeAvailableTask(taskId);
+                } catch (RuntimeException e) {
+                    log.error("配送任务 {} 移除可接任务 GEO 失败", taskId, e);
+                    try {
+                        deliveryTaskGeoService.reconcileAvailableTaskGeo(taskId);
+                    } catch (RuntimeException ex) {
+                        log.error("配送任务 {} GEO 即时补偿失败，等待定时任务兜底",
+                                taskId, ex);
+                    }
+                }
+            }
+        });
     }
 
     @Transactional(rollbackFor = Exception.class,
@@ -149,21 +180,131 @@ public class DeliveryTaskService {
         return deliveryTaskConverter.toRiderDeliveryDetailVO(deliveryTask);
     }
 
-    //NOTE：骑手抢订单的时候，查询可接取的任务表
-    public PageInfo<RiderTaskListVO> getAvailableRiderTaskPage(Integer page, Integer pageSize){
-        riderService.requireActiveRiderId();
-        PageHelper.startPage(page, pageSize);
-        List<DeliveryTask> deliveryTasks = deliveryTaskMapper.selectList(Wrappers.<DeliveryTask>lambdaQuery().
-                eq(DeliveryTask::getStatus, DeliveryTaskEnums.WAIT_ASSIGN.getCode()).
-                isNull(DeliveryTask::getRiderId));
-        PageInfo<DeliveryTask> pageInfo = new PageInfo<>(deliveryTasks);
 
+    /**
+     * 骑手抢单前查询可接取的任务。
+     * 以骑手最后上报的位置为圆心，GEO 返回的最多 100 个最近候选按距离升序排在前面，
+     * 其余任务按任务 ID 升序；不再分页。骑手位置或任务GEO查询失败时按任务 ID 倒序
+     * 查询最新的 500 条 MySQL 待接任务；骑手位置尚未上报仍提示先上传位置。
+     */
+    public List<RiderTaskListVO> getAvailableRiderTask(double preferredRadiusKm){
+        if (!Double.isFinite(preferredRadiusKm) || preferredRadiusKm <= 0) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR,
+                    "查询半径必须大于0");
+        }
 
-        return pageInfo.convert(deliveryTaskConverter::toRiderTaskListVO);
+        Long riderId = riderService.requireActiveRiderId();
+        Optional<Point> riderLocation;
+        try {
+            riderLocation = riderLocationService.getRiderLocation(riderId);
+        } catch (RedisGeoOperationException e) {
+            log.warn("骑手位置 GEO 查询失败，按任务 ID 返回普通任务列表", e);
+            return getFallbackAvailableTasks();
+        }
+        if (riderLocation.isEmpty()) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "请先上传骑手位置");
+        }
+        Point point = riderLocation.get();
+
+        Map<Long, Double> distanceMap = new HashMap<>();
+
+        try {
+            List<DeliveryTaskDistanceVO> nearbyTasks = deliveryTaskGeoService.
+                    findNearbyTasks(point.getX(), point.getY(), preferredRadiusKm);
+
+            if (nearbyTasks != null) {
+                for (DeliveryTaskDistanceVO task : nearbyTasks) {
+                    if (task == null || !StringUtils.hasText(task.getTaskId())) {
+                        log.warn("忽略无效的配送任务 GEO 成员：{}", task);
+                        continue;
+                    }
+
+                    long taskId;
+                    try {
+                        taskId = Long.parseLong(task.getTaskId());
+                    } catch (NumberFormatException e) {
+                        log.warn("忽略非数字配送任务 GEO 成员：{}", task.getTaskId());
+                        continue;
+                    }
+                    double distanceKm = task.getDistance();
+                    if (taskId <= 0 || !Double.isFinite(distanceKm) || distanceKm < 0) {
+                        log.warn("忽略无效配送任务 GEO 数据：taskId={}, distanceKm={}",
+                                task.getTaskId(), distanceKm);
+                        continue;
+                    }
+                    distanceMap.put(taskId, distanceKm);
+                }
+            } else {
+                log.warn("配送任务 GEO 查询未返回结果，按任务 ID 返回普通任务列表");
+            }
+        } catch (RedisGeoOperationException e) {
+            log.warn("配送任务 GEO 查询失败，降级为普通任务列表", e);
+        }
+
+        if (distanceMap.isEmpty()) {
+            return getFallbackAvailableTasks();
+        }
+
+        List<DeliveryTask> deliveryTasks =
+                deliveryTaskMapper.selectList(
+                        Wrappers.<DeliveryTask>lambdaQuery()
+                                .eq(DeliveryTask::getStatus,
+                                        DeliveryTaskEnums.WAIT_ASSIGN.getCode())
+                                .isNull(DeliveryTask::getRiderId)
+                                .orderByAsc(DeliveryTask::getId)
+                );
+
+        deliveryTasks.sort((a, b) -> {
+
+            boolean aNearby = distanceMap.containsKey(a.getId());
+            boolean bNearby = distanceMap.containsKey(b.getId());
+
+            // 第一层：附近订单优先
+            if (aNearby != bNearby) {
+                return aNearby ? -1 : 1;
+            }
+
+            // 第二层：都是附近订单，比较距离
+            if (aNearby) {
+                double aDistance = distanceMap.get(a.getId());
+                double bDistance = distanceMap.get(b.getId());
+
+                int result = Double.compare(aDistance, bDistance);
+
+                if (result != 0) {
+                    return result;
+                }
+            }
+
+            return Long.compare(a.getId(), b.getId());
+        });
+        return deliveryTasks.stream()
+                .peek(this::warnIfTaskInfoMissing)
+                .map(deliveryTaskConverter::toRiderTaskListVO)
+                .collect(Collectors.toList());
+    }
+
+    private List<RiderTaskListVO> getFallbackAvailableTasks() {
+        List<DeliveryTask> deliveryTasks = deliveryTaskMapper.selectList(
+                Wrappers.<DeliveryTask>lambdaQuery()
+                        .eq(DeliveryTask::getStatus, DeliveryTaskEnums.WAIT_ASSIGN.getCode())
+                        .isNull(DeliveryTask::getRiderId)
+                        .orderByDesc(DeliveryTask::getId)
+                        .last("LIMIT " + FALLBACK_TASK_LIMIT)
+        );
+        return deliveryTasks.stream()
+                .peek(this::warnIfTaskInfoMissing)
+                .map(deliveryTaskConverter::toRiderTaskListVO)
+                .collect(Collectors.toList());
     }
 
 
-    public void createWaitingTask(Order order, Merchant merchant) {
+    /**
+     * 创建待接取配送任务，返回任务主键。
+     * 取货坐标随任务一起快照；商家未配置坐标时快照为空，任务不会写入可接任务 GEO。
+     */
+    public Long createWaitingTask(Order order, Merchant merchant) {
         DeliveryTask task = new DeliveryTask();
         task.setOrderId(order.getId());
         task.setMerchantName(order.getMerchantName());
@@ -172,12 +313,17 @@ public class DeliveryTaskService {
         task.setReceiverAddress(order.getReceiverAddress());
         task.setMerchantAddress(merchant.getAddress());
         task.setMerchantPhone(merchant.getPhone());
+        // 取货坐标快照：GEO 写入与后续排查都以任务上的坐标为准，
+        // 商家之后修改坐标不影响已经创建的任务。
+        task.setPickupLongitude(merchant.getLongitude());
+        task.setPickupLatitude(merchant.getLatitude());
         task.setDeliveryReward(deliveryFeeCalculator.calculateDeliveryReward());
         task.setStatus(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
         int insertedRows = deliveryTaskMapper.insert(task);
         if (insertedRows != 1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "配送任务创建失败");
         }
+        return task.getId();
     }
 
     public void assertWaitingDeliveryTask(Long orderId) {

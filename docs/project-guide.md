@@ -1,6 +1,6 @@
 # 项目说明与运行指南
 
-最近复核：2026-10-26。本文件由原根目录 README 移入；所有命令仍在项目根目录执行。此次核对当前工作区源码、SQL、配置及已有测试，未运行应用或业务测试。全部专题文档见[文档索引](README.md)。
+最近复核：2026-10-28。所有命令在项目根目录执行。本轮按当前工作区源码、SQL、配置和测试代码同步文档，未运行应用、业务测试或迁移；既有验证及提交前尚未同步的测试预期见[本次核查记录](documentation-review-2026-10-28.md)。全部专题文档见[文档索引](README.md)。
 
 Tokeout 是一个基于 Spring Boot 的外卖后端练习项目。项目围绕用户、商家、骑手三类角色，实现了店铺与商品浏览、购物车、订单、商家履约和骑手配送的最小业务闭环。
 
@@ -12,7 +12,7 @@ Tokeout 是一个基于 Spring Boot 的外卖后端练习项目。项目围绕�
 
 - 用户：注册登录、浏览店铺与商品、维护购物车、创建/支付/取消订单、查询订单和确认收货；
 - 商家：注册登录、维护店铺状态、管理分类与商品、查看订单、接单、拒单和确认出餐；
-- 骑手：注册登录、查看可接配送任务、抢单、查看当前任务和确认送达。
+- 骑手：注册登录、上报/读取/删除本人位置、查看按附近优先排序的可接任务、抢单、查看当前任务和确认送达。
 
 当前核心闭环为：
 
@@ -40,7 +40,7 @@ Tokeout 是一个基于 Spring Boot 的外卖后端练习项目。项目围绕�
 | 缓存/限流 | Spring Data Redis、Redis 7 |
 | 对象转换 | MapStruct 1.5.5、Lombok 1.18.30 |
 | 接口文档 | Knife4j 4.5.0、OpenAPI 3 |
-| 测试 | JUnit 5、Spring Boot Test、MockMvc、H2、MySQL/Redis 集成测试 |
+| 测试 | JUnit Jupiter、Spring Boot Test、MockMvc、H2、MySQL/Redis 集成测试 |
 | 部署 | Docker、Docker Compose |
 
 Spring Security 的过滤链目前配置为无状态并放行请求，实际 JWT 解析、公开路径和角色限制由 `JwtInterceptor` 与 `AuthPathMatcher` 完成。
@@ -61,8 +61,8 @@ Spring Security 的过滤链目前配置为无状态并放行请求，实际 JWT
 │  ├─ Cart/                         购物车增删改查与可下单校验
 │  ├─ CartHeader/                   购物车总表初始化、行锁与商家绑定
 │  ├─ Order/                        下单、支付、取消、查询、状态流转与超时任务
-│  ├─ Rider/                        骑手账号、GEO 位置服务与过期清理
-│  ├─ DeliveryTask/                 配送任务创建、抢单、送达与查询
+│  ├─ Rider/                        骑手账号、本人位置接口、GEO 位置与过期清理
+│  ├─ DeliveryTask/                 配送任务创建、GEO 排序/对账、抢单与送达
 │  ├─ CacheInvalidationTask/        持久化缓存失效任务、重试及历史清理
 │  ├─ Experiment/                   独立的 Redis Hash 购物车/Set 关注实验
 │  ├─ Common/                       鉴权、上下文、异常、统一响应、登录限流和工具类
@@ -90,7 +90,7 @@ Spring Security 的过滤链目前配置为无状态并放行请求，实际 JWT
 | `Cart` | 单商家购物车校验、商品增减、列表、批量删除与清空 |
 | `CartHeader` | 用户购物车总表初始化、行锁与单商家绑定 |
 | `Order` | 订单创建幂等、事务下单、支付/取消/确认、取消来源、订单查询、超时取消 |
-| `Rider` | 骑手注册、登录和状态校验；GEO 位置服务及清理任务已有实现，尚未接入 HTTP 和派单流程 |
+| `Rider` | 骑手注册、登录和状态校验；本人位置上报、读取、删除接口，以及 GEO 位置和过期清理；接单大厅用骑手位置排序任务 |
 | `CacheInvalidationTask` | 商品变更时登记失效任务、提交后快删、定时补偿、SUCCESS 历史清理 |
 | `Experiment` | Redis Hash 购物车/Set 关注实验；未替换正式 MySQL 购物车 |
 | `DeliveryTask` | 出餐后建任务、可接任务、抢单、当前任务、详情与完成配送 |
@@ -172,7 +172,7 @@ WAIT_PAY
 
 商家拒单只允许从 `PAID` 发起，在同一事务内把订单改为 `CANCELLED`、记录 `cancel_source=2`、模拟退款并归还库存；同一商家重复拒单幂等返回，不会重复退款或归还库存。接口为 `PATCH /merchant/orders/{orderId}/reject`，仅允许商家身份。
 
-商家出餐、骑手抢单和骑手送达会在各自事务内同步推进订单与配送任务。配送任务保存商家、收货人、电话、地址和配送奖励快照，避免履约过程中基础资料变化影响已有任务。
+商家出餐、骑手抢单和骑手送达会在各自事务内同步推进订单与配送任务。配送任务保存商家、收货人、电话、地址、取货坐标和配送奖励快照，避免履约过程中基础资料变化影响已有任务。出餐提交后按任务状态修复可接任务 GEO，抢单提交后删除索引；Redis 失败不回滚已提交业务事务，由定时对账补偿。
 
 `FulfillmentService.completePreparation`、`DeliveryTaskService.claimTask` 和 `completeDelivery` 三个事务入口局部使用 `READ_COMMITTED`，避免重复请求在预先读取账号/商家之后，继续用旧的可重复读快照校验另一个事务已推进的订单或任务。归属、旧状态条件更新及失败回滚仍保留；没有修改全库隔离级别，也没有把所有已推进状态都改为可重放成功。
 
@@ -202,7 +202,7 @@ WAIT_PAY
 - JDK 17；
 - MySQL 8；
 - Maven 3.9+ 或仓库内 Maven Wrapper；
-- Redis 7（可选，具体见“Redis 是否必须”）；
+- Redis 7（可选，具体见第 8 节的接入范围与故障边界）；
 - Docker Desktop 或 Docker Engine + Compose 插件（仅 Docker 启动方式需要）。
 
 ### 5.2 必需配置
@@ -335,7 +335,7 @@ mvn test
 mvn test "-Dtest=RedisBasicIntegrationTest,RedisLoginAttemptStoreIntegrationTest,OrderCreateRateLimiterIntegrationTest,RiderLocationServiceIntegrationTest,RedisHashCartServiceExperimentIntegrationTest"
 ```
 
-默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表、重建购物车总表，并创建/清空缓存失效任务表，只能对专用测试库运行。Redis 不可用时，Redis 专用测试通过 JUnit assumption 跳过；要覆盖 Redis 行为则需提供 `127.0.0.1:6379`。如需让测试连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
+默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表、重建购物车总表，并创建/清空缓存失效任务表，只能对专用测试库运行。部分 Redis 测试在依赖不可用时通过 assumption 跳过，`DeliveryTaskGeoRedisReconciliationIntegrationTest` 等套件则直接要求连接成功；不能假设缺少 Redis 时整套测试都会跳过。要覆盖 Redis 行为需提供 `127.0.0.1:6379`。如需连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
 
 商家 SSE、NEW 标记 ACK 和支付提交后通知的定向回归可单独运行：
 
@@ -350,6 +350,14 @@ mvn test "-Dtest=MerchantSseServiceTest,MerchantSseMvcTest,MerchantOrderSeenData
 ```powershell
 mvn test "-Dtest=*Test,!*IntegrationTest"
 ```
+
+GEO 的单元/API 与独立 H2 事务回归可单独选择；`DeliveryTaskGeoTransactionIntegrationTest` 虽以 `IntegrationTest` 结尾，但不依赖外部 MySQL 或 Redis：
+
+```powershell
+mvn test "-Dtest=DeliveryTaskGeoServiceTest,DeliveryTaskGeoReconciliationJobTest,DeliveryTaskHallServiceTest,RiderLocationApiTest,DeliveryTaskGeoTransactionIntegrationTest"
+```
+
+H2 套件使用真实 Mapper 和 Spring 事务，覆盖 205 条任务全量查询、行锁覆盖 Redis 操作、抢单提交后删除、出餐 `afterCommit` 独立事务及异常释放锁。真实 MySQL 行锁用例是 `DeliveryTaskGeoReconciliationIntegrationTest`，真实 Redis 成员修复用例是 `DeliveryTaskGeoRedisReconciliationIntegrationTest`，二者不能由 H2 结果替代。当前源码已将单任务对账隔离级别改为 RR，但一条单元测试仍断言 RC；该提交前差异见[本次核查记录](documentation-review-2026-10-28.md)。
 
 三个局部 RC 事务的真实 MySQL 时序回归可单独运行：
 
@@ -393,7 +401,7 @@ mysql -u root -p --execute="source deploy/schema.sql"
 
 已有数据库由应用启动时的 Flyway 迁移，权威脚本位于 `src/main/resources/db/migration`，命名格式为 `V<版本>__<描述>.sql`。非空旧库尚无迁移历史时，当前配置会先建立版本 `1` 的基线；随后按版本顺序执行尚未成功应用的脚本，并将版本、校验和及执行结果写入 `flyway_schema_history`。已有成功记录的版本会校验内容并跳过执行。
 
-当前版本范围为 `V20260820` 至 `V20261026`，权威目录及部署镜像各有 18 份 SQL（1 份 `B`、17 份 `V`）：`V20261007` 调整用户登录名排序规则及订单索引，`V20261008` 增加超时取消退避字段和扫描索引，`V20261009` 补齐配送奖励及骑手、配送任务自增主键，`V20261010` 回填购物车总表，`V20261011` 修正运行时默认值及商品分类约束，`V20261012` 将商家和骑手登录名改为 `as_cs`。历史 `V20261013` 二进制排序迁移已执行过，保留原内容；`V20261014__restore_login_name_as_cs.sql` 在三类名称合并冲突预检通过后恢复三列 `utf8mb4_0900_as_cs`，当前合法输入由六个 DTO 的统一白名单限制。`V20261017__merchant_order_seen.sql` 增加订单 `merchant_seen` 及商家未查看订单查询的五列复合索引；缺失标记的历史订单按状态 `0/1/2` 回填 `false`，其他状态回填 `true`，已有 `true` 保留，且不推进 `update_time`。`V20261018__order_cancel_source.sql` 为订单增加可空 `cancel_source`，记录 `1` 用户主动取消、`2` 商家拒单、`3` 系统超时取消、`4` 平台取消；历史已取消订单保持 `NULL`，新取消由订单代码写入对应来源。最新 `V20261026__stock_version.sql` 为 `product` 和 `order_item` 增加独立的 `stock_version`，历史行默认 `0`；仅商家显式重设库存时推进商品基准，取消回补按明细版本条件执行。空库执行 `B20261008` 后应用 `V20261009` 至 `V20261026` 共 9 份后续迁移；不改写已执行版本的校验和。历史配送任务奖励快照仍按原规则回填，已有值保持不变。
+当前版本范围为 `V20260820` 至 `V20261027`，权威目录及部署镜像各有 19 份 SQL（1 份 `B`、18 份 `V`）：`V20261007` 调整用户登录名排序规则及订单索引，`V20261008` 增加超时取消退避字段和扫描索引，`V20261009` 补齐配送奖励及骑手、配送任务自增主键，`V20261010` 回填购物车总表，`V20261011` 修正运行时默认值及商品分类约束，`V20261012` 将商家和骑手登录名改为 `as_cs`。历史 `V20261013` 二进制排序迁移已执行过，保留原内容；`V20261014__restore_login_name_as_cs.sql` 在三类名称合并冲突预检通过后恢复三列 `utf8mb4_0900_as_cs`，当前合法输入由六个 DTO 的统一白名单限制。`V20261017__merchant_order_seen.sql` 增加订单 `merchant_seen` 及商家未查看订单查询的五列复合索引；缺失标记的历史订单按状态 `0/1/2` 回填 `false`，其他状态回填 `true`，已有 `true` 保留，且不推进 `update_time`。`V20261018__order_cancel_source.sql` 为订单增加可空 `cancel_source`，记录 `1` 用户主动取消、`2` 商家拒单、`3` 系统超时取消、`4` 平台取消；历史已取消订单保持 `NULL`，新取消由订单代码写入对应来源。`V20261026__stock_version.sql` 为 `product` 和 `order_item` 增加独立的 `stock_version`，历史行默认 `0`；仅商家显式重设库存时推进商品基准，取消回补按明细版本条件执行。`V20261027__merchant_pickup_coordinates.sql` 为 `merchant` 增加可空经纬度、为 `delivery_task` 增加取货坐标快照，供出餐后把任务写入可接任务 GEO。空库执行 `B20261008` 后应用 `V20261009` 至 `V20261027` 共 10 份后续迁移；不改写已执行版本的校验和。历史配送任务奖励快照仍按原规则回填，已有值保持不变。
 
 购物车回填和分类约束迁移使用临时表的命名 `CHECK` 约束预检旧数据。失败时错误会指出具体约束，含义及排查 SQL 见 [数据库迁移说明](database-migrations.md)。应先处理对应数据问题，再按失败迁移恢复流程重试；不要修改已成功脚本或使用 `repair` 更新其校验和来绕过检查。
 
@@ -452,21 +460,24 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 
 ## 8. Redis 的接入范围与故障边界
 
-订单唯一键、库存条件更新、订单与配送事务的正确性依赖 MySQL。Redis 为部分接口提供缓存和限流；新增骑手位置服务则直接依赖 Redis，当前尚无 HTTP 或派单业务接入。
+订单唯一键、库存条件更新、订单与配送事务的正确性依赖 MySQL。Redis 为部分接口提供缓存和限流；骑手通过 `PUT/GET/DELETE /rider/location` 操作本人位置，接单大厅通过该位置与任务 GEO 做附近排序。`GET /rider/delivery-tasks/available?radiusKm=5` 返回任务数组，不分页；位置或任务 GEO 查询失败时，按 ID 倒序从 MySQL 返回最多 500 条可接任务，未上报位置仍提示先上报。商家可通过 `PUT /merchant/info` 成对设置 `longitude/latitude`，最多 7 位小数；出餐时将坐标快照到配送任务。
 
 | 用途 | 当前接入与故障行为 |
 | --- | --- |
 | 商品详情缓存 | `GET /category/products/{id}` 使用 `ProductDetailCacheService`；读取或抢锁异常由详情入口降级读 MySQL，回填/解锁失败记录日志。商品写事务通过持久化失效任务补偿 DEL，不能统一称为“所有 Redis 故障都回源” |
 | 登录失败限制 | 三角色共用 `RedisLoginAttemptStore`/`LoginAttemptLimiter`，失败达到 5 次后锁定 300 秒；故障时继续账号密码校验，但限流保护减弱 |
 | 创建订单限流 | `POST /order` 按用户执行 ZSET + Lua 滑动窗口，10 秒最多放行 5 次，key TTL 15 秒；故障或脚本空结果时放行。幂等仍由数据库唯一键、请求指纹和事务保证 |
-| 骑手位置服务 | `RiderLocationService` 使用 `rider:locations` GEO 与 `rider:last_active` ZSET；Lua 更新/移除两处记录。附近查询按距离升序最多 100 条；Redis 命令异常及写入/附近查询/清理无结果等情况抛 `RedisGeoOperationException`，映射为 SERVER_ERROR；单人位置无记录返回空，没有 MySQL 位置回源 |
+| 骑手位置服务 | `RiderLocationService` 使用 `rider:locations` GEO 与 `rider:last_active` ZSET；Lua 更新/移除两处记录。服务提供位置上报、单人位置读取和主动删除，不提供附近骑手查询；Redis 命令异常及写入/清理无结果等情况抛 `RedisGeoOperationException`，映射为 SERVER_ERROR；单人位置无记录返回空，没有 MySQL 位置回源 |
+| 可接配送任务 GEO | `DeliveryTaskGeoService` 使用 `delivery:available:geo`，成员为配送任务 ID。出餐提交后按任务当前状态修复索引，抢单提交后删除；失败只记录日志。对账默认首次等待 10 分钟、每轮结束后再等待 10 分钟，一次查询全部 MySQL 待接任务并用 Redis `ZRANGE 0 -1` 读取全部成员，对两边 ID 差集逐任务修复；每条使用 `REQUIRES_NEW`、RR 和 `FOR UPDATE`，锁覆盖 GEO 更新。单任务修复会移除缺少有效坐标、已领取或不存在的任务。附近候选按距离升序最多 100 条，是否可接仍由 MySQL 状态判断 |
 | 独立学习实验 | Hash 购物车与 Set 关注位于 `Experiment` 包，未接入正式 Controller；Redis Stream、Pub/Sub、Redisson 看门狗及 MQ 尚未接入 |
 
-商品缓存重建锁的 key 为 `Lock:product:detail:{id}`，租期固定 10 秒，UUID + Lua 只保护解锁所有权，当前没有自动续期。慢读越过租期仍可能与新请求并行回填；架构 F02 接受这个窗口，不能据此宣称缓存强一致。看门狗对应的具体位置及边界见 [Redis 学习日志](REDIS_LEARNING_LOG.md)。
+商品缓存重建锁的 key 为 `Lock:product:detail:{id}`，租期固定 10 秒，UUID + Lua 只保护解锁所有权，当前没有自动续期。慢读越过租期仍可能与新请求并行回填；架构 F02 接受这个窗口，不能据此宣称缓存强一致。具体机制见[商品缓存架构](architecture/04-product-cache.md)及[架构决定 F02](architecture/06-findings.md#f02-接受现有缓存一致性窗口)。
+
+大厅只把 GEO 返回的有效候选排在前面：附近候选按距离升序、距离相同按任务 ID 升序；其他待接任务按 ID 升序。正常路径读取并返回全部 MySQL 可接任务，无结果或 GEO 失败时才使用 SQL 倒序限制 500 条的降级查询。全量对账比较成员是否存在，不校正两边共同 ID 的坐标偏差；单任务修复会依据任务坐标快照更新位置。全量读取与正常大厅均没有分页，数据增长时需要另行评估内存和排序成本；持行锁期间的 Redis 慢操作也可能延迟同一任务的抢单。
 
 缓存失效任务在业务事务中创建，提交后立即尝试删除但仍保留 PENDING；正常短周期失败第 1～4 次分别退避 10/30/60/120 秒，第 5 次进入 FAILED，保留原到期时间供每小时扫描。SUCCESS 历史清理每轮完成后等待 1 小时，只删除创建满 7 天的记录，按创建时间与 ID 升序最多 1000 条；不是按成功时间保留 7 天。
 
-骑手位置超过 5 分钟未上报后，由每轮完成后等待 5 分钟的清理任务删除；每轮最多 10 批、每批 100 人。查询没有即时过滤最后活跃时间，因此不是严格的五分钟在线名单，也不是给 GEO 成员设置独立 TTL。服务端经纬度校验采用 ±180/±90，超出 Redis GEO 实际支持纬度的输入仍可能在 Redis 层失败；当前坐标、半径和接口接入边界见 Redis 日志。
+骑手位置超过 5 分钟未上报后，由每轮完成后等待 5 分钟的清理任务删除；每轮最多 10 批、每批 100 人。服务不提供附近骑手查询，也没有给 GEO 成员设置独立 TTL；读取不会额外过滤过期时间。经度校验范围为 ±180，纬度为 Redis GEO 支持的 ±85.05112878，非有限数值也会拒绝。位置接口仅允许当前有效骑手读写本人位置，Redis 异常统一返回安全提示。
 
 应用配置没有将 Redis 连接设为启动时硬校验，但清理任务可能记录 Redis 不可用日志；Docker Compose 的 app 仍等待 Redis 健康。验证缓存、限流、位置服务和独立实验，需要可用 Redis。正式交易写入不应使用缓存中的 `inStock` 代替数据库库存判断。
 
@@ -495,6 +506,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 | `/merchant` | 商家注册登录、资料、订单履约和商品恢复 |
 | `/category`、`/category/products` | 商家分类与商品管理 |
 | `/rider` | 骑手注册登录 |
+| `/rider/location` | 本人位置上报、读取、删除（PUT/GET/DELETE） |
 | `/rider/delivery-tasks` | 骑手配送任务 |
 
 受保护接口需要在请求头中提供 `Authorization: Bearer <token>`。项目没有统一的接口前缀版本号（如 `/api/v1`）；在接口文档能力未实际验证前，接口定义以当前 Controller 为准。
@@ -520,7 +532,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 - 核心关联大多没有数据库外键，部分关联 ID 的有符号/无符号定义也不完全一致；当前入口如何维护关系、哪些异常仅在数据不变量被破坏后出现，见[当前项目风险与架构复核](当前项目风险与架构复核_2026-10-11.md)。
 - 单商家购物车由注册事务初始化的 CartHeader、同一用户 Header 行锁和商品真实归属维护；正常并发加购不会持久化跨商家购物车。准备阶段的多次读取仍可能交错，写入时按旧行 ID 和数量条件消费，变化不满足条件则整体回滚。
 - 购物车 `+1/-1` 是数量指令，没有请求幂等键；客户端重复发送会重复累计。
-- 配送奖励目前固定为 `5`，尚未实现距离、区域、时段和骑手结算规则；配送任务列表也没有显式排序。
+- 配送奖励目前固定为 `5`，尚未实现距离、区域、时段和骑手结算规则；接单大厅已有附近优先排序，当前配送任务列表仍未显式排序。GEO 仅参与任务排序，未实现自动派单。
 - 角色控制依赖自定义拦截器对 MVC 路由模板的分类。新增接口时必须同步检查 `AuthPathMatcher` 的角色规则，否则可能只要求“任意有效 JWT”而没有精确角色限制。
 - 尚未修复的 P1 包括下单 `request_id` 的不精确比较及图片解码前无像素上限；详情和最小修复思路见当前风险复核。
 - `compose.yaml` 虽已配置依赖健康检查和 MySQL 数据卷，但仍使用固定的本地演示凭据，未包含密钥管理、备份、资源限制或高可用配置，不适合生产部署。
@@ -528,7 +540,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 
 ## 12. 其他文档
 
-全部文档已集中到本目录；完整导航见[文档索引](README.md)，本次过期内容修正见[核查记录](documentation-review-2026-10-26.md)。当前风险结论集中维护：
+仓库文档已集中到本目录；完整导航见[文档索引](README.md)，本次过期内容修正见[核查记录](documentation-review-2026-10-28.md)。下列导航不依赖被 Git 忽略的本地学习材料：
 
 | 文档 | 作用 |
 |---|---|
@@ -538,7 +550,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 | [`状态流转表.md`](状态流转表.md) | 订单与配送任务状态、动作契约和最小履约闭环 |
 | [`当前项目风险与架构复核_2026-10-11.md`](当前项目风险与架构复核_2026-10-11.md) | 当前源码风险、触发条件、已接受边界和冻结判断 |
 | [`architecture-refactoring-history.md`](architecture-refactoring-history.md) | 历史架构演进、职责边界与事务契约；不作为当前未修风险清单 |
-| [`REDIS_LEARNING_LOG.md`](REDIS_LEARNING_LOG.md) | Redis 学习进度、实现边界及后续 MQ 学习路线 |
-| [`项目面试准备报告.md`](项目面试准备报告.md) | 面试表达和复习顺序；历史核查以当前报告复核 |
+| [架构与业务流程](architecture/README.md) | 订单、配送、缓存与模块依赖；当前实现及已接受边界 |
+| [GEO 降级实验说明](experiments/delivery-task-geo-fallback.md) | MySQL 权威任务、GEO 排序和故障降级的验证方式 |
 
 文档可能记录不同阶段的审计结论；当文档与实现不一致时，应以当前代码、数据库脚本和可重复测试结果为准。

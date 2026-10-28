@@ -1,6 +1,6 @@
 # 项目分层总览、入口与数据存储
 
-这是一个面向顾客、商家和骑手的 Spring Boot 单体应用：MySQL 保存业务事实，Redis 辅助商品缓存、请求限流和独立的骑手坐标记录，本地目录保存商品图片。
+这是一个面向顾客、商家和骑手的 Spring Boot 单体应用：MySQL 保存业务事实，Redis 辅助商品缓存、请求限流、骑手坐标记录和可接配送任务的空间索引，本地目录保存商品图片。
 
 ## 30 秒理解项目结构
 
@@ -48,7 +48,7 @@ flowchart TB
 | 公开访问 | 账号注册/登录；`/api/customer/shops` 店铺浏览 | [UserController](../../src/main/java/org/example/takeout/User/Controller/UserController.java)、[CustomerShopController](../../src/main/java/org/example/takeout/Merchant/Controller/CustomerShopController.java)；商家、骑手也有注册/登录接口 |
 | 顾客 | `/cart/items` 购物车；`/order` 创建、查询、支付、取消、签收 | [CartController](../../src/main/java/org/example/takeout/Cart/Controller/CartController.java)、[OrderController](../../src/main/java/org/example/takeout/Order/Controller/OrderController.java) |
 | 商家 | `/category`、`/category/products` 商品分类；`/merchant` 资料、履约、订单已读和 SSE | [CategoryController](../../src/main/java/org/example/takeout/Category/Controller/CategoryController.java)、[ProductController](../../src/main/java/org/example/takeout/Product/Controller/ProductController.java)、[MerchantProductController](../../src/main/java/org/example/takeout/Product/Controller/MerchantProductController.java)、[MerchantControllerSold](../../src/main/java/org/example/takeout/Merchant/Controller/MerchantControllerSold.java) |
-| 骑手 | `/rider/delivery-tasks` 查询、抢单和送达；位置上报、读取、附近搜索目前只有 Service 实现，尚无 HTTP Controller | [DeliveryTaskController](../../src/main/java/org/example/takeout/DeliveryTask/Controller/DeliveryTaskController.java) |
+| 骑手 | `/rider/location` 本人位置上报、读取和删除；`/rider/delivery-tasks` 查询大厅、抢单和确认送达 | [RiderLocationController](../../src/main/java/org/example/takeout/Rider/Controller/RiderLocationController.java)、[DeliveryTaskController](../../src/main/java/org/example/takeout/DeliveryTask/Controller/DeliveryTaskController.java) |
 
 真正的身份与路由角色校验在 [`JwtInterceptor.preHandle`](../../src/main/java/org/example/takeout/Common/Interceptor/JwtInterceptor.java)，公开路径由 [`AuthPathMatcher`](../../src/main/java/org/example/takeout/Common/Auth/AuthPathMatcher.java) 放行；[`SecurityConfig`](../../src/main/java/org/example/takeout/Config/SecurityConfig.java) 配置无会话并 `permitAll`。拦截器解析 JWT、设置上下文并查库复核账号，请求结束清理上下文。用户和骑手要求正常状态，商家只复核存在，打烊仍可管理店铺。
 
@@ -65,6 +65,7 @@ MySQL 本地事务覆盖业务数据写入，无法回滚 Redis 删除、SSE 推
 | 创建订单 | 准备数据在事务外；插单、购物车消费、扣库存、明细与必要失效任务同事务 | [02 订单创建](02-order-creation.md) |
 | 订单取消与支付 | 取消和退库同事务，退库按明细与商品的 `stock_version` 判断；模拟支付两次状态更新同事务，通知在提交后 | [03 订单状态](03-order-lifecycle.md) |
 | 出餐、抢单、送达 | 出餐与建配送任务同事务；抢单/送达与订单状态同事务，显式 `READ_COMMITTED` | [03 履约与配送](03-order-lifecycle.md) |
+| 配送任务 GEO | 出餐后在主事务提交后按任务状态修复 GEO；单任务修复使用 `REQUIRES_NEW`、`REPEATABLE_READ`，在 `SELECT ... FOR UPDATE` 行锁期间完成 Redis 操作；抢单提交后删除 GEO | [07 模块依赖](07-module-dependencies.md#6-可接配送任务-geo-与接单大厅) |
 | 商品与缓存 | 商品写入与必要失效任务同事务；提交后删缓存，调度重试补偿 | [04 商品缓存](04-product-cache.md) |
 
 唯一键、条件更新和行锁承担不同职责：订单由 `(user_id, request_id)` 唯一键兜底；购物车使用总表 `FOR UPDATE`；扣库存先锁定商品行读取 `stock_version`，再以状态、余量和该版本条件更新；退库以订单明细记录的版本为条件，扣库与退库都按商品 ID 升序处理。商家接单只有条件更新，没有显式多语句事务。详细锁范围与重放条件留在对应业务文档，不从分层图推断。
@@ -73,8 +74,8 @@ MySQL 本地事务覆盖业务数据写入，无法回滚 Redis 删除、SSE 推
 
 | 存储 | 当前内容与边界 |
 | --- | --- |
-| MySQL | `user/merchant/rider` 账号；`category/product` 商品；`cart_header/cart` 购物车；`orders/order_item` 订单快照；`delivery_task` 配送状态；`cache_invalidation_task` 缓存失效任务 |
-| Redis | 商品详情与空值、重建锁、下单限流、登录失败计数，以及骑手位置 GEO 集合和最近活跃时间 ZSET；各自的故障处理不同，真实购物车和订单仍在 MySQL |
+| MySQL | `user/merchant/rider` 账号；`merchant.longitude/latitude` 店铺取货坐标；`category/product` 商品；`cart_header/cart` 购物车；`orders/order_item` 订单快照；`delivery_task` 配送状态与建任务时的 `pickup_longitude/pickup_latitude` 坐标快照；`cache_invalidation_task` 缓存失效任务 |
+| Redis | 商品详情与空值、重建锁、下单限流、登录失败计数；骑手位置 GEO `rider:locations` 与最近活跃时间 ZSET `rider:last_active`；可接配送任务 GEO `delivery:available:geo`。各自的故障处理不同，真实购物车和订单仍在 MySQL |
 | JVM 内存 | 商家 SSE 连接表；每商家在当前实例最多一条连接，无持久化事件或跨实例广播 |
 | 本地文件 | `./uploads/products`；MySQL 只保存图片 URL。上传与商品保存不共事务，孤儿清理保留逻辑删除商品仍引用的图片 |
 
@@ -91,6 +92,7 @@ MySQL 本地事务覆盖业务数据写入，无法回滚 Redis 删除、SSE 推
 | [OrderTimeoutTask.cancelTimeoutOrders](../../src/main/java/org/example/takeout/Order/Config/OrderTimeoutTask.java) | 默认每轮完成后 60 秒扫描，逐单事务取消；可关闭或调整频率 |
 | [CacheInvalidationTaskScheduler](../../src/main/java/org/example/takeout/CacheInvalidationTask/Config/CacheInvalidationTaskScheduler.java) | 每轮完成后 10 秒重试待处理任务、1 小时重试失败任务；另每轮完成后 1 小时清理创建满 7 天的 SUCCESS，最多 1000 条；无任务领取锁 |
 | [RiderLocationCleanupScheduler](../../src/main/java/org/example/takeout/Rider/Config/RiderLocationCleanupScheduler.java) | 每轮完成后等待 5 分钟，清理最近活跃时间不晚于 5 分钟前的骑手位置；每轮最多 10 批、每批 100 条 |
+| [DeliveryTaskGeoReconciliationJob](../../src/main/java/org/example/takeout/DeliveryTask/Config/DeliveryTaskGeoReconciliationJob.java) | 默认启动后等待 10 分钟，之后每轮完成后等待 10 分钟；一次查询 MySQL 全部待接任务，并一次读取 Redis GEO 全部成员，只修复两边 ID 对称差集中的任务；单任务事务锁行并在锁内更新 Redis。可通过 `delivery.geo.reconciliation.enabled` 关闭 |
 | [MerchantSseSchedule.schedule](../../src/main/java/org/example/takeout/Merchant/Config/MerchantSseSchedule.java) | 每 30 秒发送当前实例 SSE 心跳 |
 | [ProductImageCleanupService.cleanupOrphanImages](../../src/main/java/org/example/takeout/Product/Config/ProductImageCleanupService.java) | 每轮完成后 12 小时清理修改时间超过 24 小时且无引用的图片 |
 
@@ -103,8 +105,8 @@ MySQL 本地事务覆盖业务数据写入，无法回滚 Redis 删除、SSE 推
 | 账号与店铺 | [UserService](../../src/main/java/org/example/takeout/User/Service/UserService.java)、[MerchantAccountService](../../src/main/java/org/example/takeout/Merchant/Service/MerchantAccountService.java)、[RiderService](../../src/main/java/org/example/takeout/Rider/Service/RiderService.java)、[CustomerShopQueryService](../../src/main/java/org/example/takeout/Merchant/Service/CustomerShopQueryService.java) |
 | 商品与分类 | [ProductService](../../src/main/java/org/example/takeout/Product/Service/ProductService.java)、[CategoryService](../../src/main/java/org/example/takeout/Category/Service/CategoryService.java) |
 | 购物车与订单 | [CartService](../../src/main/java/org/example/takeout/Cart/Service/CartService.java)、[OrderService](../../src/main/java/org/example/takeout/Order/Service/OrderService.java)、[OrderTransactionExecutor](../../src/main/java/org/example/takeout/Order/Service/OrderTransactionExecutor.java) |
-| 履约与配送 | [FulfillmentService](../../src/main/java/org/example/takeout/Merchant/Service/FulfillmentService.java)、[DeliveryTaskService](../../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskService.java) |
-| 骑手位置 | [RiderLocationService](../../src/main/java/org/example/takeout/Rider/Service/RiderLocationService.java)、[RiderDistanceVO](../../src/main/java/org/example/takeout/Rider/VO/RiderDistanceVO.java) |
+| 履约与配送 | [FulfillmentService](../../src/main/java/org/example/takeout/Merchant/Service/FulfillmentService.java)、[DeliveryTaskService](../../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskService.java)、[DeliveryTaskGeoService](../../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskGeoService.java) |
+| 骑手位置与接单大厅 | [RiderLocationController](../../src/main/java/org/example/takeout/Rider/Controller/RiderLocationController.java)、[RiderLocationService](../../src/main/java/org/example/takeout/Rider/Service/RiderLocationService.java)、[DeliveryTaskController](../../src/main/java/org/example/takeout/DeliveryTask/Controller/DeliveryTaskController.java) |
 | 共享访问能力 | [MybatisPlusConfig](../../src/main/java/org/example/takeout/Config/MybatisPlusConfig.java)、[RedisCacheClient](../../src/main/java/org/example/takeout/Common/Redis/RedisCacheClient.java)、[ProductImageService](../../src/main/java/org/example/takeout/Product/Service/ProductImageService.java) |
 
-支付由 `OrderService.paying()`、商家拒单退款由 `OrderCommandService.refunding()` 固定返回成功，配送奖励由 [`DeliveryFeeCalculator`](../../src/main/java/org/example/takeout/DeliveryTask/Domain/DeliveryFeeCalculator.java) 固定返回 5；未实现外部支付/退款、支付失败异步回调、自动签收或配送取消。Redis GEO 骑手位置目前由 [`RiderLocationService`](../../src/main/java/org/example/takeout/Rider/Service/RiderLocationService.java) 独立维护，没有 Controller 或配送派单入口接入。实验包中的 [RedisHashCartServiceExperiment](../../src/main/java/org/example/takeout/Experiment/RedisHashCartServiceExperiment.java) 与 [RedisSetFollowServiceExperiment](../../src/main/java/org/example/takeout/Experiment/RedisSetFollowServiceExperiment.java) 没有实际 Controller/业务 Service 调用，不视为正式购物车或推荐能力。
+支付由 `OrderService.paying()`、商家拒单退款由 `OrderCommandService.refunding()` 固定返回成功，配送奖励由 [`DeliveryFeeCalculator`](../../src/main/java/org/example/takeout/DeliveryTask/Domain/DeliveryFeeCalculator.java) 固定返回 5；未实现外部支付/退款、支付失败异步回调、自动签收或配送取消。骑手使用 `/rider/location` 操作本人位置，接单大厅使用该位置和任务 GEO 对候选任务排序。正常 GEO 查询最多取 100 个附近候选，但随后从 MySQL 读取并返回全部待接任务：候选按距离升序排在前面，其余按任务 ID 升序；若骑手位置查询或任务 GEO 查询失败、或附近候选为空，则降级为按任务 ID 倒序返回最多 500 条。骑手没有位置时仍提示先上报。任务 GEO 是 MySQL 状态的索引，不决定能否接单。出餐事务提交后按任务上的商家坐标快照修复索引；快照缺失时跳过 GEO 写入。定时对账一次读取 MySQL 全量待接 ID 和 Redis 全量 GEO 成员，按成员差集逐任务执行 `REQUIRES_NEW`、`REPEATABLE_READ` 事务，以 `SELECT ... FOR UPDATE` 锁行至 Redis 更新完成；成员 ID 已在两侧交集时不会比较或校正其坐标。实验包中的 [RedisHashCartServiceExperiment](../../src/main/java/org/example/takeout/Experiment/RedisHashCartServiceExperiment.java) 与 [RedisSetFollowServiceExperiment](../../src/main/java/org/example/takeout/Experiment/RedisSetFollowServiceExperiment.java) 没有实际 Controller/业务 Service 调用，不视为正式购物车或推荐能力。

@@ -44,7 +44,7 @@ class FlywayMigrationIntegrationTest {
 
     private static final String BASELINE_VERSION = "20261008";
     private static final String VERSION_14 = "20261014";
-    private static final String LATEST_VERSION = "20261026";
+    private static final String LATEST_VERSION = "20261027";
     private static final String HISTORICAL_TIME = "2024-01-02 03:04:05";
     private static final List<String> BUSINESS_TABLES = List.of(
             "cache_invalidation_task", "cart", "cart_header", "category", "delivery_task",
@@ -70,7 +70,7 @@ class FlywayMigrationIntegrationTest {
             Map<String, List<List<String>>> before = database.businessRows();
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(9);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(10);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SELECT user_id, merchant_id FROM cart_header ORDER BY user_id"))
@@ -144,7 +144,7 @@ class FlywayMigrationIntegrationTest {
                     + HISTORICAL_TIME + "' WHERE id = 52");
             database.execute("UPDATE delivery_task SET update_time = NULL WHERE id = 53");
 
-            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(9);
+            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(10);
 
             assertThat(database.rows("SELECT id, delivery_reward, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM delivery_task ORDER BY id"))
@@ -234,7 +234,7 @@ class FlywayMigrationIntegrationTest {
             assertThat(database.rows("SHOW TABLES")).isEmpty();
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(10);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(11);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SHOW TABLES").stream().map(values -> values.get(0)))
@@ -254,7 +254,7 @@ class FlywayMigrationIntegrationTest {
             database.executeDeploymentScript(Path.of("deploy", "schema.sql"));
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(17);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(18);
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertLatestColumnDefinitions(database);
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
@@ -528,7 +528,7 @@ class FlywayMigrationIntegrationTest {
                     """);
 
             Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
 
             assertLatestColumnDefinitions(database);
             assertThat(database.rows("SELECT id, merchant_seen, "
@@ -560,7 +560,7 @@ class FlywayMigrationIntegrationTest {
                     """);
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(9);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(10);
 
             assertThat(database.column("orders", "cancel_source", "is_nullable")).isEqualTo("YES");
             assertThat(database.column("orders", "cancel_source", "column_default")).isNull();
@@ -687,6 +687,17 @@ class FlywayMigrationIntegrationTest {
         assertThat(database.scalar("SELECT COUNT(*) FROM delivery_task")).isEqualTo("3");
         assertThat(database.rows("SELECT delivery_reward FROM delivery_task ORDER BY id"))
                 .allSatisfy(values -> assertThat(new BigDecimal(values.get(0))).isEqualByComparingTo("5.00"));
+        assertThat(new BigDecimal(database.scalar(
+                "SELECT longitude FROM merchant WHERE username = 'demo_merchant'")))
+                .isEqualByComparingTo("121.4737");
+        assertThat(new BigDecimal(database.scalar(
+                "SELECT latitude FROM merchant WHERE username = 'demo_merchant'")))
+                .isEqualByComparingTo("31.2304");
+        assertThat(database.rows("SELECT pickup_longitude, pickup_latitude FROM delivery_task ORDER BY id"))
+                .allSatisfy(values -> {
+                    assertThat(new BigDecimal(values.get(0))).isEqualByComparingTo("121.4737");
+                    assertThat(new BigDecimal(values.get(1))).isEqualByComparingTo("31.2304");
+                });
         assertThat(database.scalar("SELECT COUNT(*) FROM delivery_task d LEFT JOIN orders o ON o.id = d.order_id "
                 + "WHERE o.id IS NULL")).isEqualTo("0");
         assertThat(database.rows("SELECT u.username, m.username FROM cart_header h "
@@ -733,6 +744,10 @@ class FlywayMigrationIntegrationTest {
         assertThat(database.column("order_item", "stock_version", "column_default")).isEqualTo("0");
         assertThat(database.column("order_item", "stock_version", "column_comment"))
                 .contains("预扣库存");
+        assertThat(database.column("merchant", "longitude", "is_nullable")).isEqualTo("YES");
+        assertThat(database.column("merchant", "latitude", "is_nullable")).isEqualTo("YES");
+        assertThat(database.column("delivery_task", "pickup_longitude", "is_nullable")).isEqualTo("YES");
+        assertThat(database.column("delivery_task", "pickup_latitude", "is_nullable")).isEqualTo("YES");
         assertThat(database.rows("SELECT column_name FROM information_schema.statistics "
                 + "WHERE table_schema = DATABASE() AND table_name = 'orders' "
                 + "AND index_name = 'idx_order_merchant_status_seen_create_time_id' ORDER BY seq_in_index"))
@@ -797,6 +812,8 @@ class FlywayMigrationIntegrationTest {
 
     private static String baselineSelectColumns(String table) {
         return switch (table) {
+            case "merchant" -> "id, username, phone, password, address, status, create_time, "
+                    + "merchant_name, picture, merchant_description, opening_time, closing_time, version";
             case "product" -> "id, category_id, product_name, image_url, price, stock, merchant_id, "
                     + "is_deleted, status, description, create_time, update_time, version, active_name_guard";
             case "orders" -> "id, order_no, user_id, merchant_id, merchant_name, total_amount, status, "

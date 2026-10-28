@@ -1,12 +1,12 @@
 # 数据库迁移与脚本镜像
 
-最近复核：2026-10-26。本说明由 `deploy/migrations/README.md` 移至文档包，SQL 文件没有移动；本文命令均在项目根目录执行。本次仅静态核对，未运行迁移或连接业务数据库。
+最近复核：2026-10-28。本说明由 `deploy/migrations/README.md` 移至文档包，SQL 文件没有移动；本文命令均在项目根目录执行。本轮仅静态核对，未运行迁移、测试或连接真实 MySQL/Redis。
 
-`src/main/resources/db/migration` 是 Flyway 迁移的权威来源。应用启动时仅扫描该 classpath 目录，`deploy/migrations` 保存同名、同内容的 SQL 镜像，便于部署审阅。
+`src/main/resources/db/migration` 是 Flyway 迁移的权威来源。应用启动时仅扫描该 classpath 目录，`deploy/migrations` 保存同名、同内容的 SQL 镜像，便于部署审阅。本次静态核对两个目录各有 19 份 SQL，文件名集合相同，逐文件 SHA-256 一致。
 
 部署镜像目录 `deploy/migrations` 同步权威目录的所有 `B`、`V` SQL。`B20261008__initial_schema.sql` 用于已创建的空数据库，在应用启动时累计建表，再执行 `V20261009` 及以后的迁移；已有 Flyway 迁移历史的数据库会忽略该基线，继续升级。[Flyway 官方累计基线说明](https://documentation.red-gate.com/flyway/flyway-concepts/migrations/baseline-migrations)介绍了 `B` 脚本的选择和执行规则。
 
-当前两个目录各有 18 份 SQL，最新版本为 `V20261026`。空库执行累计基线后，再执行 `V20261009` 至 `V20261026` 共 9 份后续迁移；已处于 `20261008` 基线的旧库也升级这 9 个版本。
+当前两个目录各有 19 份 SQL，最新版本为 `V20261027`。空库执行累计基线后，再执行 `V20261009` 至 `V20261027` 共 10 份后续迁移；已处于 `20261008` 基线的旧库也升级这 10 个版本。
 
 新增变更时，在权威目录创建更高版本的 `V<版本>__<描述>.sql`，再同步到 `deploy/migrations`。同类迁移的版本不得重复；累计基线可以与相同版本的 `V` 脚本并存。超时取消退避使用 `V20261008__timeout_cancel_backoff.sql`。
 
@@ -27,6 +27,10 @@ V14 在任何列修改前，先检查三张表是否有不同名称在 `as_cs` �
 `V20261018__order_cancel_source.sql` 只增加可空的 `cancel_source TINYINT NULL DEFAULT NULL`，用于记录 `1` 用户主动取消、`2` 商家拒单、`3` 系统超时取消、`4` 平台取消。迁移不回填历史数据：旧订单无法可靠区分用户取消与超时取消，因此已取消订单保持 `NULL`；非取消订单也为 `NULL`。列存在检查保证重复执行安全，已成功记录的版本不要手工重跑。应用侧用户取消、超时任务和商家拒单分别在条件更新中写入 `1`、`3`、`2`，平台取消 `4` 尚无入口。
 
 `V20261026__stock_version.sql` 为 `product` 增加独立的 `stock_version INT NOT NULL DEFAULT 0` 库存基准版本，为 `order_item` 增加 `stock_version INT NOT NULL DEFAULT 0` 预扣版本快照。历史行默认 `0`，与迁移前商品的初始基准一致；商家第一次显式重设库存后才推进到 `1`。迁移不改变历史订单行，也不回填无法还原的旧版本关系。应用侧只在商家显式提交 `stock` 的更新中执行 `stock_version = stock_version + 1`，订单预扣、取消回补、名称/价格修改和上下架均不推进该列。回补库存 SQL 以 `stock_version` 为条件，版本不一致时跳过。两个列都有存在检查，可在 `deploy/schema.sql` 已建列的新库上重复安全执行；已成功记录的版本不要手工重跑。
+
+`V20261027__merchant_pickup_coordinates.sql` 为 `merchant` 增加可空的 `longitude`、`latitude`（`DECIMAL(10,7)`），用于把出餐后的配送任务写入 Redis GEO `delivery:available:geo`；商家可经 `PUT /merchant/info` 成对设置坐标，经度范围 `[-180, 180]`、纬度范围 `[-85.05112878, 85.05112878]`，最多 7 位小数。同时为 `delivery_task` 增加 `pickup_longitude`、`pickup_latitude` 坐标快照。历史商家与历史任务保持 `NULL`；商家未配置坐标时，出餐后跳过 GEO 写入并记录日志，不阻断已提交的出餐事务。`deploy/schema.sql` 同步包含四列；新列均有存在检查，可在部署初始化已建列的空库上重复安全执行。
+
+应用在创建配送任务时保存商家坐标快照，出餐数据库事务提交后按任务当前 MySQL 行修复 GEO。抢单事务提交后移除任务 GEO；立即删除失败时尝试单任务对账。定时全量对账首次等待 10 分钟，此后每轮完成后再等待 10 分钟：MySQL 单次查询读取全部 `WAIT_ASSIGN` 且未分配骑手的任务，Redis ZSET `range(0, -1)` 读取 GEO 全部成员，只对两边成员差集逐项修复。每个差异任务在独立 `REQUIRES_NEW`、`REPEATABLE_READ` 事务中执行 `SELECT ... FOR UPDATE`，直到对应 Redis 操作完成；两边都存在的成员不逐项刷新坐标，因此该对账只收敛成员集合，不校正已存在成员的坐标漂移。这是运行时代码行为，本轮没有运行真实 Redis/MySQL 对账。
 
 | 失败约束名 | 数据问题 |
 |---|---|

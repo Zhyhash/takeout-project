@@ -8,18 +8,22 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
+import org.example.takeout.DeliveryTask.Service.DeliveryTaskGeoService;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Support.OrderRequestFingerprint;
 import org.example.takeout.Rider.Enums.RiderStatusEnum;
+import org.example.takeout.Rider.Service.RiderLocationService;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.geo.Point;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -28,8 +32,12 @@ import org.springframework.web.context.WebApplicationContext;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.lenient;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -54,6 +62,12 @@ class DeliveryTaskLifecycleIntegrationTest {
 
     private final JWTUtils jwtUtils;
 
+    @MockitoBean
+    private RiderLocationService riderLocationService;
+
+    @MockitoBean
+    private DeliveryTaskGeoService deliveryTaskGeoService;
+
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     private MockMvc mockMvc;
@@ -61,6 +75,11 @@ class DeliveryTaskLifecycleIntegrationTest {
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
+        lenient().when(riderLocationService.getRiderLocation(anyLong()))
+                .thenReturn(Optional.of(new Point(121.4737, 31.2304)));
+        lenient().when(deliveryTaskGeoService.findNearbyTasks(
+                        anyDouble(), anyDouble(), anyDouble()))
+                .thenReturn(List.of());
         recreateDeliverySchema();
         insertRider(RIDER_A_ID, "rider_a");
         insertRider(RIDER_B_ID, "rider_b");
@@ -237,7 +256,7 @@ class DeliveryTaskLifecycleIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andReturn();
-        JsonNode tasks = objectMapper.readTree(result.getResponse().getContentAsString()).path("data").path("list");
+        JsonNode tasks = objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
         assertThat(tasks).hasSize(expectedTaskIds.length);
         for (int index = 0; index < expectedTaskIds.length; index++) {
             assertThat(tasks.get(index).path("taskId").asLong()).isEqualTo(expectedTaskIds[index]);
@@ -388,6 +407,8 @@ class DeliveryTaskLifecycleIntegrationTest {
                     receiver_phone VARCHAR(20) NOT NULL,
                     receiver_address VARCHAR(255) NOT NULL,
                     merchant_address VARCHAR(255) NOT NULL,
+                    pickup_longitude DECIMAL(10, 7) NULL,
+                    pickup_latitude DECIMAL(10, 7) NULL,
                     merchant_phone VARCHAR(20) NOT NULL,
                     receiver_name VARCHAR(20) NOT NULL
                 )

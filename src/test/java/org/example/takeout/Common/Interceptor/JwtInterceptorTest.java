@@ -59,6 +59,20 @@ class JwtInterceptorTest {
     }
 
     @Test
+    void asynchronousDispatchReleasesAllIdentityContextsFromTheRequestThread() {
+        UserContextHolder.setUserId(101L);
+        MerchantContextHolder.setMerchantId(201L);
+        RiderContextHolder.setRiderId(301L);
+
+        interceptor.afterConcurrentHandlingStarted(new MockHttpServletRequest(),
+                new MockHttpServletResponse(), new Object());
+
+        assertNull(UserContextHolder.getUserId());
+        assertNull(MerchantContextHolder.getMerchantId());
+        assertNull(RiderContextHolder.getRiderId());
+    }
+
+    @Test
     void riderPathRejectsNonRiderTokenAndClearsContext() {
         when(jwtUtils.parseToken("user-token")).thenReturn(claims(101L, AuthRole.USER));
 

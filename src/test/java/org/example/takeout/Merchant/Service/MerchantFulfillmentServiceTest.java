@@ -1,8 +1,10 @@
 package org.example.takeout.Merchant.Service;
 
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
+import org.example.takeout.DeliveryTask.Service.DeliveryTaskGeoService;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.DTO.MerchantUpdateDTO;
 import org.example.takeout.Merchant.Entity.Merchant;
@@ -12,11 +14,16 @@ import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Record.MarkReadyResult;
 import org.example.takeout.Order.Service.OrderCommandService;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+import java.math.BigDecimal;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -37,15 +44,24 @@ class MerchantFulfillmentServiceTest {
     @Mock
     private DeliveryTaskService deliveryTaskService;
 
+    @Mock
+    private DeliveryTaskGeoService deliveryTaskGeoService;
+
     @InjectMocks
     private MerchantAccountService merchantAccountService;
 
     @InjectMocks
     private FulfillmentService fulfillmentService;
 
+    @BeforeEach
+    void openTransactionSynchronization() {
+        TransactionSynchronizationManager.initSynchronization();
+    }
+
     @AfterEach
     void clearMerchantContext() {
         MerchantContextHolder.clear();
+        TransactionSynchronizationManager.clearSynchronization();
     }
 
     @Test
@@ -77,6 +93,68 @@ class MerchantFulfillmentServiceTest {
 
         verify(deliveryTaskService).createWaitingTask(order, merchant);
         verify(deliveryTaskService, never()).assertWaitingDeliveryTask(any());
+    }
+
+    @Test
+    void completePreparationReconcilesTaskGeoAfterCommit() {
+        Merchant merchant = currentMerchantWithCoordinates();
+        Order order = readyOrder();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(true, order));
+        when(deliveryTaskService.createWaitingTask(order, merchant)).thenReturn(501L);
+
+        fulfillmentService.completePreparation(501L);
+        verifyNoInteractions(deliveryTaskGeoService);
+        runAfterCommitSynchronizations();
+
+        verify(deliveryTaskGeoService).reconcileAvailableTaskGeo(501L);
+    }
+
+    @Test
+    void completePreparationSkipsGeoWhenMerchantHasNoCoordinates() {
+        Merchant merchant = currentMerchant();
+        Order order = readyOrder();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(true, order));
+        when(deliveryTaskService.createWaitingTask(order, merchant)).thenReturn(501L);
+
+        fulfillmentService.completePreparation(501L);
+        runAfterCommitSynchronizations();
+
+        verifyNoInteractions(deliveryTaskGeoService);
+    }
+
+    @Test
+    void completePreparationKeepsCommittedTaskWhenGeoReconciliationFails() {
+        Merchant merchant = currentMerchantWithCoordinates();
+        Order order = readyOrder();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(true, order));
+        when(deliveryTaskService.createWaitingTask(order, merchant)).thenReturn(501L);
+        doThrow(new RedisGeoOperationException("redis down"))
+                .when(deliveryTaskGeoService).reconcileAvailableTaskGeo(501L);
+
+        fulfillmentService.completePreparation(501L);
+
+        assertDoesNotThrow(this::runAfterCommitSynchronizations);
+        verify(deliveryTaskGeoService).reconcileAvailableTaskGeo(501L);
+    }
+
+    @Test
+    void completePreparationDoesNotReconcileGeoWhenTransactionRollsBack() {
+        Merchant merchant = currentMerchantWithCoordinates();
+        Order order = readyOrder();
+        when(orderCommandService.markReadyByMerchant(501L, 101L))
+                .thenReturn(new MarkReadyResult(true, order));
+        when(deliveryTaskService.createWaitingTask(order, merchant)).thenReturn(501L);
+
+        fulfillmentService.completePreparation(501L);
+
+        TransactionSynchronization synchronization = TransactionSynchronizationManager
+                .getSynchronizations().get(0);
+        synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+
+        verifyNoInteractions(deliveryTaskGeoService);
     }
 
     @Test
@@ -171,6 +249,18 @@ class MerchantFulfillmentServiceTest {
         merchant.setId(101L);
         when(merchantMapper.selectById(101L)).thenReturn(merchant);
         return merchant;
+    }
+
+    private Merchant currentMerchantWithCoordinates() {
+        Merchant merchant = currentMerchant();
+        merchant.setLongitude(BigDecimal.valueOf(121.4737));
+        merchant.setLatitude(BigDecimal.valueOf(31.2304));
+        return merchant;
+    }
+
+    private void runAfterCommitSynchronizations() {
+        TransactionSynchronizationManager.getSynchronizations()
+                .forEach(TransactionSynchronization::afterCommit);
     }
 
     private Order readyOrder() {

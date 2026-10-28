@@ -39,6 +39,11 @@ public class DeliveryTask {
 
     private String merchantAddress;
 
+    // 建任务时的商家取货坐标快照，GEO 写入与历史回溯都以这里为准。
+    private BigDecimal pickupLongitude;
+
+    private BigDecimal pickupLatitude;
+
     private String merchantPhone;
 
     private String receiverName;

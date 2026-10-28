@@ -2,11 +2,14 @@ package org.example.takeout.Merchant.VO;
 
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.LocalTime;
 @Data
 public class MerchantUpdateVO {
     private String merchantName;
     private String address;
+    private BigDecimal longitude;
+    private BigDecimal latitude;
     private String phone;
     private String description;
     private String pictureURL;

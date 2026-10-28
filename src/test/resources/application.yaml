@@ -21,3 +21,8 @@ spring:
 order:
   timeout:
     enabled: false
+
+delivery:
+  geo:
+    reconciliation:
+      enabled: false

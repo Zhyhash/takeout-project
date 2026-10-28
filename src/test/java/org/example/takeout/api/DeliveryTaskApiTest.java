@@ -1,10 +1,11 @@
 package org.example.takeout.api;
 
-import com.github.pagehelper.PageInfo;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.DeliveryTask.VO.RiderDeliveryDetailVO;
 import org.example.takeout.DeliveryTask.VO.RiderTaskListVO;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.context.WebApplicationContext;
 
@@ -12,6 +13,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -26,21 +28,36 @@ class DeliveryTaskApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
-    void availableTasksReturnsPage() throws Exception {
+    void availableTasksReturnsNearbyTaskList() throws Exception {
         RiderTaskListVO task = taskListVO(501L, 0, "等待骑手取餐");
-        when(deliveryTaskService.getAvailableRiderTaskPage(1, 10))
-                .thenReturn(new PageInfo<>(List.of(task)));
+        when(deliveryTaskService.getAvailableRiderTask(5.0))
+                .thenReturn(List.of(task));
 
         mockMvc.perform(get("/rider/delivery-tasks/available")
                         .header("Authorization", riderBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(SUCCESS))
-                .andExpect(jsonPath("$.data.list[0].taskId").value(501L))
-                .andExpect(jsonPath("$.data.list[0].deliveryReward").value(5))
-                .andExpect(jsonPath("$.data.list[0].status").value(0))
-                .andExpect(jsonPath("$.data.list[0].statusDesc").value("等待骑手取餐"));
+                .andExpect(jsonPath("$.data[0].taskId").value(501L))
+                .andExpect(jsonPath("$.data[0].deliveryReward").value(5))
+                .andExpect(jsonPath("$.data[0].status").value(0))
+                .andExpect(jsonPath("$.data[0].statusDesc").value("等待骑手取餐"));
 
-        verify(deliveryTaskService).getAvailableRiderTaskPage(1, 10);
+        verify(deliveryTaskService).getAvailableRiderTask(5.0);
+    }
+
+    @Test
+    void availableTasksPassesRadiusToService() throws Exception {
+        when(deliveryTaskService.getAvailableRiderTask(2.5))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/rider/delivery-tasks/available")
+                        .param("radiusKm", "2.5")
+                        .header("Authorization", riderBearer()))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data").isEmpty());
+
+        verify(deliveryTaskService).getAvailableRiderTask(2.5);
     }
 
     @Test
@@ -126,14 +143,16 @@ class DeliveryTaskApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(UNAUTHORIZED));
     }
 
-    @Test
-    void availableTaskQueryRejectsInvalidPagination() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "-1", "NaN", "Infinity", "-Infinity"})
+    void availableTaskQueryRejectsNonFiniteOrNonPositiveRadius(String radiusKm) throws Exception {
         mockMvc.perform(get("/rider/delivery-tasks/available")
-                        .param("pageNum", "0")
-                        .param("pageSize", "101")
+                        .param("radiusKm", radiusKm)
                         .header("Authorization", riderBearer()))
                 .andExpect(status().isOk())
                 .andExpect(resultCode(PARAM_ERROR));
+
+        verifyNoInteractions(deliveryTaskService);
     }
 
     private RiderTaskListVO taskListVO(Long taskId, Integer status, String statusDesc) {

@@ -38,13 +38,13 @@ ON DUPLICATE KEY UPDATE
 SET @demo_user_id = LAST_INSERT_ID();
 
 INSERT INTO merchant (
-    username, phone, password, address, status,
+    username, phone, password, address, longitude, latitude, status,
     create_time, merchant_name, picture, merchant_description,
     opening_time, closing_time, version
 )
 VALUES (
     'demo_merchant', '13900000002', @demo_password_hash,
-    '上海市浦东新区演示路 100 号', 0, NOW(),
+    '上海市浦东新区演示路 100 号', 121.4737000, 31.2304000, 0, NOW(),
     '演示餐厅', '/images/default-product.svg',
     '用于本地接口调试的演示商家',
     '08:00:00', '23:00:00', 0
@@ -54,6 +54,8 @@ ON DUPLICATE KEY UPDATE
     phone = '13900000002',
     password = @demo_password_hash,
     address = '上海市浦东新区演示路 100 号',
+    longitude = 121.4737000,
+    latitude = 31.2304000,
     status = 0,
     merchant_name = '演示餐厅',
     picture = '/images/default-product.svg',
@@ -401,14 +403,14 @@ INSERT INTO delivery_task (
     order_id, rider_id, merchant_name, delivery_reward,
     receiver_name, status, create_time, accepted_time,
     delivered_time, update_time, receiver_phone, receiver_address,
-    merchant_address, merchant_phone
+    merchant_address, pickup_longitude, pickup_latitude, merchant_phone
 )
 VALUES (
     @demo_ready_order_id, NULL, '演示餐厅', 5.00,
     '演示用户', 0, DATE_SUB(NOW(), INTERVAL 12 MINUTE), NULL,
     NULL, DATE_SUB(NOW(), INTERVAL 12 MINUTE),
     '13900000001', '上海市浦东新区调试路 2 号',
-    '上海市浦东新区演示路 100 号', '13900000002'
+    '上海市浦东新区演示路 100 号', 121.4737000, 31.2304000, '13900000002'
 )
 ON DUPLICATE KEY UPDATE
     rider_id = NULL,
@@ -423,13 +425,15 @@ ON DUPLICATE KEY UPDATE
     receiver_phone = '13900000001',
     receiver_address = '上海市浦东新区调试路 2 号',
     merchant_address = '上海市浦东新区演示路 100 号',
+    pickup_longitude = 121.4737000,
+    pickup_latitude = 31.2304000,
     merchant_phone = '13900000002';
 
 INSERT INTO delivery_task (
     order_id, rider_id, merchant_name, delivery_reward,
     receiver_name, status, create_time, accepted_time,
     delivered_time, update_time, receiver_phone, receiver_address,
-    merchant_address, merchant_phone
+    merchant_address, pickup_longitude, pickup_latitude, merchant_phone
 )
 VALUES (
     @demo_delivering_order_id, @demo_rider_id, '演示餐厅', 5.00,
@@ -437,7 +441,7 @@ VALUES (
     DATE_SUB(NOW(), INTERVAL 5 MINUTE), NULL,
     DATE_SUB(NOW(), INTERVAL 5 MINUTE),
     '13900000001', '上海市浦东新区调试路 3 号',
-    '上海市浦东新区演示路 100 号', '13900000002'
+    '上海市浦东新区演示路 100 号', 121.4737000, 31.2304000, '13900000002'
 )
 ON DUPLICATE KEY UPDATE
     rider_id = @demo_rider_id,
@@ -452,13 +456,15 @@ ON DUPLICATE KEY UPDATE
     receiver_phone = '13900000001',
     receiver_address = '上海市浦东新区调试路 3 号',
     merchant_address = '上海市浦东新区演示路 100 号',
+    pickup_longitude = 121.4737000,
+    pickup_latitude = 31.2304000,
     merchant_phone = '13900000002';
 
 INSERT INTO delivery_task (
     order_id, rider_id, merchant_name, delivery_reward,
     receiver_name, status, create_time, accepted_time,
     delivered_time, update_time, receiver_phone, receiver_address,
-    merchant_address, merchant_phone
+    merchant_address, pickup_longitude, pickup_latitude, merchant_phone
 )
 VALUES (
     @demo_delivered_order_id, @demo_rider_id, '演示餐厅', 5.00,
@@ -467,7 +473,7 @@ VALUES (
     DATE_SUB(NOW(), INTERVAL 1 MINUTE),
     DATE_SUB(NOW(), INTERVAL 1 MINUTE),
     '13900000001', '上海市浦东新区调试路 4 号',
-    '上海市浦东新区演示路 100 号', '13900000002'
+    '上海市浦东新区演示路 100 号', 121.4737000, 31.2304000, '13900000002'
 )
 ON DUPLICATE KEY UPDATE
     rider_id = @demo_rider_id,
@@ -482,6 +488,8 @@ ON DUPLICATE KEY UPDATE
     receiver_phone = '13900000001',
     receiver_address = '上海市浦东新区调试路 4 号',
     merchant_address = '上海市浦东新区演示路 100 号',
+    pickup_longitude = 121.4737000,
+    pickup_latitude = 31.2304000,
     merchant_phone = '13900000002';
 
 COMMIT;

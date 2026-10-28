@@ -6,19 +6,12 @@ import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
-import org.example.takeout.Rider.VO.RiderDistanceVO;
-import org.springframework.data.geo.Circle;
-import org.springframework.data.geo.Distance;
-import org.springframework.data.geo.GeoResult;
-import org.springframework.data.geo.GeoResults;
-import org.springframework.data.geo.Metrics;
+import org.example.takeout.Common.Utils.GeoCoordinates;
 import org.springframework.data.geo.Point;
-import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,7 +21,7 @@ import java.util.Optional;
 public class RiderLocationService {
     private static final String RIDER_LOCATION_KEY = "rider:locations";
     private static final String RIDER_LAST_ACTIVE_KEY = "rider:last_active";
-    private static final int NEARBY_RIDER_LIMIT = 100;
+
     private static final long RIDER_TIMEOUT_MS = 300_000L;
     private static final int CLEANUP_BATCH_SIZE = 100;
     private static final int CLEANUP_MAX_BATCHES = 10;
@@ -111,46 +104,6 @@ public class RiderLocationService {
         }
     }
 
-    public List<RiderDistanceVO> findNearbyRiders(double longitude, double latitude, double radiusKm) {
-        validateCoordinates(longitude, latitude);
-        if (!Double.isFinite(radiusKm) || radiusKm <= 0) {
-            throw new BusinessException(
-                    ResultCodeEnum.PARAM_ERROR,
-                    "附近距离必须大于0"
-            );
-        }
-
-        Circle searchArea = new Circle(
-                new Point(longitude, latitude),
-                new Distance(radiusKm, Metrics.KILOMETERS)
-        );
-        GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults;
-        try {
-            geoResults = redisTemplate.opsForGeo().radius(
-                    RIDER_LOCATION_KEY,
-                    searchArea,
-                    RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
-                            .includeDistance()
-                            .sortAscending()
-                            .limit(NEARBY_RIDER_LIMIT)
-            );
-        } catch (Exception e) {
-            throw new RedisGeoOperationException("附近骑手查询失败，请稍后重试", e);
-        }
-
-        if (geoResults == null) {
-            throw new RedisGeoOperationException("GEO查询未返回结果");
-        }
-
-        List<RiderDistanceVO> nearbyRiders = new ArrayList<>();
-        for (GeoResult<RedisGeoCommands.GeoLocation<String>> geoResult : geoResults) {
-            String riderId = geoResult.getContent().getName();
-            Distance distance = geoResult.getDistance();
-            nearbyRiders.add(new RiderDistanceVO(riderId, distance));
-        }
-        return nearbyRiders;
-    }
-
     public Optional<Point> getRiderLocation(Long riderId) {
         if (riderId == null) {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "骑手id不能为空");
@@ -169,7 +122,10 @@ public class RiderLocationService {
             throw new RedisGeoOperationException("查询骑手地理位置失败，riderId=" + riderId, e);
         }
 
-        if (positions == null || positions.isEmpty()) {
+        if (positions == null) {
+            throw new RedisGeoOperationException("骑手位置查询未得到执行结果");
+        }
+        if (positions.isEmpty()) {
             return Optional.empty();
         }
         return Optional.ofNullable(positions.get(0));
@@ -184,11 +140,14 @@ public class RiderLocationService {
         }
 
         try {
-            redisTemplate.execute(
+            Long scriptResult = redisTemplate.execute(
                     REMOVE_LOCATION_SCRIPT,
                     List.of(RIDER_LOCATION_KEY, RIDER_LAST_ACTIVE_KEY),
                     String.valueOf(riderId)
             );
+            if (scriptResult == null) {
+                throw new RedisGeoOperationException("删除骑手位置未得到执行结果");
+            }
         } catch (RedisGeoOperationException e) {
             throw e;
         } catch (Exception e) {
@@ -225,12 +184,6 @@ public class RiderLocationService {
     }
 
     private void validateCoordinates(double longitude, double latitude) {
-        if (!Double.isFinite(longitude) || longitude < -180 || longitude > 180
-                || !Double.isFinite(latitude) || latitude < -90 || latitude > 90) {
-            throw new BusinessException(
-                    ResultCodeEnum.PARAM_ERROR,
-                    "经纬度不合法：经度必须在-180到180之间，纬度必须在-90到90之间"
-            );
-        }
+        GeoCoordinates.validate(longitude, latitude);
     }
 }

@@ -126,7 +126,9 @@ public class JwtInterceptor implements HandlerInterceptor, AsyncHandlerIntercept
             HttpServletResponse response,
             Object handler) {
 
+        UserContextHolder.clear();
         MerchantContextHolder.clear();
+        RiderContextHolder.clear();
     }
 
 }

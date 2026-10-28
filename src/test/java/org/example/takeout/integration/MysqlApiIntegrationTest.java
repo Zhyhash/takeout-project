@@ -1364,6 +1364,8 @@ class MysqlApiIntegrationTest {
                     `phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `password` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '',
+                    `longitude` decimal(10,7) NULL DEFAULT NULL COMMENT '店铺取货经度',
+                    `latitude` decimal(10,7) NULL DEFAULT NULL COMMENT '店铺取货纬度',
                     `status` tinyint NOT NULL DEFAULT 0,
                     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
@@ -1537,6 +1539,8 @@ class MysqlApiIntegrationTest {
                     `receiver_phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '收货人联系电话快照',
                     `receiver_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '收货地址快照',
                     `merchant_address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '商家地址快照',
+                    `pickup_longitude` decimal(10,7) NULL DEFAULT NULL COMMENT '商家取货经度快照',
+                    `pickup_latitude` decimal(10,7) NULL DEFAULT NULL COMMENT '商家取货纬度快照',
                     `merchant_phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '商家联系电话快照',
                     PRIMARY KEY (`id`) USING BTREE,
                     UNIQUE INDEX `uk_delivery_task_order_id` (`order_id` ASC) USING BTREE

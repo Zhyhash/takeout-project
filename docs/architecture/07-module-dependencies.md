@@ -2,7 +2,7 @@
 
 这些小图回答“某项职责依赖谁”。箭头统一表示 **调用方 → 被调用方**，不表示执行顺序或事务范围；先看 [分层总览](01-system-overview.md)，再选择需要的主题。
 
-节点可归并承担同一职责的多个现有类，仍属于同一 Spring Boot 应用；没有新增统一服务或事件总线。Mapper、MySQL 与 Redis 关系只在总览中表达。
+节点可归并承担同一职责的多个现有类，仍属于同一 Spring Boot 应用；没有新增统一服务或事件总线。存储关系通常留在总览说明，GEO 专题补充必要的 MySQL/Redis 一致性边界。
 
 ## 1. 店铺浏览与购物车的只读查询
 
@@ -115,14 +115,42 @@ flowchart TD
     Cleanup["位置清理调度"] --> Location
 ```
 
-`updateLocation` 要求上报 ID 与当前有效骑手 ID 相同，经纬度合法；一个 Lua 脚本同时写入 `rider:locations` GEO 集合和 `rider:last_active` 活跃时间。附近查询按距离升序返回半径内最多 100 名骑手；单人位置读取和主动删除也由该服务提供。附近查询目前只查 GEO 集合，不检查最近活跃时间，因此位置是否仍新鲜依赖定时清理及时完成。
+[`RiderLocationController`](../../src/main/java/org/example/takeout/Rider/Controller/RiderLocationController.java) 暴露 `PUT/GET/DELETE /rider/location`，只使用当前登录骑手的身份，不接受客户端提供骑手 ID。`updateLocation` 还会要求上报 ID 与当前有效骑手一致，并校验经纬度；一个 Lua 脚本同时写入 `rider:locations` GEO 集合和 `rider:last_active` 活跃时间。单人位置读取和主动删除也由该服务提供；服务不提供附近骑手查询。
 
-`RiderLocationCleanupScheduler` 使用 fixedDelay，每轮完成后等待 5 分钟。清理脚本删除最近活跃时间不晚于当前时间减 5 分钟的骑手，并同时从两个 Key 中移除；每轮至多运行 10 批、每批 100 个。超过当轮上限的积压留待后续调度轮次。Redis GEO 调用失败会向调用方抛 `RedisGeoOperationException`；调度器记录清理异常并等待下一轮。
-
-这项能力目前尚未接入骑手 HTTP 控制器或配送派单流程，因此不能据此认为现有骑手 API 已能上报/搜索位置，也不参与任务分配。
+`RiderLocationCleanupScheduler` 使用 fixedDelay，每轮完成后等待 5 分钟。清理脚本删除最近活跃时间不晚于当前时间减 5 分钟的骑手，并同时从两个 Key 中移除；每轮至多运行 10 批、每批 100 个。超过当轮上限的积压留待后续调度轮次。位置读取不额外检查活跃时间，GEO 成员也没有单独 TTL；过期位置依赖清理调度实际移除。Redis GEO 调用失败会向调用方抛 `RedisGeoOperationException`；调度器记录清理异常并等待下一轮。
 
 | 位置 | 代码与测试 |
 | --- | --- |
-| 服务 | [RiderLocationService](../../src/main/java/org/example/takeout/Rider/Service/RiderLocationService.java)、[RiderDistanceVO](../../src/main/java/org/example/takeout/Rider/VO/RiderDistanceVO.java) |
+| 服务 | [RiderLocationService](../../src/main/java/org/example/takeout/Rider/Service/RiderLocationService.java) |
+| HTTP 入口 | [RiderLocationController](../../src/main/java/org/example/takeout/Rider/Controller/RiderLocationController.java)；[位置请求 DTO](../../src/main/java/org/example/takeout/Rider/DTO/UpdateRiderLocationDTO.java) |
 | 过期清理 | [RiderLocationCleanupScheduler](../../src/main/java/org/example/takeout/Rider/Config/RiderLocationCleanupScheduler.java) |
 | 行为验证源码 | [RiderLocationServiceTest](../../src/test/java/org/example/takeout/Rider/Service/RiderLocationServiceTest.java)、[RiderLocationServiceIntegrationTest](../../src/test/java/org/example/takeout/integration/RiderLocationServiceIntegrationTest.java)、[RiderLocationCleanupSchedulerTest](../../src/test/java/org/example/takeout/Rider/Config/RiderLocationCleanupSchedulerTest.java) |
+
+## 6. 可接配送任务 GEO 与接单大厅
+
+接单大厅同时读取本人位置、任务 GEO 候选和 MySQL 权威任务列表。出餐和抢单分别在 MySQL 提交后修复或移除任务索引。
+
+```mermaid
+flowchart TD
+    Hall["接单大厅"] --> DeliveryService["DeliveryTaskService"]
+    DeliveryService --> LocationService["RiderLocationService"]
+    DeliveryService --> TaskGeo["DeliveryTaskGeoService"]
+    DeliveryService --> TaskMapper["MySQL 待接任务列表"]
+    Fulfillment["FulfillmentService 出餐提交后"] --> TaskGeo
+    Claim["DeliveryTaskService 抢单提交后"] --> TaskGeo
+    LocationService --> RiderRedis["骑手位置 GEO + 最近活跃时间 ZSET"]
+    TaskGeo --> TaskMapperLock["MySQL 任务状态 SELECT FOR UPDATE"]
+    TaskGeo --> TaskRedis["可接任务 GEO delivery:available:geo"]
+```
+
+商家可成对设置经纬度；出餐事务创建配送任务时，把商家当时的坐标复制到 `delivery_task.pickup_longitude/pickup_latitude`，商家之后修改店铺坐标不会改变已建任务的快照。没有坐标的历史任务或未配置坐标的新任务不进入任务 GEO。出餐事务提交后，若商家坐标已配置，`FulfillmentService` 按任务当前 MySQL 状态修复 GEO；GEO 写入失败只记录日志，不回滚已提交出餐结果。
+
+`GET /rider/delivery-tasks/available` 默认按 5 公里查询 Redis GEO，最多取距离最近的 100 个候选。若查询有候选，服务仍从 MySQL 读取全部 `WAIT_ASSIGN` 且 `rider_id IS NULL` 任务：这 100 个候选按距离升序在前，其余任务按 ID 升序，结果不分页。骑手尚未上报位置时返回提示；骑手位置查询失败、任务 GEO 查询失败或半径内没有候选时，改按 MySQL 任务 ID 倒序查询最多 500 条。GEO 只影响排序，是否可接仍由 MySQL 状态决定。
+
+抢单用 `READ_COMMITTED` 条件更新 MySQL 任务状态，事务提交后删除对应 GEO 成员；删除失败时再按任务的数据库状态对账。调度器默认启动后等待 10 分钟，之后每轮完成后等待 10 分钟。每轮一次读取 MySQL 全部待接任务和 Redis GEO 全部成员，尝试删除非规范成员，并计算两边任务 ID 的对称差集；差集中的 ID 逐个用独立 `REQUIRES_NEW`、`REPEATABLE_READ` 事务修复。事务通过 `SELECT ... FOR UPDATE` 锁住任务行，直至相应 Redis 写入或删除完成，以避免与抢单并发时按旧状态重写索引。单项修复失败只记录日志，留待后续调度轮次重试。两个集合都已有的任务 ID 不会再读取 Redis 坐标作比较，因此交集内坐标错误不会被全量对账纠正；单任务对账会根据 MySQL 快照执行 GEOADD 更新。
+
+| 位置 | 代码 |
+| --- | --- |
+| HTTP 入口与大厅排序 | [DeliveryTaskController](../../src/main/java/org/example/takeout/DeliveryTask/Controller/DeliveryTaskController.java)、[DeliveryTaskService.getAvailableRiderTask](../../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskService.java) |
+| 出餐后的任务快照与 GEO 更新 | [FulfillmentService.completePreparation](../../src/main/java/org/example/takeout/Merchant/Service/FulfillmentService.java)、[DeliveryTaskService.createWaitingTask](../../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskService.java) |
+| GEO 服务、对账调度与全量查询 | [DeliveryTaskGeoService](../../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskGeoService.java)、[DeliveryTaskGeoReconciliationJob](../../src/main/java/org/example/takeout/DeliveryTask/Config/DeliveryTaskGeoReconciliationJob.java)、[DeliveryTaskMapper.selectWaitAssignTasks](../../src/main/java/org/example/takeout/DeliveryTask/Mapper/DeliveryTaskMapper.java) |

@@ -19,6 +19,7 @@ import org.springframework.http.MediaType;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.util.List;
+import java.math.BigDecimal;
 import java.util.stream.Stream;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -353,6 +354,43 @@ class AuthAndAccountApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data.merchantName").value("Test Shop"))
                 .andExpect(jsonPath("$.data.status").value(0))
                 .andExpect(jsonPath("$.data.statusDesc").value("店铺正常开启"));
+    }
+
+    @Test
+    void merchantCanConfigurePickupCoordinatesThroughExistingInfoEndpoint() throws Exception {
+        var result = merchantUpdateVO();
+        result.setLongitude(new BigDecimal("121.4737000"));
+        result.setLatitude(new BigDecimal("31.2304000"));
+        when(merchantAccountService.updateMerchant(any(MerchantUpdateDTO.class))).thenReturn(result);
+
+        mockMvc.perform(put("/merchant/info")
+                        .header("Authorization", merchantBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"longitude\":121.4737,\"latitude\":31.2304}"))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(SUCCESS))
+                .andExpect(jsonPath("$.data.longitude").value(121.4737))
+                .andExpect(jsonPath("$.data.latitude").value(31.2304));
+
+        verify(merchantAccountService).updateMerchant(argThat(dto ->
+                dto.getLongitude().compareTo(new BigDecimal("121.4737")) == 0
+                        && dto.getLatitude().compareTo(new BigDecimal("31.2304")) == 0));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidPickupCoordinates")
+    void merchantPickupCoordinatesRejectIncompleteOrUnsupportedValues(String content) throws Exception {
+        assertMerchantUpdateRejected(content);
+    }
+
+    static Stream<String> invalidPickupCoordinates() {
+        return Stream.of(
+                "{\"longitude\":121.4737}",
+                "{\"latitude\":31.2304}",
+                "{\"longitude\":180.1,\"latitude\":31}",
+                "{\"longitude\":121,\"latitude\":86}",
+                "{\"longitude\":121,\"latitude\":-86}",
+                "{\"longitude\":121.12345678,\"latitude\":31}");
     }
 
     @Test

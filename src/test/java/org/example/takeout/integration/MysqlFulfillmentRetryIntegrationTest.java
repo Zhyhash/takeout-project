@@ -4,6 +4,7 @@ import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskSch
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
+import org.example.takeout.DeliveryTask.Service.DeliveryTaskGeoService;
 import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Merchant.Service.FulfillmentService;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
@@ -80,6 +81,9 @@ class MysqlFulfillmentRetryIntegrationTest {
 
     @MockitoBean
     private ProductImageCleanupService productImageCleanupService;
+
+    @MockitoBean
+    private DeliveryTaskGeoService deliveryTaskGeoService;
 
     @DynamicPropertySource
     static void mysqlProperties(DynamicPropertyRegistry registry) throws SQLException {
@@ -342,7 +346,8 @@ class MysqlFulfillmentRetryIntegrationTest {
                 statement.execute("""
                         CREATE TABLE merchant (
                             id BIGINT PRIMARY KEY, username VARCHAR(100) NOT NULL, phone VARCHAR(20) NOT NULL,
-                            password VARCHAR(100) NOT NULL, address VARCHAR(255) NOT NULL, status TINYINT NOT NULL,
+                            password VARCHAR(100) NOT NULL, address VARCHAR(255) NOT NULL,
+                            longitude DECIMAL(10,7) NULL, latitude DECIMAL(10,7) NULL, status TINYINT NOT NULL,
                             create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, merchant_name VARCHAR(255) NOT NULL,
                             picture VARCHAR(255) NULL, merchant_description VARCHAR(255) NULL,
                             opening_time TIME NOT NULL DEFAULT '08:00:00', closing_time TIME NOT NULL DEFAULT '22:00:00',
@@ -380,7 +385,9 @@ class MysqlFulfillmentRetryIntegrationTest {
                             status INT NOT NULL, create_time DATETIME NOT NULL, accepted_time DATETIME NULL,
                             delivered_time DATETIME NULL, update_time DATETIME NULL,
                             receiver_phone VARCHAR(20) NOT NULL, receiver_address VARCHAR(255) NOT NULL,
-                            merchant_address VARCHAR(255) NOT NULL, merchant_phone VARCHAR(20) NOT NULL
+                            merchant_address VARCHAR(255) NOT NULL,
+                            pickup_longitude DECIMAL(10,7) NULL, pickup_latitude DECIMAL(10,7) NULL,
+                            merchant_phone VARCHAR(20) NOT NULL
                         ) ENGINE=InnoDB
                         """);
             }

@@ -10,6 +10,7 @@ import org.example.takeout.Common.Exception.AuthException;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
+import org.example.takeout.Common.Utils.GeoCoordinates;
 import org.example.takeout.Common.Utils.MyScurity.BCrypt;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Merchant.DTO.MerchantLoginDTO;
@@ -133,6 +134,13 @@ public class MerchantAccountService {
      * 更新商家信息
      */
     public MerchantUpdateVO updateMerchant(MerchantUpdateDTO merchantUpdateDTO) {
+        if (!merchantUpdateDTO.isCoordinatePairValid()) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "经纬度必须同时提供");
+        }
+        if (merchantUpdateDTO.getLongitude() != null) {
+            GeoCoordinates.validate(merchantUpdateDTO.getLongitude().doubleValue(),
+                    merchantUpdateDTO.getLatitude().doubleValue());
+        }
         Long merchantId = MerchantContextHolder.getMerchantId();
         Merchant oldMerchant = merchantMapper.selectOne(Wrappers.<Merchant>lambdaQuery().
                 eq(Merchant::getId, merchantId).
