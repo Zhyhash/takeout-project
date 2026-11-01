@@ -4,12 +4,22 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpMethod;
 import org.springframework.util.AntPathMatcher;
 
+import java.util.Set;
+
 /**
  * 声明哪些路径无需登录、哪些路径仅用户/仅商家可访问。
  */
 public final class AuthPathMatcher {
 
     private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
+    private static final Set<String> RIDER_WEB_STATIC_ASSETS = Set.of(
+            "/rider-web/index.html",
+            "/rider-web/styles.css",
+            "/rider-web/app.mjs",
+            "/rider-web/api.mjs",
+            "/rider-web/location-tracker.mjs",
+            "/rider-web/distance-display.mjs"
+    );
 
     private AuthPathMatcher() {
     }
@@ -19,6 +29,17 @@ public final class AuthPathMatcher {
         String method = request.getMethod();
         String path = normalizePath(request);
 
+        if ("/webhooks/stripe".equals(path)) {
+            return HttpMethod.POST.matches(method);
+        }
+        if ("/stripe-test.html".equals(path)) {
+            return HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        }
+
+        // The same-origin rider page exposes only its known files for read requests.
+        if (RIDER_WEB_STATIC_ASSETS.contains(path)) {
+            return HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        }
         if (HttpMethod.OPTIONS.matches(method)) {
             return true;
         }
@@ -87,6 +108,9 @@ public final class AuthPathMatcher {
             return true;
         }
         if (PATH_MATCHER.match("/merchant/info", path)) {
+            return true;
+        }
+        if (PATH_MATCHER.match("/merchant/rewards", path)) {
             return true;
         }
         if (PATH_MATCHER.match("/merchant/restore/**", path)) {

@@ -7,6 +7,7 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.GeoCoordinates;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -111,7 +112,24 @@ public class RiderLocationService {
         if (riderId <= 0) {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "骑手id必须大于0");
         }
+        long staleBefore = System.currentTimeMillis() - RIDER_TIMEOUT_MS;
 
+        Double score;
+        try {
+            score = redisTemplate.opsForZSet()
+                    .score(RIDER_LAST_ACTIVE_KEY, String.valueOf(riderId));
+        } catch (DataAccessException e) {
+            throw new RedisGeoOperationException(
+                    "查询骑手活跃时间失败，riderId=" + riderId,
+                    e
+            );
+        }
+
+        if (score == null || score <= staleBefore) {
+            removeRiderLocation(riderId);
+            return Optional.empty();
+        }
+        
         List<Point> positions;
         try {
             positions = redisTemplate.opsForGeo().position(

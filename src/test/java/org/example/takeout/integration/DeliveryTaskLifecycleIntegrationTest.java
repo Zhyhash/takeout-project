@@ -13,6 +13,7 @@ import org.example.takeout.DeliveryTask.Service.DeliveryTaskService;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Support.OrderRequestFingerprint;
+import org.example.takeout.Rider.Config.RiderLocationCleanupScheduler;
 import org.example.takeout.Rider.Enums.RiderStatusEnum;
 import org.example.takeout.Rider.Service.RiderLocationService;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
@@ -64,6 +65,11 @@ class DeliveryTaskLifecycleIntegrationTest {
 
     @MockitoBean
     private RiderLocationService riderLocationService;
+
+    // This suite drives rider locations explicitly; background cleanup must not
+    // invoke the shared mock while a test configures its location responses.
+    @MockitoBean
+    private RiderLocationCleanupScheduler riderLocationCleanupScheduler;
 
     @MockitoBean
     private DeliveryTaskGeoService deliveryTaskGeoService;
@@ -361,6 +367,8 @@ class DeliveryTaskLifecycleIntegrationTest {
                     phone VARCHAR(255) NOT NULL,
                     password VARCHAR(255) NOT NULL,
                     status INT NOT NULL,
+                    balance DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    total_income DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                     create_time TIMESTAMP NOT NULL,
                     update_time TIMESTAMP NULL,
                     is_delete INT NOT NULL DEFAULT 0
@@ -376,6 +384,7 @@ class DeliveryTaskLifecycleIntegrationTest {
                     merchant_id BIGINT NULL,
                     merchant_name VARCHAR(255) NULL,
                     total_amount DECIMAL(10, 2) NULL,
+                    delivery_fee DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
                     status INT NOT NULL,
                     cancel_source INT NULL,
                     receiver_name VARCHAR(20) NULL,

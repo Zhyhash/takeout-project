@@ -85,6 +85,7 @@ class MerchantOrderSeenDatabaseTest {
                     merchant_id BIGINT,
                     merchant_name VARCHAR(255),
                     total_amount DECIMAL(10, 2),
+                    delivery_fee DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
                     original_amount DECIMAL(10, 2),
                     discount_amount DECIMAL(10, 2),
                     status INT,
@@ -106,7 +107,8 @@ class MerchantOrderSeenDatabaseTest {
         OrderService orderService = new OrderService(mock(OrderTransactionExecutor.class),
                 orderItemService, mock(OrderItemMapper.class), session.getMapper(OrderMapper.class),
                 mock(OrderVOAssembler.class), mock(OrderConvertor.class), mock(CartCheckoutService.class),
-                new OrderRequestFingerprint(), sseService);
+                new OrderRequestFingerprint(), sseService,
+                new org.example.takeout.Order.Domain.DeliveryFeeCalculator(), null);
         MerchantOrderViewService viewService = new MerchantOrderViewService(
                 Mappers.getMapper(MerchantOrderConverter.class), orderItemService,
                 orderService, new OrderProductSummaryBuilder());

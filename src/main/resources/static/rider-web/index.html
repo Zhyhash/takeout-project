@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>骑手工作台 · Tokeout</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+<main class="workspace">
+    <header class="page-header">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">T</span><span>TOKEOUT <small>骑手工作台</small></span></div>
+        <span class="status-pill" id="work-status" role="status">未登录</span>
+    </header>
+    <section class="intro">
+        <p class="eyebrow">RIDER WORKSPACE</p>
+        <h1>从你所在的位置出发。</h1>
+        <p>开始定位后获取真实位置，并查看服务端为你排列的可接任务。</p>
+    </section>
+    <section class="panel login-panel" id="login-panel" aria-labelledby="login-heading">
+        <h2 id="login-heading">骑手登录</h2>
+        <form id="login-form">
+            <label>骑手登录名<input id="login-name" name="name" autocomplete="username" required maxlength="50" pattern="[A-Za-z0-9_-]+" placeholder="请输入骑手登录名"></label>
+            <label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" required minlength="8" maxlength="20" placeholder="请输入密码"></label>
+            <button class="primary" id="login-button" type="submit">登录工作台</button>
+        </form>
+        <p class="message error" id="login-error" role="alert" hidden></p>
+        <p class="hint">登录凭证仅保存在当前标签页的会话中，定位需要你主动开始并授权。</p>
+    </section>
+    <div id="rider-workspace" hidden>
+        <div class="account-bar"><span id="rider-name"></span><button class="text-button" id="logout-button" type="button">退出登录</button></div>
+        <div class="work-grid">
+            <section class="panel location-panel" aria-labelledby="location-heading">
+                <div class="section-title"><span class="step">01</span><h2 id="location-heading">我的位置</h2></div>
+                <p id="location-description">尚未开始定位。</p>
+                <div class="coordinates">
+                    <div><span>经度</span><strong id="longitude">—</strong></div>
+                    <div><span>纬度</span><strong id="latitude">—</strong></div>
+                </div>
+                <p class="hint" id="position-detail">等待浏览器提供真实位置</p>
+                <p class="hint" id="upload-detail">尚未上报</p>
+                <div class="actions"><button class="primary" id="start-button" type="button">开始定位</button><button class="secondary" id="stop-button" type="button" disabled>停止定位</button></div>
+                <div aria-live="polite">
+                    <p class="message error" id="position-error" hidden></p>
+                    <p class="message error" id="upload-error" hidden></p>
+                    <p class="message error" id="cleanup-error" hidden></p>
+                </div>
+                <p class="hint" id="lifecycle-note">上报最短间隔 30 秒。切换到后台或离开页面会暂停定位，返回后需重新开始。</p>
+                <p class="hint">停止定位会请求删除服务器位置，不会改变骑手账号状态或已有配送任务。</p>
+            </section>
+            <section class="panel hall-panel" aria-labelledby="hall-heading">
+                <div class="section-title"><span class="step">02</span><h2 id="hall-heading">接单大厅</h2><span id="task-count" class="count">0 项</span></div>
+                <div class="hall-controls">
+                    <label>优先查询半径 <span class="radius-control"><input id="radius" type="number" min="0.1" step="0.1" value="5" inputmode="decimal" aria-label="优先查询半径，单位公里"> 公里</span></label>
+                    <button class="secondary" id="refresh-button" type="button" disabled>刷新任务</button>
+                </div>
+                <p class="hint">附近任务优先，列表可能包含半径外任务；顺序以服务端返回为准。</p>
+                <p class="message error" id="task-error" role="alert" hidden></p>
+                <div class="empty-state" id="tasks-empty">真实位置成功上报后，这里会显示可接任务。</div>
+                <ol class="task-list" id="task-list" aria-live="polite"></ol>
+            </section>
+        </div>
+    </div>
+    <footer>仅在当前页面活跃时定位 · 不记录轨迹 · 不使用默认坐标</footer>
+</main>
+</body>
+</html>

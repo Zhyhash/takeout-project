@@ -8,6 +8,8 @@ import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.CartHeader.Entity.CartHeader;
 import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.Common.Constants.DeleteConstant;
+import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Service.MerchantQueryService;
@@ -16,6 +18,7 @@ import org.example.takeout.Product.Service.ProductQueryService;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -70,8 +73,19 @@ public class CartCheckoutService {
         cartAvailableResult.setAvailableItems(available);
         cartAvailableResult.setProductMap(productMap);
         if (merchant != null) {
+            if (merchant.getLongitude() == null || merchant.getLatitude() == null) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                        "商家未配置取货坐标，暂时无法下单");
+            }
+            if (merchant.getLongitude().abs().compareTo(BigDecimal.valueOf(180)) > 0
+                    || merchant.getLatitude().abs().compareTo(BigDecimal.valueOf(90)) > 0) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                        "商家取货坐标超出有效范围，暂时无法下单");
+            }
             cartAvailableResult.setMerchantId(merchant.getId());
             cartAvailableResult.setMerchantName(merchant.getMerchantName());
+            cartAvailableResult.setLongitude(merchant.getLongitude().doubleValue());
+            cartAvailableResult.setLatitude(merchant.getLatitude().doubleValue());
         }
         return cartAvailableResult;
     }

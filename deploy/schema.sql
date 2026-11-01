@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS `merchant` (
     `opening_time` time NOT NULL DEFAULT '08:00:00',
     `closing_time` time NOT NULL DEFAULT '22:00:00',
     `version` int NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    `balance` decimal(12,2) NOT NULL DEFAULT 0.00 COMMENT '当前账户余额',
+    `total_income` decimal(12,2) NOT NULL DEFAULT 0.00 COMMENT '历史累计已结算收入',
     PRIMARY KEY (`id`) USING BTREE,
     UNIQUE INDEX `uk_merchant_phone` (`phone` ASC) USING BTREE,
     UNIQUE INDEX `uk_merchant_username` (`username` ASC) USING BTREE
@@ -129,6 +131,7 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `merchant_id` bigint NOT NULL,
     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
     `total_amount` decimal(10, 2) NOT NULL,
+    `delivery_fee` decimal(10, 2) NOT NULL DEFAULT 0.00 COMMENT '配送费',
     `status` tinyint NOT NULL DEFAULT 0,
     `cancel_source` tinyint NULL DEFAULT NULL
         COMMENT '订单取消原因：1用户主动取消，2商家拒单，3系统超时取消，4平台取消',
@@ -183,6 +186,8 @@ CREATE TABLE IF NOT EXISTS `rider` (
     `create_time` datetime NOT NULL,
     `update_time` datetime NULL DEFAULT NULL,
     `is_delete` int NOT NULL,
+    `balance` decimal(12,2) NOT NULL DEFAULT 0.00 COMMENT '当前账户余额',
+    `total_income` decimal(12,2) NOT NULL DEFAULT 0.00 COMMENT '历史累计已结算收入',
     PRIMARY KEY (`id`) USING BTREE,
     UNIQUE INDEX `uk_rider_name` (`name` ASC) USING BTREE,
     UNIQUE INDEX `uk_rider_phone` (`phone` ASC) USING BTREE
@@ -212,6 +217,30 @@ CREATE TABLE IF NOT EXISTS `delivery_task` (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4
   COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
+CREATE TABLE IF NOT EXISTS `income_record` (
+    `id` bigint NOT NULL AUTO_INCREMENT,
+    `beneficiary_type` tinyint NOT NULL COMMENT '收益归属类型：1-骑手, 2-商家',
+    `beneficiary_id` bigint NOT NULL COMMENT '收益归属对象 ID',
+    `order_id` bigint NOT NULL COMMENT '关联订单 ID',
+    `type` tinyint NOT NULL COMMENT '流水类型：1-配送报酬, 2-订单收入',
+    `amount` decimal(12, 2) NOT NULL COMMENT '收益金额',
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_income_record_beneficiary_order_type`
+        (`beneficiary_type`, `beneficiary_id`, `order_id`, `type`),
+    UNIQUE KEY `uk_income_record_order_type` (`order_id`, `type`),
+    KEY `idx_income_record_beneficiary_time`
+        (`beneficiary_type`, `beneficiary_id`, `create_time`, `id`),
+    CONSTRAINT `chk_income_record_event_identity` CHECK (
+        (`beneficiary_type` = 1 AND `type` = 1)
+        OR (`beneficiary_type` = 2 AND `type` = 2)
+    ),
+    CONSTRAINT `chk_income_record_nonnegative_amount` CHECK (`amount` >= 0.00),
+    CONSTRAINT `fk_income_record_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`)
+        ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci COMMENT = '商家与骑手收益流水';
+
 CREATE TABLE IF NOT EXISTS `cache_invalidation_task` (
     `id` bigint NOT NULL AUTO_INCREMENT,
     `cache_key` varchar(255) NOT NULL,
@@ -225,3 +254,31 @@ CREATE TABLE IF NOT EXISTS `cache_invalidation_task` (
   CHARACTER SET = utf8mb4
   COLLATE = utf8mb4_0900_ai_ci
   COMMENT = '缓存失效任务表';
+
+-- Test-only Stripe references. Order status remains in orders; no payment secrets are persisted.
+CREATE TABLE IF NOT EXISTS `order_stripe_payments` (
+    `order_id` bigint NOT NULL,
+    `payment_intent_id` varchar(255) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+    `amount_minor` bigint NOT NULL COMMENT 'CNY fen, copied from the server-side order total',
+    `currency` char(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'cny',
+    `stripe_status` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+    `idempotency_key` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`order_id`),
+    UNIQUE KEY `uk_order_stripe_payment_intent` (`payment_intent_id`),
+    UNIQUE KEY `uk_order_stripe_idempotency` (`idempotency_key`),
+    CONSTRAINT `chk_order_stripe_cny` CHECK (`currency` = 'cny'),
+    CONSTRAINT `chk_order_stripe_amount` CHECK (`amount_minor` > 0 AND `amount_minor` <= 99999999),
+    CONSTRAINT `fk_order_stripe_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`)
+        ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS `stripe_payment_events` (
+    `event_id` varchar(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `payment_intent_id` varchar(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `event_type` varchar(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`event_id`),
+    KEY `idx_stripe_payment_events_intent` (`payment_intent_id`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;

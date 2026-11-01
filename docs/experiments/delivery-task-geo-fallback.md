@@ -7,7 +7,7 @@
 
 本文件保留了既有实验的场景、步骤和断言；原记录没有可核验的执行日期，因此不把它标成这轮运行结果。该实验使用真实 MySQL 和 MockMvc，但骑手位置及配送任务 GEO 响应由 Mockito 控制，没有验证真实 Redis 命令或 Redis GEO 集合。
 
-2026-10-28 较早版本曾有 137 个定向测试和 4 个 H2 测试通过；之后单任务 GEO 对账事务隔离级别从 `READ_COMMITTED` 调整为 `REPEATABLE_READ`。这些 141 项结果不作为当前源码版本的通过依据。当前 `DeliveryTaskGeoServiceTest` 仍断言旧的 `READ_COMMITTED` 隔离级别，和生产代码不一致；本轮没有修改或运行这个测试。本轮文档复核仅静态核对，未运行测试、数据库迁移，也未连接真实 MySQL 或 Redis。
+2026-10-28 较早 RC 版本曾通过 137 个定向测试和 4 个 H2 测试，之后单任务 GEO 对账事务改为 RR。同日后续已将 `DeliveryTaskGeoServiceTest` 的隔离级别断言同步为 RR，并运行该套件与 `DeliveryTaskGeoTransactionIntegrationTest`，共 43 项通过。此次验证不依赖真实 MySQL 或 Redis，也没有执行本文件描述的 MySQL 降级实验；此前 141 项未全部重跑，不能将这两个运行范围合并为当前版本的全套验证。
 
 自动化实验位于
 [DeliveryTaskGeoFallbackExperimentIntegrationTest](../../src/test/java/org/example/takeout/integration/DeliveryTaskGeoFallbackExperimentIntegrationTest.java)。
@@ -63,6 +63,7 @@ mvn "-Dtest=DeliveryTaskGeoFallbackExperimentIntegrationTest" "-Dtakeout.geo-fal
 - 删除原分页方法和 `PageInfo` 响应；`GET /rider/delivery-tasks/available` 改为接收 `radiusKm`，
   缺省 `5` 公里，返回附近优先排序的完整任务列表，不再分页。
 - 距离在 `DeliveryTaskDistanceVO` 中保存为千米数值，避免对带 `km` 的展示字符串执行 `Double.parseDouble`。
+- 大厅响应的 `RiderTaskListVO` 复用这一千米数值：GEO 命中的任务在 VO 上携带 `distance`，降级列表与未命中附近结果的任务该字段为 `null`；转换器显式忽略该字段，由服务层在转换后填充。骑手进行中任务列表（`/rider/delivery-tasks/current`）不含距离。
 - RiderLocation 或任务 GEO 查询失败、附近结果为空或附近结果全部损坏时，按任务 ID 从新到旧返回，最多 `500` 条；该上限由 MySQL 查询直接执行。
   [DeliveryTaskHallServiceTest](../../src/test/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskHallServiceTest.java)
   覆盖近距离优先、距离相同按 ID、两处 GEO 降级、损坏成员过滤、SQL 500 条上限和非法半径。

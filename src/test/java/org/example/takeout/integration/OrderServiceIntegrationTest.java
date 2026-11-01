@@ -12,6 +12,7 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Mapper.MerchantMapper;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
@@ -32,6 +33,9 @@ import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.Entity.Product;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.Service.ProductService;
+import org.example.takeout.Rider.Enums.RiderStatusEnum;
+import org.example.takeout.Settlement.Enums.BeneficiaryTypeEnum;
+import org.example.takeout.Settlement.Enums.IncomeRecordTypeEnum;
 import org.example.takeout.dataFactory.TestDataFactory;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
 import org.junit.jupiter.api.AfterEach;
@@ -66,7 +70,7 @@ import static org.mockito.Mockito.*;
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
-        "spring.datasource.url=jdbc:mysql://localhost:3306/takeout_integration_test?createDatabaseIfNotExist=true&serverTimezone=GMT%2B8&useSSL=false&allowPublicKeyRetrieval=true",
+        "spring.datasource.url=jdbc:mysql://localhost:${takeout.test.mysql.port:3306}/takeout_integration_test?createDatabaseIfNotExist=true&serverTimezone=GMT%2B8&useSSL=false&allowPublicKeyRetrieval=true",
         "spring.datasource.username=root",
         "spring.datasource.password=root",
         "spring.sql.init.mode=never",
@@ -79,6 +83,7 @@ class OrderServiceIntegrationTest {
     private static final Long TEST_USER_ID = 9_001_001L;
     private static final Long TEST_OTHER_USER_ID = 9_001_002L;
     private static final Long TEST_MERCHANT_ID = 9_002_001L;
+    private static final Long TEST_RIDER_ID = 9_003_001L;
     private static final Long TEST_OTHER_MERCHANT_ID = 9_002_002L;
     private static final Long TEST_PRODUCT_ID_CUP = 9_003_001L;
     private static final Long TEST_PRODUCT_ID_MILK = 9_003_002L;
@@ -121,6 +126,7 @@ class OrderServiceIntegrationTest {
         CartHeaderTestFixture.ensureTable(jdbcTemplate);
         OrderTimeoutSchemaTestFixture.ensureTimeoutCancellationColumn(jdbcTemplate);
         OrderMerchantSeenSchemaTestFixture.ensureMerchantSeenColumn(jdbcTemplate);
+        OrderDeliveryFeeSchemaTestFixture.ensureDeliveryFeeColumn(jdbcTemplate);
         OrderCancelSourceSchemaTestFixture.ensureCancelSourceColumn(jdbcTemplate);
         StockVersionSchemaTestFixture.ensureStockVersionColumns(jdbcTemplate);
         deleteTestData();
@@ -1116,6 +1122,14 @@ class OrderServiceIntegrationTest {
     void checkOrder_ConcurrentOrder() throws InterruptedException {
         insertMerchant();
         Order order = insertOrder(OrderStatusEnum.DELIVERED.getCode());
+        // Keep this settlement case explicit: merchant income is product value less the discount,
+        // while the delivery fee and the task's saved rider reward remain separate amounts.
+        order.setOriginalAmount(new BigDecimal("120.00"));
+        order.setDiscountAmount(new BigDecimal("15.00"));
+        order.setDeliveryFee(new BigDecimal("6.50"));
+        order.setTotalAmount(new BigDecimal("111.50"));
+        assertEquals(1, orderMapper.updateById(order));
+        insertCompletedDeliveryTask(order.getId());
 
         AtomicInteger success = new AtomicInteger();
         AtomicInteger fail = new AtomicInteger();
@@ -1167,6 +1181,26 @@ class OrderServiceIntegrationTest {
         assertEquals(1, orderMapper.selectCount(Wrappers.<Order>lambdaQuery()
                 .eq(Order::getUserId, TEST_USER_ID)
                 .isNotNull(Order::getFinishTime)));
+        assertEquals(2, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM income_record WHERE order_id = ?", Integer.class, order.getId()));
+        assertMoney("105.00", jdbcTemplate.queryForObject("""
+                SELECT amount FROM income_record
+                WHERE order_id = ? AND beneficiary_type = ? AND type = ?
+                """, BigDecimal.class, order.getId(), BeneficiaryTypeEnum.MERCHANT.getCode(),
+                IncomeRecordTypeEnum.ORDER_INCOME.getCode()));
+        assertMoney("7.35", jdbcTemplate.queryForObject("""
+                SELECT amount FROM income_record
+                WHERE order_id = ? AND beneficiary_type = ? AND type = ?
+                """, BigDecimal.class, order.getId(), BeneficiaryTypeEnum.RIDER.getCode(),
+                IncomeRecordTypeEnum.DELIVERY_REWARD.getCode()));
+        assertMoney("105.00", jdbcTemplate.queryForObject(
+                "SELECT balance FROM merchant WHERE id = ?", BigDecimal.class, TEST_MERCHANT_ID));
+        assertMoney("105.00", jdbcTemplate.queryForObject(
+                "SELECT total_income FROM merchant WHERE id = ?", BigDecimal.class, TEST_MERCHANT_ID));
+        assertMoney("7.35", jdbcTemplate.queryForObject(
+                "SELECT balance FROM rider WHERE id = ?", BigDecimal.class, TEST_RIDER_ID));
+        assertMoney("7.35", jdbcTemplate.queryForObject(
+                "SELECT total_income FROM rider WHERE id = ?", BigDecimal.class, TEST_RIDER_ID));
 
         Throwable failure = firstFailure.get() == null ? secondFailure.get() : firstFailure.get();
         assertInstanceOf(BusinessException.class, failure);
@@ -1490,6 +1524,29 @@ class OrderServiceIntegrationTest {
         return order;
     }
 
+    private void insertCompletedDeliveryTask(Long orderId) {
+        LocalDateTime acceptedTime = LocalDateTime.now().minusMinutes(5);
+        LocalDateTime deliveredTime = acceptedTime.plusMinutes(4);
+        jdbcTemplate.update("""
+                INSERT INTO rider (id, name, phone, password, status, create_time, is_delete)
+                VALUES (?, 'settlement_test_rider', '13800903001', 'unused-hash', ?, CURRENT_TIMESTAMP, 0)
+                """, TEST_RIDER_ID, RiderStatusEnum.NORMAL.getCode());
+        jdbcTemplate.update("""
+                INSERT INTO delivery_task (
+                    order_id, rider_id, merchant_name, delivery_reward, receiver_name, status,
+                    create_time, accepted_time, delivered_time, receiver_phone, receiver_address,
+                    merchant_address, merchant_phone
+                ) VALUES (?, ?, 'Settlement Test Shop', 7.35, '张三', ?, ?, ?, ?,
+                    '13800138000', '测试地址', '商家地址', '13900139000')
+                """, orderId, TEST_RIDER_ID, DeliveryTaskEnums.COMPLETED.getCode(),
+                acceptedTime.minusMinutes(3), acceptedTime, deliveredTime);
+    }
+
+    private void assertMoney(String expected, BigDecimal actual) {
+        assertNotNull(actual);
+        assertEquals(0, new BigDecimal(expected).compareTo(actual));
+    }
+
     private CartItem insertCartItem(Product product, Integer quantity) {
         return insertCartItem(TEST_CART_ID_CUP, product, quantity);
     }
@@ -1556,6 +1613,14 @@ class OrderServiceIntegrationTest {
                 .map(Order::getId)
                 .toList();
         if (!orderIds.isEmpty()) {
+            String orderPlaceholders = String.join(",", java.util.Collections.nCopies(orderIds.size(), "?"));
+            Object[] orderIdParameters = orderIds.toArray();
+            jdbcTemplate.update("DELETE FROM income_record WHERE order_id IN (" + orderPlaceholders + ")",
+                    orderIdParameters);
+            jdbcTemplate.update("DELETE FROM delivery_task WHERE order_id IN (" + orderPlaceholders + ")",
+                    orderIdParameters);
+        }
+        if (!orderIds.isEmpty()) {
             orderItemMapper.delete(Wrappers.<OrderItem>lambdaQuery()
                     .in(OrderItem::getOrderId, orderIds));
         }
@@ -1571,5 +1636,6 @@ class OrderServiceIntegrationTest {
         jdbcTemplate.update("DELETE FROM category WHERE merchant_id = ?", TEST_OTHER_MERCHANT_ID);
         merchantMapper.deleteById(TEST_MERCHANT_ID);
         merchantMapper.deleteById(TEST_OTHER_MERCHANT_ID);
+        jdbcTemplate.update("DELETE FROM rider WHERE id = ?", TEST_RIDER_ID);
     }
 }

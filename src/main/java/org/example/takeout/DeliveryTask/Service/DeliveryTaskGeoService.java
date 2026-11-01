@@ -269,12 +269,12 @@ public class DeliveryTaskGeoService {
 
         if (!Objects.equals(task.getStatus(), DeliveryTaskEnums.WAIT_ASSIGN.getCode())
                 || task.getRiderId() != null
-                || hasValidPickupCoordinates(task)) {
+                || hasInvalidPickupCoordinates(task)) {
 
             removeAvailableTask(taskId);
 
             if (Objects.equals(task.getStatus(), DeliveryTaskEnums.WAIT_ASSIGN.getCode())
-                    && hasValidPickupCoordinates(task)) {
+                    && hasInvalidPickupCoordinates(task)) {
                 log.warn("配送任务 {} 缺少有效取货坐标，已清除可接任务 GEO 位置", taskId);
             }
             return;
@@ -285,7 +285,7 @@ public class DeliveryTaskGeoService {
                 task.getPickupLatitude().doubleValue());
     }
 
-    private boolean hasValidPickupCoordinates(DeliveryTask task) {
+    private boolean hasInvalidPickupCoordinates(DeliveryTask task) {
         if (task.getPickupLongitude() == null || task.getPickupLatitude() == null) {
             return true;
         }

@@ -9,10 +9,8 @@ import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
-import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
-import org.example.takeout.DeliveryTask.Service.DeliveryTaskGeoService;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Order.Entity.Order;
@@ -65,9 +63,6 @@ class DeliveryTaskServiceTest {
 
     @Mock
     private RiderLocationService riderLocationService;
-
-    @Mock
-    private DeliveryFeeCalculator deliveryFeeCalculator;
 
     @InjectMocks
     private DeliveryTaskService deliveryTaskService;
@@ -318,13 +313,12 @@ class DeliveryTaskServiceTest {
         order.setReceiverName("收货人");
         order.setReceiverPhone("13800138000");
         order.setReceiverAddress("测试地址");
+        order.setDeliveryFee(new BigDecimal("8.50"));
         Merchant merchant = new Merchant();
         merchant.setAddress("商家地址");
         merchant.setPhone("13900139000");
         merchant.setLongitude(BigDecimal.valueOf(121.4737));
         merchant.setLatitude(BigDecimal.valueOf(31.2304));
-        when(deliveryFeeCalculator.calculateDeliveryReward())
-                .thenReturn(BigDecimal.valueOf(5));
         when(deliveryTaskMapper.insert(any(DeliveryTask.class))).thenReturn(1);
 
         deliveryTaskService.createWaitingTask(order, merchant);
@@ -341,14 +335,14 @@ class DeliveryTaskServiceTest {
         assertEquals("13900139000", task.getMerchantPhone());
         assertEquals(0, BigDecimal.valueOf(121.4737).compareTo(task.getPickupLongitude()));
         assertEquals(0, BigDecimal.valueOf(31.2304).compareTo(task.getPickupLatitude()));
-        assertEquals(0, BigDecimal.valueOf(5).compareTo(task.getDeliveryReward()));
+        assertEquals(0, new BigDecimal("8.50").compareTo(task.getDeliveryReward()));
         assertEquals(DeliveryTaskEnums.WAIT_ASSIGN.getCode(), task.getStatus());
     }
 
     @Test
     void taskCreationReturnsGeneratedTaskId() {
-        when(deliveryFeeCalculator.calculateDeliveryReward())
-                .thenReturn(BigDecimal.valueOf(5));
+        Order order = new Order();
+        order.setDeliveryFee(new BigDecimal("8.50"));
         when(deliveryTaskMapper.insert(any(DeliveryTask.class)))
                 .thenAnswer(invocation -> {
                     DeliveryTask task = invocation.getArgument(0);
@@ -356,20 +350,20 @@ class DeliveryTaskServiceTest {
                     return 1;
                 });
 
-        Long taskId = deliveryTaskService.createWaitingTask(new Order(), new Merchant());
+        Long taskId = deliveryTaskService.createWaitingTask(order, new Merchant());
 
         assertEquals(501L, taskId);
     }
 
     @Test
     void taskCreationRejectsFailedInsert() {
-        when(deliveryFeeCalculator.calculateDeliveryReward())
-                .thenReturn(BigDecimal.valueOf(5));
+        Order order = new Order();
+        order.setDeliveryFee(new BigDecimal("8.50"));
         when(deliveryTaskMapper.insert(any(DeliveryTask.class))).thenReturn(0);
 
         assertThrows(
                 BusinessException.class,
-                () -> deliveryTaskService.createWaitingTask(new Order(), new Merchant()));
+                () -> deliveryTaskService.createWaitingTask(order, new Merchant()));
     }
 
     private void mockDisabledRider() {

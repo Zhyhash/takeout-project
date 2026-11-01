@@ -12,6 +12,7 @@ import org.springframework.web.context.WebApplicationContext;
 import java.math.BigDecimal;
 import java.util.List;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -30,8 +31,9 @@ class DeliveryTaskApiTest extends AbstractMockMvcApiTest {
     @Test
     void availableTasksReturnsNearbyTaskList() throws Exception {
         RiderTaskListVO task = taskListVO(501L, 0, "等待骑手取餐");
+        task.setPickupDistanceKm(1.25);
         when(deliveryTaskService.getAvailableRiderTask(5.0))
-                .thenReturn(List.of(task));
+                .thenReturn(List.of(task, taskListVO(502L, 0, "等待骑手取餐")));
 
         mockMvc.perform(get("/rider/delivery-tasks/available")
                         .header("Authorization", riderBearer()))
@@ -40,7 +42,13 @@ class DeliveryTaskApiTest extends AbstractMockMvcApiTest {
                 .andExpect(jsonPath("$.data[0].taskId").value(501L))
                 .andExpect(jsonPath("$.data[0].deliveryReward").value(5))
                 .andExpect(jsonPath("$.data[0].status").value(0))
-                .andExpect(jsonPath("$.data[0].statusDesc").value("等待骑手取餐"));
+                .andExpect(jsonPath("$.data[0].statusDesc").value("等待骑手取餐"))
+                .andExpect(jsonPath("$.data[0].pickupDistanceKm").value(1.25))
+                .andExpect(jsonPath("$.data[0].distance").doesNotHaveJsonPath())
+                .andExpect(jsonPath("$.data[1].taskId").value(502L))
+                .andExpect(jsonPath("$.data[1].pickupDistanceKm").hasJsonPath())
+                .andExpect(jsonPath("$.data[1].pickupDistanceKm").value(nullValue()))
+                .andExpect(jsonPath("$.data[1].distance").doesNotHaveJsonPath());
 
         verify(deliveryTaskService).getAvailableRiderTask(5.0);
     }
@@ -71,7 +79,10 @@ class DeliveryTaskApiTest extends AbstractMockMvcApiTest {
                 .andExpect(resultCode(SUCCESS))
                 .andExpect(jsonPath("$.data[0].taskId").value(501L))
                 .andExpect(jsonPath("$.data[0].status").value(1))
-                .andExpect(jsonPath("$.data[0].statusDesc").value("骑手正在配送"));
+                .andExpect(jsonPath("$.data[0].statusDesc").value("骑手正在配送"))
+                .andExpect(jsonPath("$.data[0].pickupDistanceKm").hasJsonPath())
+                .andExpect(jsonPath("$.data[0].pickupDistanceKm").value(nullValue()))
+                .andExpect(jsonPath("$.data[0].distance").doesNotHaveJsonPath());
 
         verify(deliveryTaskService).getRiderTaskList();
     }

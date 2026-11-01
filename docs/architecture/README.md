@@ -2,7 +2,7 @@
 
 分析日期：2026-10-28。依据为当前**工作区源码、SQL 与测试源码**，包含已有未提交改动；不是仅依据 Git HEAD，也不以历史说明文件代替实现。
 
-本聊天此前在单任务 GEO 对账隔离级别为 `READ_COMMITTED` 的版本上运行了 137 项定向测试和 4 项 H2 集成测试，共 141 项通过；之后源码改为 `REPEATABLE_READ`，当前版本尚未重跑。`DeliveryTaskGeoServiceTest` 仍有断言期望 `READ_COMMITTED`，与当前实现不一致。本轮文档复核没有运行测试，也没有启动真实 MySQL 或 Redis，因此本轮未运行依赖真实数据库或 Redis 的集成测试。
+2026-10-28 较早的 `READ_COMMITTED` 版本曾通过 137 项定向测试和 4 项 H2 事务测试。同日后续已将 `DeliveryTaskGeoServiceTest` 的隔离级别断言同步为 `REPEATABLE_READ`，并运行该单测套件及 `DeliveryTaskGeoTransactionIntegrationTest`，共 43 项通过（0 失败、0 错误、0 跳过）。这是当前 RR 版本的定向验证，不代表此前全部 141 项已重跑；真实 MySQL、Redis 集成测试未运行。
 
 ## 推荐阅读顺序
 

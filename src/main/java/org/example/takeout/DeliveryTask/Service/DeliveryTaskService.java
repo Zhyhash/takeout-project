@@ -8,7 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
-import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskConverter;
@@ -53,7 +52,6 @@ public class DeliveryTaskService {
     private final OrderCommandService  orderCommandService;
     private final OrderService orderService;
     private final DeliveryTaskConverter deliveryTaskConverter;
-    private final DeliveryFeeCalculator deliveryFeeCalculator;
     private final RiderService  riderService;
     private final DeliveryTaskGeoService deliveryTaskGeoService;
     private final RiderLocationService riderLocationService;
@@ -184,7 +182,8 @@ public class DeliveryTaskService {
     /**
      * 骑手抢单前查询可接取的任务。
      * 以骑手最后上报的位置为圆心，GEO 返回的最多 100 个最近候选按距离升序排在前面，
-     * 其余任务按任务 ID 升序；不再分页。骑手位置或任务GEO查询失败时按任务 ID 倒序
+     * 其余任务按任务 ID 升序；不再分页。GEO 命中的任务携带 pickupDistanceKm（千米），
+     * 未命中或降级列表中该字段为 null。骑手位置或任务GEO查询失败时按任务 ID 倒序
      * 查询最新的 500 条 MySQL 待接任务；骑手位置尚未上报仍提示先上传位置。
      */
     public List<RiderTaskListVO> getAvailableRiderTask(double preferredRadiusKm){
@@ -281,7 +280,14 @@ public class DeliveryTaskService {
         });
         return deliveryTasks.stream()
                 .peek(this::warnIfTaskInfoMissing)
-                .map(deliveryTaskConverter::toRiderTaskListVO)
+                .map(task -> {
+                    RiderTaskListVO vo =
+                            deliveryTaskConverter.toRiderTaskListVO(task);
+
+                    vo.setPickupDistanceKm(distanceMap.get(vo.getTaskId()));
+
+                    return vo;
+                })
                 .collect(Collectors.toList());
     }
 
@@ -317,7 +323,7 @@ public class DeliveryTaskService {
         // 商家之后修改坐标不影响已经创建的任务。
         task.setPickupLongitude(merchant.getLongitude());
         task.setPickupLatitude(merchant.getLatitude());
-        task.setDeliveryReward(deliveryFeeCalculator.calculateDeliveryReward());
+        task.setDeliveryReward(order.getDeliveryFee());
         task.setStatus(DeliveryTaskEnums.WAIT_ASSIGN.getCode());
         int insertedRows = deliveryTaskMapper.insert(task);
         if (insertedRows != 1) {

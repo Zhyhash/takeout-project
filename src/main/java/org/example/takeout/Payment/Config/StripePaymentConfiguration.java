@@ -1,0 +1,38 @@
+package org.example.takeout.Payment.Config;
+
+import com.stripe.StripeClient;
+import org.example.takeout.Payment.Gateway.StripePaymentGateway;
+import org.example.takeout.Payment.Gateway.StripePaymentGatewayImpl;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableConfigurationProperties(StripePaymentProperties.class)
+public class StripePaymentConfiguration {
+    @Bean
+    @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
+    public StripePaymentGateway stripePaymentGateway(StripePaymentProperties properties) {
+        validateTestConfiguration(properties);
+        StripeClient client = StripeClient.builder()
+                .setApiKey(properties.getSecretKey())
+                .setConnectTimeout(5_000)
+                .setReadTimeout(10_000)
+                .setMaxNetworkRetries(1)
+                .build();
+        return new StripePaymentGatewayImpl(client, properties.getWebhookSecret());
+    }
+
+    static void validateTestConfiguration(StripePaymentProperties properties) {
+        if (properties.getSecretKey() == null || !properties.getSecretKey().startsWith("rk_test_")) {
+            throw new IllegalStateException("payment.stripe.secret-key must be a restricted Stripe test key (rk_test_)");
+        }
+        if (properties.getPublishableKey() == null || !properties.getPublishableKey().startsWith("pk_test_")) {
+            throw new IllegalStateException("payment.stripe.publishable-key must be a Stripe test key (pk_test_)");
+        }
+        if (properties.getWebhookSecret() == null || !properties.getWebhookSecret().startsWith("whsec_")) {
+            throw new IllegalStateException("payment.stripe.webhook-secret must be a Stripe webhook signing secret (whsec_)");
+        }
+    }
+}

@@ -150,6 +150,9 @@ class MysqlFulfillmentRetryIntegrationTest {
         assertThat(committedTask.acceptedTime()).isNull();
         assertThat(committedTask.deliveredTime()).isNull();
         assertSingleUnchangedTask(committedTask);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT delivery_reward FROM delivery_task WHERE id = ?", java.math.BigDecimal.class,
+                committedTask.id())).isEqualByComparingTo("5.00");
     }
 
     @Test
@@ -263,9 +266,9 @@ class MysqlFulfillmentRetryIntegrationTest {
 
     private void seedOrder(int status) {
         jdbcTemplate.update("""
-                INSERT INTO orders (id, merchant_id, merchant_name, status, receiver_name,
+                INSERT INTO orders (id, merchant_id, merchant_name, delivery_fee, status, receiver_name,
                     receiver_phone, receiver_address, request_hash)
-                VALUES (?, ?, 'Retry Shop', ?, 'Receiver', '13800138000', 'Receiver Road', REPEAT('a', 64))
+                VALUES (?, ?, 'Retry Shop', 5.00, ?, 'Receiver', '13800138000', 'Receiver Road', REPEAT('a', 64))
                 """, ORDER_ID, MERCHANT_ID, status);
     }
 
@@ -348,6 +351,8 @@ class MysqlFulfillmentRetryIntegrationTest {
                             id BIGINT PRIMARY KEY, username VARCHAR(100) NOT NULL, phone VARCHAR(20) NOT NULL,
                             password VARCHAR(100) NOT NULL, address VARCHAR(255) NOT NULL,
                             longitude DECIMAL(10,7) NULL, latitude DECIMAL(10,7) NULL, status TINYINT NOT NULL,
+                            balance DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                            total_income DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                             create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, merchant_name VARCHAR(255) NOT NULL,
                             picture VARCHAR(255) NULL, merchant_description VARCHAR(255) NULL,
                             opening_time TIME NOT NULL DEFAULT '08:00:00', closing_time TIME NOT NULL DEFAULT '22:00:00',
@@ -358,7 +363,9 @@ class MysqlFulfillmentRetryIntegrationTest {
                         CREATE TABLE rider (
                             id BIGINT PRIMARY KEY, name VARCHAR(255) NOT NULL, phone VARCHAR(255) NOT NULL,
                             password VARCHAR(255) NOT NULL, status INT NOT NULL, create_time DATETIME NOT NULL,
-                            update_time DATETIME NULL, is_delete INT NOT NULL DEFAULT 0
+                            update_time DATETIME NULL, is_delete INT NOT NULL DEFAULT 0,
+                            balance DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                            total_income DECIMAL(12,2) NOT NULL DEFAULT 0.00
                         ) ENGINE=InnoDB
                         """);
                 statement.execute("""
@@ -366,7 +373,8 @@ class MysqlFulfillmentRetryIntegrationTest {
                             id BIGINT PRIMARY KEY, order_no VARCHAR(32) NULL, user_id BIGINT NULL,
                             request_id VARCHAR(64) NULL, request_hash CHAR(64) NOT NULL,
                             merchant_id BIGINT NOT NULL, merchant_name VARCHAR(255) NOT NULL,
-                            total_amount DECIMAL(10,2) NULL, status TINYINT NOT NULL,
+                            total_amount DECIMAL(10,2) NULL, delivery_fee DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                            status TINYINT NOT NULL,
                             cancel_source TINYINT NULL,
                             receiver_name VARCHAR(20) NOT NULL, receiver_phone VARCHAR(20) NOT NULL,
                             receiver_address VARCHAR(255) NOT NULL, remark VARCHAR(255) NULL,

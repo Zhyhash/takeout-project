@@ -44,11 +44,44 @@ class FlywayMigrationIntegrationTest {
 
     private static final String BASELINE_VERSION = "20261008";
     private static final String VERSION_14 = "20261014";
-    private static final String LATEST_VERSION = "20261027";
+    private static final String LATEST_VERSION = "20261030.2";
     private static final String HISTORICAL_TIME = "2024-01-02 03:04:05";
     private static final List<String> BUSINESS_TABLES = List.of(
             "cache_invalidation_task", "cart", "cart_header", "category", "delivery_task",
-            "merchant", "order_item", "orders", "product", "rider", "user");
+            "income_record", "merchant", "order_item", "orders", "product", "rider", "user");
+
+    @Test
+    void stripePaymentMigrationKeepsOrdersAndAddsDurableUniqueReferences() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            database.baselinedFlyway("20261030").migrate();
+            insertMerchant(database, 10, 7);
+            insertUser(database, 1);
+            database.execute("INSERT INTO orders (id, order_no, user_id, merchant_id, merchant_name, total_amount, "
+                    + "status, receiver_name, receiver_phone, receiver_address, request_id, request_hash) "
+                    + "VALUES (60, 'stripe-order', 1, 10, 'merchant', 12.50, 0, "
+                    + "'receiver', '13800000001', 'address', 'stripe-request', REPEAT('a', 64))");
+            List<List<String>> before = database.rows("SELECT * FROM orders WHERE id = 60");
+            Flyway flyway = database.flyway("20261030.1", false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(database.rows("SELECT * FROM orders WHERE id = 60")).isEqualTo(before);
+            database.execute("INSERT INTO order_stripe_payments "
+                    + "(order_id, payment_intent_id, amount_minor, currency, idempotency_key) "
+                    + "VALUES (60, 'pi_migration_test', 1250, 'cny', 'migration-idempotency')");
+            assertThatThrownBy(() -> database.execute("INSERT INTO order_stripe_payments "
+                    + "(order_id, amount_minor, currency, idempotency_key) "
+                    + "VALUES (60, 1250, 'cny', 'other-key')")).isInstanceOf(SQLException.class);
+            assertThatThrownBy(() -> database.execute("UPDATE order_stripe_payments SET currency = 'usd' "
+                    + "WHERE order_id = 60")).isInstanceOf(SQLException.class);
+            database.execute("INSERT INTO stripe_payment_events (event_id, payment_intent_id, event_type) "
+                    + "VALUES ('evt_migration_test', 'pi_migration_test', 'payment_intent.succeeded')");
+            assertThatThrownBy(() -> database.execute("INSERT INTO stripe_payment_events "
+                    + "(event_id, payment_intent_id, event_type) "
+                    + "VALUES ('evt_migration_test', 'pi_migration_test', 'payment_intent.succeeded')"))
+                    .isInstanceOf(SQLException.class);
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+        }
+    }
 
     @Test
     void upgradesActualLocalSchemaAndHistoricalDataWithoutLosingValues() throws Exception {
@@ -59,6 +92,11 @@ class FlywayMigrationIntegrationTest {
             insertUser(database, 2);
             insertUser(database, 3);
             insertUser(database, 4);
+            database.execute("INSERT INTO orders (id, order_no, user_id, merchant_id, merchant_name, total_amount, "
+                    + "status, receiver_name, receiver_phone, receiver_address, request_id, request_hash, update_time) "
+                    + "VALUES (60, 'historical_order', 1, 10, 'historical merchant', 12.50, 0, "
+                    + "'receiver', '13800000001', 'historical address', 'historical_request', REPEAT('a', 64), '"
+                    + HISTORICAL_TIME + "')");
             database.execute("INSERT INTO category (id, merchant_id, category_name) VALUES (20, 10, 'historical')");
             database.execute("INSERT INTO product (id, category_id, product_name, price, merchant_id, stock, version) "
                     + "VALUES (30, 20, 'historical product', 12.50, 10, 9, 4)");
@@ -70,16 +108,25 @@ class FlywayMigrationIntegrationTest {
             Map<String, List<List<String>>> before = database.businessRows();
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(10);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(14);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SELECT user_id, merchant_id FROM cart_header ORDER BY user_id"))
                     .containsExactly(row("1", "10"), row("2", null), row("3", "10"), row("4", null));
             assertThat(database.scalar("SELECT delivery_reward FROM delivery_task WHERE id = 51"))
                     .isEqualTo("5.00");
+            assertThat(database.scalar("SELECT delivery_fee FROM orders WHERE id = 60"))
+                    .isEqualTo("0.00");
+            assertThat(database.scalar("SELECT DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
+                    + "FROM orders WHERE id = 60")).isEqualTo(HISTORICAL_TIME);
             assertThat(database.scalar("SELECT DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM delivery_task WHERE id = 51")).isEqualTo(HISTORICAL_TIME);
             assertThat(database.scalar("SELECT version FROM merchant WHERE id = 10")).isEqualTo("7");
+            assertThat(database.scalar("SELECT balance FROM merchant WHERE id = 10")).isEqualTo("0.00");
+            assertThat(database.scalar("SELECT total_income FROM merchant WHERE id = 10")).isEqualTo("0.00");
+            assertThat(database.scalar("SELECT balance FROM rider WHERE id = 41")).isEqualTo("0.00");
+            assertThat(database.scalar("SELECT total_income FROM rider WHERE id = 41")).isEqualTo("0.00");
+            assertThat(database.scalar("SELECT COUNT(*) FROM income_record")).isEqualTo("0");
             assertThat(database.rows("SELECT category_id, stock, version FROM product WHERE id = 30"))
                     .containsExactly(row("20", "9", "4"));
             assertThat(database.rows("SELECT id, order_id, rider_id, merchant_name, status, create_time, "
@@ -110,6 +157,26 @@ class FlywayMigrationIntegrationTest {
                     + "(category_id, product_name, price, merchant_id) VALUES (NULL, 'invalid product', 1.00, 10)"))
                     .isInstanceOf(SQLException.class);
 
+            database.execute("INSERT INTO income_record "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount) VALUES "
+                    + "(2, 10, 60, 2, 12.50), "
+                    + "(1, 41, 60, 1, 5.00)");
+            assertThatThrownBy(() -> database.execute("INSERT INTO income_record "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount) "
+                    + "VALUES (2, 11, 60, 2, 12.50)"))
+                    .as("one order event cannot be credited to a second beneficiary")
+                    .isInstanceOf(SQLException.class);
+            assertThatThrownBy(() -> database.execute("INSERT INTO income_record "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount) "
+                    + "VALUES (2, 10, 60, 1, 5.00)"))
+                    .as("income event type must match the beneficiary kind")
+                    .isInstanceOf(SQLException.class);
+            assertThatThrownBy(() -> database.execute("INSERT INTO income_record "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount) "
+                    + "VALUES (1, 41, 60, 1, -0.01)"))
+                    .as("income amounts cannot be negative")
+                    .isInstanceOf(SQLException.class);
+
             database.execute("INSERT INTO rider (name, phone, password, status, create_time, is_delete) "
                     + "VALUES ('generated rider', '13800000999', 'hash', 1, '" + HISTORICAL_TIME + "', 0)");
             assertThat(Long.parseLong(database.scalar("SELECT id FROM rider WHERE name = 'generated rider'")))
@@ -130,6 +197,112 @@ class FlywayMigrationIntegrationTest {
     }
 
     @Test
+    void incomeEncodingMigrationConvertsHistoricalStringCodesAndBackfillsTotalIncome() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            prepareIncomeEncodingMigration(database);
+            insertSettlementOrder(database, 60);
+            insertSettlementOrder(database, 61);
+            insertSettlementOrder(database, 62);
+            database.execute("UPDATE merchant SET balance = 100.00 WHERE id = 10");
+            database.execute("UPDATE rider SET balance = 40.00 WHERE id = 10");
+            database.execute("INSERT INTO account_transaction "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount, create_time) VALUES "
+                    + "('MERCHANT', 10, 60, 'ORDER_INCOME', 12.50, '" + HISTORICAL_TIME + "'), "
+                    + "('MERCHANT', 10, 61, 'ORDER_INCOME', 7.25, '2024-02-03 04:05:06'), "
+                    + "('RIDER', 10, 60, 'DELIVERY_REWARD', 5.00, '" + HISTORICAL_TIME + "'), "
+                    + "('RIDER', 10, 62, 'DELIVERY_REWARD', 6.75, '2024-03-04 05:06:07')");
+
+            Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
+
+            // 历史字符串编码按显式值映射转换为整数，而不是按枚举 ordinal。
+            assertThat(database.rows("SELECT beneficiary_type, beneficiary_id, order_id, type, amount, "
+                    + "DATE_FORMAT(create_time, '%Y-%m-%d %H:%i:%s') FROM income_record "
+                    + "ORDER BY beneficiary_type, order_id"))
+                    .containsExactly(
+                            row("1", "10", "60", "1", "5.00", HISTORICAL_TIME),
+                            row("1", "10", "62", "1", "6.75", "2024-03-04 05:06:07"),
+                            row("2", "10", "60", "2", "12.50", HISTORICAL_TIME),
+                            row("2", "10", "61", "2", "7.25", "2024-02-03 04:05:06"));
+            assertThat(database.scalar("SELECT total_income FROM merchant WHERE id = 10")).isEqualTo("19.75");
+            assertThat(database.scalar("SELECT total_income FROM rider WHERE id = 10")).isEqualTo("11.75");
+            assertThat(database.scalar("SELECT balance FROM merchant WHERE id = 10")).isEqualTo("100.00");
+            assertThat(database.scalar("SELECT balance FROM rider WHERE id = 10")).isEqualTo("40.00");
+            assertThat(database.scalar("SELECT COUNT(*) FROM information_schema.tables "
+                    + "WHERE table_schema = DATABASE() AND table_name = 'account_transaction'"))
+                    .isEqualTo("0");
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+        }
+    }
+
+    @Test
+    void incomeEncodingMigrationMergesMatchingEventsWhenBothLedgersExist() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            prepareIncomeEncodingMigration(database);
+            insertSettlementOrder(database, 60);
+            insertSettlementOrder(database, 61);
+            database.execute("UPDATE merchant SET balance = 100.00 WHERE id = 10");
+            database.execute("UPDATE rider SET balance = 40.00 WHERE id = 10");
+            createIncomeRecordTable(database);
+            database.execute("INSERT INTO income_record "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount, create_time) "
+                    + "VALUES (2, 10, 60, 2, 12.50, '" + HISTORICAL_TIME + "')");
+            database.execute("INSERT INTO account_transaction "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount, create_time) VALUES "
+                    + "('MERCHANT', 10, 60, 'ORDER_INCOME', 12.50, '2024-02-03 04:05:06'), "
+                    + "('MERCHANT', 10, 61, 'ORDER_INCOME', 7.25, '2024-02-03 04:05:06'), "
+                    + "('RIDER', 10, 60, 'DELIVERY_REWARD', 5.00, '" + HISTORICAL_TIME + "')");
+
+            Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
+
+            assertThat(database.rows("SELECT beneficiary_type, beneficiary_id, order_id, type, amount, "
+                    + "DATE_FORMAT(create_time, '%Y-%m-%d %H:%i:%s') FROM income_record "
+                    + "ORDER BY beneficiary_type, order_id"))
+                    .containsExactly(
+                            row("1", "10", "60", "1", "5.00", HISTORICAL_TIME),
+                            row("2", "10", "60", "2", "12.50", HISTORICAL_TIME),
+                            row("2", "10", "61", "2", "7.25", "2024-02-03 04:05:06"));
+            assertThat(database.scalar("SELECT total_income FROM merchant WHERE id = 10")).isEqualTo("19.75");
+            assertThat(database.scalar("SELECT total_income FROM rider WHERE id = 10")).isEqualTo("5.00");
+            assertThat(database.scalar("SELECT balance FROM merchant WHERE id = 10")).isEqualTo("100.00");
+            assertThat(database.scalar("SELECT balance FROM rider WHERE id = 10")).isEqualTo("40.00");
+            assertThat(database.scalar("SELECT COUNT(*) FROM information_schema.tables "
+                    + "WHERE table_schema = DATABASE() AND table_name = 'account_transaction'"))
+                    .isEqualTo("0");
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+        }
+    }
+
+    @Test
+    void incomeEncodingMigrationRetainsLegacyLedgerWhenExistingEventConflicts() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            prepareIncomeEncodingMigration(database);
+            insertSettlementOrder(database, 60);
+            createIncomeRecordTable(database);
+            database.execute("INSERT INTO income_record "
+                    + "(id, beneficiary_type, beneficiary_id, order_id, type, amount, create_time) "
+                    + "VALUES (100, 2, 10, 60, 2, 99.00, '" + HISTORICAL_TIME + "')");
+            database.execute("INSERT INTO account_transaction "
+                    + "(beneficiary_type, beneficiary_id, order_id, type, amount, create_time) "
+                    + "VALUES ('MERCHANT', 10, 60, 'ORDER_INCOME', 12.50, '" + HISTORICAL_TIME + "')");
+            List<List<String>> legacyRows = database.rows("SELECT id, beneficiary_type, beneficiary_id, order_id, "
+                    + "type, amount FROM account_transaction ORDER BY id");
+
+            assertThatThrownBy(() -> database.flyway(LATEST_VERSION, false, BASELINE_VERSION).migrate())
+                    .isInstanceOf(FlywayException.class);
+
+            assertThat(database.rows("SELECT id, beneficiary_type, beneficiary_id, order_id, type, amount "
+                    + "FROM account_transaction ORDER BY id")).isEqualTo(legacyRows);
+            assertThat(database.scalar("SELECT amount FROM income_record WHERE order_id = 60 AND type = 2"))
+                    .isEqualTo("99.00");
+            assertThat(database.scalar("SELECT COUNT(*) FROM information_schema.tables "
+                    + "WHERE table_schema = DATABASE() AND table_name = 'account_transaction'"))
+                    .isEqualTo("1");
+        }
+    }
+
+    @Test
     void fillsOnlyNullRewardsAndPreservesExistingRewardsAndUpdateTimes() throws Exception {
         try (TestDatabase database = TestDatabase.create()) {
             database.loadLocalSchema();
@@ -144,7 +317,7 @@ class FlywayMigrationIntegrationTest {
                     + HISTORICAL_TIME + "' WHERE id = 52");
             database.execute("UPDATE delivery_task SET update_time = NULL WHERE id = 53");
 
-            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(10);
+            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(14);
 
             assertThat(database.rows("SELECT id, delivery_reward, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM delivery_task ORDER BY id"))
@@ -153,6 +326,34 @@ class FlywayMigrationIntegrationTest {
                             row("52", "8.75", HISTORICAL_TIME),
                             row("53", "5.00", null));
             assertThat(database.column("delivery_task", "delivery_reward", "is_nullable")).isEqualTo("NO");
+        }
+    }
+
+    @Test
+    void deliveryFeeMigrationBackfillsNullsAndPreservesExistingFeeSnapshots() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            database.execute("ALTER TABLE orders ADD COLUMN delivery_fee DECIMAL(10, 2) NULL COMMENT '配送费'");
+            database.baselinedFlyway("20261027").migrate();
+            insertUser(database, 1);
+            insertMerchant(database, 10, 7);
+            database.execute("INSERT INTO orders (id, order_no, user_id, merchant_id, merchant_name, total_amount, "
+                    + "delivery_fee, status, receiver_name, receiver_phone, receiver_address, request_id, request_hash, "
+                    + "update_time) "
+                    + "VALUES (90, 'fee-existing', 1, 10, 'merchant', 15.00, 8.75, 0, 'receiver', "
+                    + "'13800000001', 'address', 'fee-existing-request', REPEAT('a', 64), '" + HISTORICAL_TIME + "'), "
+                    + "(91, 'fee-null', 1, 10, 'merchant', 15.00, NULL, 0, 'receiver', "
+                    + "'13800000001', 'address', 'fee-null-request', REPEAT('b', 64), '" + HISTORICAL_TIME + "')");
+
+            Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
+
+            assertThat(database.rows("SELECT id, delivery_fee, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
+                    + "FROM orders ORDER BY id"))
+                    .containsExactly(row("90", "8.75", HISTORICAL_TIME), row("91", "0.00", HISTORICAL_TIME));
+            assertThat(database.column("orders", "delivery_fee", "is_nullable")).isEqualTo("NO");
+            assertThat(database.column("orders", "delivery_fee", "column_default")).isEqualTo("0.00");
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
         }
     }
 
@@ -234,7 +435,7 @@ class FlywayMigrationIntegrationTest {
             assertThat(database.rows("SHOW TABLES")).isEmpty();
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(11);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(15);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SHOW TABLES").stream().map(values -> values.get(0)))
@@ -254,8 +455,12 @@ class FlywayMigrationIntegrationTest {
             database.executeDeploymentScript(Path.of("deploy", "schema.sql"));
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(18);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(22);
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
+            assertThat(database.scalar("SELECT COUNT(*) FROM information_schema.tables "
+                    + "WHERE table_schema = DATABASE() AND table_name = 'account_transaction'"))
+                    .as("deployment schema must finish with only the current income ledger")
+                    .isEqualTo("0");
             assertLatestColumnDefinitions(database);
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
             assertDemoRows(database);
@@ -528,7 +733,7 @@ class FlywayMigrationIntegrationTest {
                     """);
 
             Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(8);
 
             assertLatestColumnDefinitions(database);
             assertThat(database.rows("SELECT id, merchant_seen, "
@@ -560,7 +765,7 @@ class FlywayMigrationIntegrationTest {
                     """);
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(10);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(14);
 
             assertThat(database.column("orders", "cancel_source", "is_nullable")).isEqualTo("YES");
             assertThat(database.column("orders", "cancel_source", "column_default")).isNull();
@@ -730,12 +935,16 @@ class FlywayMigrationIntegrationTest {
 
     private static void assertLatestColumnDefinitions(TestDatabase database) throws SQLException {
         assertRuntimeColumnDefinitions(database);
+        assertAccountSettlementDefinitions(database);
         assertThat(database.column("orders", "merchant_seen", "is_nullable")).isEqualTo("NO");
         assertThat(database.column("orders", "merchant_seen", "column_default")).isEqualTo("0");
         assertThat(database.column("orders", "cancel_source", "is_nullable")).isEqualTo("YES");
         assertThat(database.column("orders", "cancel_source", "column_default")).isNull();
         assertThat(database.column("orders", "cancel_source", "column_comment"))
                 .contains("1用户主动取消", "2商家拒单", "3系统超时取消", "4平台取消");
+        assertThat(database.column("orders", "delivery_fee", "is_nullable")).isEqualTo("NO");
+        assertThat(database.column("orders", "delivery_fee", "column_default")).isEqualTo("0.00");
+        assertThat(database.column("orders", "delivery_fee", "column_comment")).contains("配送费");
         assertThat(database.column("product", "stock_version", "is_nullable")).isEqualTo("NO");
         assertThat(database.column("product", "stock_version", "column_default")).isEqualTo("0");
         assertThat(database.column("product", "stock_version", "column_comment"))
@@ -754,6 +963,43 @@ class FlywayMigrationIntegrationTest {
                 .containsExactly(
                         row("merchant_id"), row("status"), row("merchant_seen"),
                         row("create_time"), row("id"));
+    }
+
+    private static void assertAccountSettlementDefinitions(TestDatabase database) throws SQLException {
+        for (String table : List.of("merchant", "rider")) {
+            assertThat(database.column(table, "balance", "column_type")).isEqualToIgnoringCase("decimal(12,2)");
+            assertThat(database.column(table, "balance", "is_nullable")).isEqualTo("NO");
+            assertThat(database.column(table, "balance", "column_default")).isEqualTo("0.00");
+            assertThat(database.column(table, "total_income", "column_type")).isEqualToIgnoringCase("decimal(12,2)");
+            assertThat(database.column(table, "total_income", "is_nullable")).isEqualTo("NO");
+            assertThat(database.column(table, "total_income", "column_default")).isEqualTo("0.00");
+        }
+        assertThat(database.column("income_record", "beneficiary_type", "column_type"))
+                .isEqualToIgnoringCase("tinyint");
+        assertThat(database.column("income_record", "type", "column_type"))
+                .isEqualToIgnoringCase("tinyint");
+        assertThat(database.column("income_record", "amount", "column_type"))
+                .isEqualToIgnoringCase("decimal(12,2)");
+        assertThat(database.column("income_record", "create_time", "is_nullable")).isEqualTo("NO");
+        assertThat(database.column("income_record", "create_time", "column_default"))
+                .containsIgnoringCase("current_timestamp");
+        assertThat(database.rows("SELECT column_name FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = 'income_record' "
+                + "AND index_name = 'uk_income_record_beneficiary_order_type' ORDER BY seq_in_index"))
+                .containsExactly(row("beneficiary_type"), row("beneficiary_id"), row("order_id"), row("type"));
+        assertThat(database.rows("SELECT column_name FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = 'income_record' "
+                + "AND index_name = 'uk_income_record_order_type' ORDER BY seq_in_index"))
+                .containsExactly(row("order_id"), row("type"));
+        assertThat(database.rows("SELECT constraint_name FROM information_schema.table_constraints "
+                + "WHERE table_schema = DATABASE() AND table_name = 'income_record' "
+                + "AND constraint_type = 'CHECK' ORDER BY constraint_name"))
+                .containsExactly(row("chk_income_record_event_identity"),
+                        row("chk_income_record_nonnegative_amount"));
+        assertThat(database.scalar("SELECT COUNT(*) FROM information_schema.table_constraints "
+                + "WHERE table_schema = DATABASE() AND table_name = 'income_record' "
+                + "AND constraint_name = 'fk_income_record_order' AND constraint_type = 'FOREIGN KEY'"))
+                .isEqualTo("1");
     }
 
     private static void insertLoginAccount(TestDatabase database, String table, String loginName, String phone)
@@ -780,6 +1026,31 @@ class FlywayMigrationIntegrationTest {
         database.execute("INSERT INTO merchant (id, username, phone, password, merchant_name, version, create_time) "
                 + "VALUES (" + id + ", 'historical_merchant_" + id + "', '13800000010', 'hash', "
                 + "'historical merchant', " + version + ", '" + HISTORICAL_TIME + "')");
+    }
+
+    private static void prepareIncomeEncodingMigration(TestDatabase database) throws SQLException {
+        database.loadLocalSchema();
+        insertUser(database, 1);
+        insertMerchant(database, 10, 7);
+        // Merchant and rider IDs are independent namespaces and may legitimately overlap.
+        insertRider(database, 10);
+        database.baselinedFlyway("20261030").migrate();
+    }
+
+    private static void insertSettlementOrder(TestDatabase database, long id) throws SQLException {
+        database.execute("INSERT INTO orders (id, order_no, user_id, merchant_id, merchant_name, total_amount, "
+                + "status, receiver_name, receiver_phone, receiver_address, request_id, request_hash) "
+                + "VALUES (" + id + ", 'income-order-" + id + "', 1, 10, 'merchant', 17.50, 0, "
+                + "'receiver', '13800000001', 'address', 'income-request-" + id + "', REPEAT('a', 64))");
+    }
+
+    private static void createIncomeRecordTable(TestDatabase database) throws SQLException {
+        database.execute("CREATE TABLE income_record ("
+                + "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, "
+                + "beneficiary_type TINYINT NOT NULL, beneficiary_id BIGINT NOT NULL, "
+                + "order_id BIGINT NOT NULL, type TINYINT NOT NULL, amount DECIMAL(12,2) NOT NULL, "
+                + "create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                + "UNIQUE KEY uk_income_record_order_type (order_id, type))");
     }
 
     private static void insertDefaultedMerchant(TestDatabase database) throws SQLException {
@@ -814,6 +1085,7 @@ class FlywayMigrationIntegrationTest {
         return switch (table) {
             case "merchant" -> "id, username, phone, password, address, status, create_time, "
                     + "merchant_name, picture, merchant_description, opening_time, closing_time, version";
+            case "rider" -> "id, name, phone, password, status, create_time, update_time, is_delete";
             case "product" -> "id, category_id, product_name, image_url, price, stock, merchant_id, "
                     + "is_deleted, status, description, create_time, update_time, version, active_name_guard";
             case "orders" -> "id, order_no, user_id, merchant_id, merchant_name, total_amount, status, "
@@ -828,6 +1100,8 @@ class FlywayMigrationIntegrationTest {
 
     private static List<String> withHistoryTable() {
         List<String> tables = new ArrayList<>(BUSINESS_TABLES);
+        tables.add("order_stripe_payments");
+        tables.add("stripe_payment_events");
         tables.add("flyway_schema_history");
         return tables;
     }
@@ -953,7 +1227,7 @@ class FlywayMigrationIntegrationTest {
         }
 
         private String column(String table, String column, String metadata) throws SQLException {
-            if (!List.of("extra", "is_nullable", "column_default", "column_comment", "collation_name")
+            if (!List.of("extra", "is_nullable", "column_default", "column_comment", "collation_name", "column_type")
                     .contains(metadata)) {
                 throw new IllegalArgumentException("Unsupported column metadata: " + metadata);
             }
@@ -972,9 +1246,22 @@ class FlywayMigrationIntegrationTest {
         private Map<String, List<List<String>>> businessRows() throws SQLException {
             Map<String, List<List<String>>> snapshot = new TreeMap<>();
             for (String table : BUSINESS_TABLES) {
-                snapshot.put(table, rows("SELECT * FROM `" + table + "` ORDER BY 1"));
+                if (tableExists(table)) {
+                    snapshot.put(table, rows("SELECT * FROM `" + table + "` ORDER BY 1"));
+                }
             }
             return snapshot;
+        }
+
+        private boolean tableExists(String table) throws SQLException {
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?")) {
+                statement.setString(1, table);
+                try (ResultSet result = statement.executeQuery()) {
+                    result.next();
+                    return result.getInt(1) == 1;
+                }
+            }
         }
 
         private List<List<String>> columnDefinitions() throws SQLException {

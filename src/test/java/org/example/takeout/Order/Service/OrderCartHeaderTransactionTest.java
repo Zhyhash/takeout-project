@@ -93,6 +93,7 @@ class OrderCartHeaderTransactionTest {
                     merchant_id BIGINT,
                     merchant_name VARCHAR(255),
                     total_amount DECIMAL(10, 2),
+                    delivery_fee DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
                     original_amount DECIMAL(10, 2),
                     discount_amount DECIMAL(10, 2),
                     status INT,
@@ -122,6 +123,8 @@ class OrderCartHeaderTransactionTest {
         request.setReceiverName("Tester");
         request.setReceiverPhone("13800138000");
         request.setReceiverAddress("Test Road");
+        request.setLongitude(new BigDecimal("121.4737"));
+        request.setLatitude(new BigDecimal("31.2304"));
         requestHash = new OrderRequestFingerprint().calculate(request);
     }
 
@@ -263,6 +266,7 @@ class OrderCartHeaderTransactionTest {
         context.setMerchantId(MERCHANT_ID);
         context.setMerchantName("Test merchant");
         context.setTotalAmount(BigDecimal.TEN);
+        context.setDeliveryFee(new BigDecimal("5.00"));
         return context;
     }
 

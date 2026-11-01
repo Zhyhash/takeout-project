@@ -580,7 +580,7 @@ class DeliveryTaskGeoServiceTest {
         operationOrder.verify(transactionManager).getTransaction(transactionCaptor.capture());
         assertEquals(TransactionDefinition.PROPAGATION_REQUIRES_NEW,
                 transactionCaptor.getValue().getPropagationBehavior());
-        assertEquals(TransactionDefinition.ISOLATION_READ_COMMITTED,
+        assertEquals(TransactionDefinition.ISOLATION_REPEATABLE_READ,
                 transactionCaptor.getValue().getIsolationLevel());
 
         operationOrder.verify(deliveryTaskMapper).selectOne(wrapperCaptor.capture());

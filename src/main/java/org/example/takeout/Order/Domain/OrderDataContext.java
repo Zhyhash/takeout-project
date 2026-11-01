@@ -15,4 +15,5 @@ public class OrderDataContext {
     private Long merchantId;
     private String merchantName;
     private BigDecimal totalAmount;
+    private BigDecimal deliveryFee;
 }

@@ -4,8 +4,6 @@ import org.example.takeout.Config.MybatisPlusConfig;
 import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
-import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
-import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskConverter;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskMapper;
@@ -230,6 +228,7 @@ class DeliveryTaskGeoTransactionIntegrationTest {
         Order order = new Order();
         order.setId(ORDER_ID);
         order.setMerchantName("GEO Shop");
+        order.setDeliveryFee(new BigDecimal("5.00"));
         order.setReceiverName("Receiver");
         order.setReceiverPhone("13800138000");
         order.setReceiverAddress("Receiver Road");
@@ -403,7 +402,6 @@ class DeliveryTaskGeoTransactionIntegrationTest {
                     orderCommandService,
                     orderService,
                     mock(DeliveryTaskConverter.class),
-                    new DeliveryFeeCalculator(),
                     riderService,
                     deliveryTaskGeoService,
                     riderLocationService);

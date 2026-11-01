@@ -19,4 +19,7 @@ public class CartAvailableResult {
     private Long merchantId;
     private String merchantName;
 
+    private double latitude;
+    private double longitude;
+
 }

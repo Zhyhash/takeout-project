@@ -6,10 +6,13 @@ import org.example.takeout.Cart.DTO.UpdateCartDTO;
 import org.example.takeout.Common.Utils.MyScurity.JWTUtils;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.context.WebApplicationContext;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -334,6 +337,47 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
     }
 
     @Test
+    void createOrderRejectsMissingDeliveryCoordinates() throws Exception {
+        CreateOrderDTO dto = orderDTO();
+        dto.setLongitude(null);
+
+        mockMvc.perform(post("/order")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(orderService, never()).createOrder(any(CreateOrderDTO.class));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "longitude,180.0001",
+            "longitude,-180.0001",
+            "latitude,90.0001",
+            "latitude,-90.0001"
+    })
+    void createOrderRejectsCoordinatesOutsideGeographicRanges(String coordinate, String value)
+            throws Exception {
+        CreateOrderDTO dto = orderDTO();
+        if ("longitude".equals(coordinate)) {
+            dto.setLongitude(new BigDecimal(value));
+        } else {
+            dto.setLatitude(new BigDecimal(value));
+        }
+
+        mockMvc.perform(post("/order")
+                        .header("Authorization", userBearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(dto)))
+                .andExpect(status().isOk())
+                .andExpect(resultCode(PARAM_ERROR));
+
+        verify(orderService, never()).createOrder(any(CreateOrderDTO.class));
+    }
+
+    @Test
     void createOrderRejectsMissingToken() throws Exception {
         mockMvc.perform(post("/order")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -514,6 +558,8 @@ class CartOrderApiTest extends AbstractMockMvcApiTest {
         dto.setReceiverPhone("13800138000");
         dto.setReceiverAddress("No.1 Test Road");
         dto.setRemark("no spice");
+        dto.setLongitude(new BigDecimal("121.4737"));
+        dto.setLatitude(new BigDecimal("31.2304"));
         return dto;
     }
 }

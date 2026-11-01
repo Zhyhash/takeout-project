@@ -56,11 +56,14 @@ class OrderTransactionExecutorIdempotencyTest {
     @BeforeEach
     void prepareDuplicateInsert() {
         request = TestDataFactory.createOrderDTO();
+        request.setLongitude(new BigDecimal("116.397"));
+        request.setLatitude(new BigDecimal("39.908"));
         requestHash = new OrderRequestFingerprint().calculate(request);
         context = new OrderDataContext();
         context.setMerchantId(31L);
         context.setMerchantName("Test merchant");
-        context.setTotalAmount(BigDecimal.TEN);
+        context.setTotalAmount(new BigDecimal("10.00"));
+        context.setDeliveryFee(new BigDecimal("5.00"));
         duplicateKey = new DuplicateKeyException("Duplicate entry for unique key");
         when(orderMapper.insert(any(Order.class))).thenThrow(duplicateKey);
     }
@@ -70,7 +73,15 @@ class OrderTransactionExecutorIdempotencyTest {
         Order committed = committedOrder(requestHash);
         when(orderMapper.selectOne(any())).thenReturn(committed);
 
-        assertSame(committed, executor.executeOrderCreation(context, request, USER_ID, requestHash));
+        CreateOrderDTO equivalentRetry = TestDataFactory.createOrderDTO();
+        equivalentRetry.setRequestId(request.getRequestId());
+        equivalentRetry.setLongitude(new BigDecimal("116.3970000"));
+        equivalentRetry.setLatitude(new BigDecimal("39.908000"));
+        String equivalentRetryHash = new OrderRequestFingerprint().calculate(equivalentRetry);
+        assertEquals(requestHash, equivalentRetryHash);
+
+        assertSame(committed, executor.executeOrderCreation(
+                context, equivalentRetry, USER_ID, equivalentRetryHash));
 
         assertLookupUsesOriginalUniqueKey();
         verifyNoInteractions(cartCommandService, orderItemService);
@@ -79,12 +90,39 @@ class OrderTransactionExecutorIdempotencyTest {
     @Test
     void concurrentChangedParametersProduceBusinessErrorWithoutFurtherSideEffects() {
         CreateOrderDTO firstRequest = TestDataFactory.createOrderDTO();
+        firstRequest.setRequestId(request.getRequestId());
+        firstRequest.setLongitude(request.getLongitude());
+        firstRequest.setLatitude(request.getLatitude());
         firstRequest.setRemark("不要辣椒");
         Order committed = committedOrder(new OrderRequestFingerprint().calculate(firstRequest));
         when(orderMapper.selectOne(any())).thenReturn(committed);
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> executor.executeOrderCreation(context, request, USER_ID, requestHash));
+
+        assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
+        assertEquals("同一 requestId 不能携带不同下单参数，请使用新的 requestId", exception.getMessage());
+        assertLookupUsesOriginalUniqueKey();
+        verifyNoInteractions(cartCommandService, orderItemService);
+    }
+
+    @Test
+    void concurrentChangedReceiverCoordinatesProduceBusinessErrorWithoutFurtherSideEffects() {
+        CreateOrderDTO firstRequest = TestDataFactory.createOrderDTO();
+        firstRequest.setRequestId(request.getRequestId());
+        firstRequest.setLongitude(request.getLongitude());
+        firstRequest.setLatitude(request.getLatitude());
+        Order committed = committedOrder(new OrderRequestFingerprint().calculate(firstRequest));
+        when(orderMapper.selectOne(any())).thenReturn(committed);
+
+        CreateOrderDTO changedRequest = TestDataFactory.createOrderDTO();
+        changedRequest.setRequestId(request.getRequestId());
+        changedRequest.setLongitude(request.getLongitude());
+        changedRequest.setLatitude(new BigDecimal("39.909"));
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> executor.executeOrderCreation(context, changedRequest, USER_ID,
+                        new OrderRequestFingerprint().calculate(changedRequest)));
 
         assertEquals(ResultCodeEnum.PARAM_ERROR, exception.getCodeEnum());
         assertEquals("同一 requestId 不能携带不同下单参数，请使用新的 requestId", exception.getMessage());
@@ -114,6 +152,9 @@ class OrderTransactionExecutorIdempotencyTest {
         LocalDateTime createdAt = insertedOrder.getValue().getCreateTime();
         assertNotNull(createdAt);
         assertEquals(createdAt.plusMinutes(30), insertedOrder.getValue().getTimeoutCancelAvailableAt());
+        assertEquals(new BigDecimal("10.00"), insertedOrder.getValue().getOriginalAmount());
+        assertEquals(new BigDecimal("5.00"), insertedOrder.getValue().getDeliveryFee());
+        assertEquals(new BigDecimal("15.00"), insertedOrder.getValue().getTotalAmount());
     }
 
     private Order committedOrder(String hash) {

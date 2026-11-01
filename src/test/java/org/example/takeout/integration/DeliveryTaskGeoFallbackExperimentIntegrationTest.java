@@ -328,6 +328,8 @@ class DeliveryTaskGeoFallbackExperimentIntegrationTest {
                             phone VARCHAR(255) NOT NULL,
                             password VARCHAR(255) NOT NULL,
                             status INT NOT NULL,
+                            balance DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                            total_income DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                             create_time DATETIME NOT NULL,
                             update_time DATETIME NULL,
                             is_delete INT NOT NULL DEFAULT 0

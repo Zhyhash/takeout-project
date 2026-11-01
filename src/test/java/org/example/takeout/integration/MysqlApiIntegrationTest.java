@@ -27,6 +27,8 @@ import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Product.DTO.CreateProductDTO;
 import org.example.takeout.Product.DTO.UpdateProductDTO;
 import org.example.takeout.Product.StatesEnum.ProductStatusEnum;
+import org.example.takeout.Settlement.Enums.BeneficiaryTypeEnum;
+import org.example.takeout.Settlement.Enums.IncomeRecordTypeEnum;
 import org.example.takeout.User.DTO.LoginDTO;
 import org.example.takeout.User.DTO.RegisterDTO;
 import org.example.takeout.testsupport.ConcurrentTestTemplate;
@@ -68,7 +70,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(properties = {
         "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
-        "spring.datasource.url=jdbc:mysql://localhost:3306/takeout_integration_test?createDatabaseIfNotExist=true&serverTimezone=GMT%2B8&useSSL=false&allowPublicKeyRetrieval=true",
+        "spring.datasource.url=jdbc:mysql://localhost:${takeout.test.mysql.port:3306}/takeout_integration_test?createDatabaseIfNotExist=true&serverTimezone=GMT%2B8&useSSL=false&allowPublicKeyRetrieval=true",
         "spring.datasource.username=root",
         "spring.datasource.password=root",
         "spring.sql.init.mode=never",
@@ -105,6 +107,7 @@ class MysqlApiIntegrationTest {
         this.mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
         when(orderCreateRateLimiter.tryAcquire(anyLong())).thenReturn(true);
         recreateSchema();
+        OrderDeliveryFeeSchemaTestFixture.ensureDeliveryFeeColumn(jdbcTemplate);
     }
 
     @ParameterizedTest
@@ -435,6 +438,8 @@ class MysqlApiIntegrationTest {
         request.setReceiverPhone("13800138000");
         request.setReceiverAddress("Integration Road 1");
         request.setRemark("same request replay");
+        request.setLongitude(new BigDecimal("121.4737"));
+        request.setLatitude(new BigDecimal("31.2304"));
         CountDownLatch preparationReached = new CountDownLatch(1);
         CountDownLatch resumePreparation = new CountDownLatch(1);
         AtomicReference<Thread> replayThread = new AtomicReference<>();
@@ -545,6 +550,8 @@ class MysqlApiIntegrationTest {
         request.setReceiverName("Integration Tester");
         request.setReceiverPhone("13800138000");
         request.setReceiverAddress("Integration Road 1");
+        request.setLongitude(new BigDecimal("121.4737"));
+        request.setLatitude(new BigDecimal("31.2304"));
         for (int attempt = 0; attempt < 2; attempt++) {
             postJson("/order", request, userToken)
                     .andExpect(status().isOk())
@@ -939,11 +946,25 @@ class MysqlApiIntegrationTest {
     @Test
     void confirmOrderUpdatesOrderStatus() throws Exception {
         OrderSeed seed = createOrderThroughApi();
+        Long riderId = insertRider("it_confirm_rider_" + suffix());
 
         jdbcTemplate.update(
                 "update orders set status = ? where id = ?",
                 OrderStatusEnum.DELIVERED.getCode(),
                 seed.orderId());
+        jdbcTemplate.update("""
+                INSERT INTO delivery_task (
+                    order_id, rider_id, merchant_name, delivery_reward, receiver_name, status,
+                    create_time, accepted_time, delivered_time, receiver_phone, receiver_address,
+                    merchant_address, merchant_phone
+                )
+                SELECT id, ?, merchant_name, 4.25, receiver_name, ?,
+                       DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 7 MINUTE),
+                       DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 5 MINUTE),
+                       DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 MINUTE),
+                       receiver_phone, receiver_address, 'Integration Address', '13900139000'
+                FROM orders WHERE id = ?
+                """, riderId, DeliveryTaskEnums.COMPLETED.getCode(), seed.orderId());
 
         mockMvc.perform(patch("/order/{id}/confirm", seed.orderId())
                         .header("Authorization", bearer(seed.userToken())))
@@ -955,6 +976,31 @@ class MysqlApiIntegrationTest {
                 seed.orderId());
         assertThat(row.get("status")).isEqualTo(OrderStatusEnum.FINISHED.getCode());
         assertThat(row.get("finish_time")).isNotNull();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM income_record WHERE order_id = ?",
+                Integer.class, seed.orderId())).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT amount FROM income_record
+                WHERE order_id = ? AND beneficiary_type = ? AND beneficiary_id = ? AND type = ?
+                """, BigDecimal.class, seed.orderId(),
+                BeneficiaryTypeEnum.MERCHANT.getCode(), seed.merchantId(),
+                IncomeRecordTypeEnum.ORDER_INCOME.getCode()))
+                .isEqualByComparingTo("12.50");
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT amount FROM income_record
+                WHERE order_id = ? AND beneficiary_type = ? AND beneficiary_id = ? AND type = ?
+                """, BigDecimal.class, seed.orderId(),
+                BeneficiaryTypeEnum.RIDER.getCode(), riderId,
+                IncomeRecordTypeEnum.DELIVERY_REWARD.getCode()))
+                .isEqualByComparingTo("4.25");
+        assertThat(jdbcTemplate.queryForObject("SELECT balance FROM merchant WHERE id = ?",
+                BigDecimal.class, seed.merchantId())).isEqualByComparingTo("12.50");
+        assertThat(jdbcTemplate.queryForObject("SELECT balance FROM rider WHERE id = ?",
+                BigDecimal.class, riderId)).isEqualByComparingTo("4.25");
+        assertThat(jdbcTemplate.queryForObject("SELECT total_income FROM merchant WHERE id = ?",
+                BigDecimal.class, seed.merchantId())).isEqualByComparingTo("12.50");
+        assertThat(jdbcTemplate.queryForObject("SELECT total_income FROM rider WHERE id = ?",
+                BigDecimal.class, riderId)).isEqualByComparingTo("4.25");
     }
 
     @Test
@@ -1103,12 +1149,18 @@ class MysqlApiIntegrationTest {
         orderDTO.setReceiverPhone("13800138000");
         orderDTO.setReceiverAddress("Integration Road 1");
         orderDTO.setRemark("integration");
+        orderDTO.setLongitude(new BigDecimal("121.4737"));
+        orderDTO.setLatitude(new BigDecimal("31.2304"));
 
         MvcResult result = postJson("/order", orderDTO, token)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andReturn();
         Long orderId = responseJson(result).at("/data/orderId").asLong();
+        assertThat(jdbcTemplate.queryForObject("SELECT delivery_fee FROM orders WHERE id = ?",
+                BigDecimal.class, orderId)).isEqualByComparingTo("5.00");
+        assertThat(jdbcTemplate.queryForObject("SELECT total_amount FROM orders WHERE id = ?",
+                BigDecimal.class, orderId)).isEqualByComparingTo("17.50");
         return new OrderSeed(user.id(), merchant.id(), productId, orderId, productName, token);
     }
 
@@ -1188,9 +1240,9 @@ class MysqlApiIntegrationTest {
         String phone = phone();
         jdbcTemplate.update("""
                 insert into merchant
-                (username, phone, password, address, status, merchant_name, picture,
+                (username, phone, password, address, longitude, latitude, status, merchant_name, picture,
                  merchant_description, opening_time, closing_time)
-                values (?, ?, ?, 'Integration Address', 0, ?, '', '', '08:00:00', '22:00:00')
+                values (?, ?, ?, 'Integration Address', 121.4737, 31.2304, 0, ?, '', '', '08:00:00', '22:00:00')
                 """, username, phone, BCrypt.encode(PASSWORD), username + " shop");
         Long id = jdbcTemplate.queryForObject(
                 "select id from merchant where username = ?",
@@ -1331,6 +1383,8 @@ class MysqlApiIntegrationTest {
         jdbcTemplate.execute("drop table if exists delivery_task");
         jdbcTemplate.execute("drop table if exists rider");
         jdbcTemplate.execute("drop table if exists order_item");
+        // The ledger references orders; drop it before resetting the order table.
+        jdbcTemplate.execute("drop table if exists income_record");
         jdbcTemplate.execute("drop table if exists orders");
         jdbcTemplate.execute("drop table if exists cart");
         jdbcTemplate.execute("drop table if exists cart_header");
@@ -1367,6 +1421,8 @@ class MysqlApiIntegrationTest {
                     `longitude` decimal(10,7) NULL DEFAULT NULL COMMENT '店铺取货经度',
                     `latitude` decimal(10,7) NULL DEFAULT NULL COMMENT '店铺取货纬度',
                     `status` tinyint NOT NULL DEFAULT 0,
+                    `balance` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `total_income` decimal(12,2) NOT NULL DEFAULT 0.00,
                     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `picture` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
@@ -1461,6 +1517,7 @@ class MysqlApiIntegrationTest {
                     `merchant_id` bigint NOT NULL,
                     `merchant_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `total_amount` decimal(10, 2) NOT NULL,
+                    `delivery_fee` decimal(10, 2) NOT NULL DEFAULT 0.00 COMMENT '配送费',
                     `status` tinyint NOT NULL DEFAULT 0,
                     `cancel_source` tinyint NULL DEFAULT NULL
                         COMMENT '订单取消原因：1用户主动取消，2商家拒单，3系统超时取消，4平台取消',
@@ -1489,6 +1546,32 @@ class MysqlApiIntegrationTest {
                 """);
 
         jdbcTemplate.execute("""
+                CREATE TABLE `income_record` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `beneficiary_type` tinyint NOT NULL,
+                    `beneficiary_id` bigint NOT NULL,
+                    `order_id` bigint NOT NULL,
+                    `type` tinyint NOT NULL,
+                    `amount` decimal(12, 2) NOT NULL,
+                    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_income_record_beneficiary_order_type`
+                        (`beneficiary_type`, `beneficiary_id`, `order_id`, `type`),
+                    UNIQUE KEY `uk_income_record_order_type` (`order_id`, `type`),
+                    KEY `idx_income_record_beneficiary_time`
+                        (`beneficiary_type`, `beneficiary_id`, `create_time`, `id`),
+                    CONSTRAINT `chk_income_record_event_identity` CHECK (
+                        (`beneficiary_type` = 1 AND `type` = 1)
+                        OR (`beneficiary_type` = 2 AND `type` = 2)
+                    ),
+                    CONSTRAINT `chk_income_record_nonnegative_amount` CHECK (`amount` >= 0.00),
+                    CONSTRAINT `fk_income_record_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`)
+                        ON DELETE RESTRICT ON UPDATE RESTRICT
+                ) ENGINE = InnoDB CHARACTER SET = utf8mb4
+                  COLLATE = utf8mb4_0900_ai_ci COMMENT = '商家与骑手收益流水'
+                """);
+
+        jdbcTemplate.execute("""
                 CREATE TABLE `order_item` (
                     `id` bigint NOT NULL AUTO_INCREMENT,
                     `order_id` bigint NOT NULL,
@@ -1513,6 +1596,8 @@ class MysqlApiIntegrationTest {
                     `phone` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `password` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     `status` int NOT NULL,
+                    `balance` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `total_income` decimal(12,2) NOT NULL DEFAULT 0.00,
                     `create_time` datetime NOT NULL,
                     `update_time` datetime NULL DEFAULT NULL,
                     `is_delete` int NOT NULL,

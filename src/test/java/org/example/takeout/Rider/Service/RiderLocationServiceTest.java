@@ -9,9 +9,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.core.GeoOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.RedisScript;
 
 import java.util.Arrays;
@@ -39,6 +41,9 @@ class RiderLocationServiceTest {
 
     @Mock
     private GeoOperations<String, String> geoOperations;
+
+    @Mock
+    private ZSetOperations<String, String> zSetOperations;
 
     @InjectMocks
     private RiderLocationService riderLocationService;
@@ -165,6 +170,7 @@ class RiderLocationServiceTest {
     @Test
     void getRiderLocationReturnsStoredPoint() {
         Point storedPoint = new Point(LONGITUDE, LATITUDE);
+        givenFreshActivity();
         when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
         when(geoOperations.position(LOCATION_KEY, RIDER_ID)).thenReturn(List.of(storedPoint));
 
@@ -172,10 +178,12 @@ class RiderLocationServiceTest {
 
         assertTrue(result.isPresent());
         assertEquals(storedPoint, result.get());
+        verify(zSetOperations).score(LAST_ACTIVE_KEY, RIDER_ID);
     }
 
     @Test
     void getRiderLocationReturnsEmptyWhenRiderHasNoPosition() {
+        givenFreshActivity();
         when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
         when(geoOperations.position(LOCATION_KEY, RIDER_ID)).thenReturn(List.of());
 
@@ -184,6 +192,7 @@ class RiderLocationServiceTest {
 
     @Test
     void getRiderLocationFailsWhenRedisReturnsNull() {
+        givenFreshActivity();
         when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
         when(geoOperations.position(LOCATION_KEY, RIDER_ID)).thenReturn(null);
 
@@ -195,6 +204,7 @@ class RiderLocationServiceTest {
 
     @Test
     void getRiderLocationReturnsEmptyWhenMemberIsMissing() {
+        givenFreshActivity();
         when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
         when(geoOperations.position(LOCATION_KEY, RIDER_ID))
                 .thenReturn(Arrays.asList((Point) null));
@@ -226,8 +236,59 @@ class RiderLocationServiceTest {
     }
 
     @Test
+    void getRiderLocationReturnsEmptyAndRemovesWhenActivityIsMissing() {
+        when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
+        when(zSetOperations.score(LAST_ACTIVE_KEY, RIDER_ID)).thenReturn(null);
+        doReturn(1L).when(redisTemplate).execute(any(RedisScript.class), anyList(), any());
+
+        assertTrue(riderLocationService.getRiderLocation(301L).isEmpty());
+
+        verify(zSetOperations).score(LAST_ACTIVE_KEY, RIDER_ID);
+        verify(redisTemplate).execute(
+                any(RedisScript.class),
+                eq(List.of(LOCATION_KEY, LAST_ACTIVE_KEY)),
+                eq(RIDER_ID)
+        );
+        verifyNoInteractions(geoOperations);
+    }
+
+    @Test
+    void getRiderLocationReturnsEmptyAndRemovesWhenActivityIsExpired() {
+        when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
+        when(zSetOperations.score(LAST_ACTIVE_KEY, RIDER_ID))
+                .thenReturn((double) (System.currentTimeMillis() - 300_001L));
+        doReturn(1L).when(redisTemplate).execute(any(RedisScript.class), anyList(), any());
+
+        assertTrue(riderLocationService.getRiderLocation(301L).isEmpty());
+
+        verify(zSetOperations).score(LAST_ACTIVE_KEY, RIDER_ID);
+        verify(redisTemplate).execute(
+                any(RedisScript.class),
+                eq(List.of(LOCATION_KEY, LAST_ACTIVE_KEY)),
+                eq(RIDER_ID)
+        );
+        verifyNoInteractions(geoOperations);
+    }
+
+    @Test
+    void getRiderLocationWrapsActivityScoreRedisFailure() {
+        DataAccessResourceFailureException redisFailure =
+                new DataAccessResourceFailureException("redis down");
+        when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
+        when(zSetOperations.score(LAST_ACTIVE_KEY, RIDER_ID)).thenThrow(redisFailure);
+
+        RedisGeoOperationException exception = assertThrows(RedisGeoOperationException.class,
+                () -> riderLocationService.getRiderLocation(301L));
+
+        assertEquals("查询骑手活跃时间失败，riderId=301", exception.getMessage());
+        assertSame(redisFailure, exception.getCause());
+        verifyNoInteractions(geoOperations);
+    }
+
+    @Test
     void getRiderLocationWrapsRedisFailure() {
         IllegalStateException redisFailure = new IllegalStateException("redis down");
+        givenFreshActivity();
         when(redisTemplate.opsForGeo()).thenReturn(geoOperations);
         when(geoOperations.position(LOCATION_KEY, RIDER_ID)).thenThrow(redisFailure);
 
@@ -349,5 +410,11 @@ class RiderLocationServiceTest {
 
     private void givenActiveRider(Long riderId) {
         when(riderService.requireActiveRiderId()).thenReturn(riderId);
+    }
+
+    private void givenFreshActivity() {
+        when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
+        when(zSetOperations.score(LAST_ACTIVE_KEY, RIDER_ID))
+                .thenReturn((double) System.currentTimeMillis());
     }
 }

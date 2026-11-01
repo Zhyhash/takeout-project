@@ -36,6 +36,8 @@ public final class TestDataFactory {
         merchant.setMerchantName("测试商家");
         merchant.setPhone(String.format("139%08d", Math.floorMod(id, 100_000_000L)));
         merchant.setAddress("测试地址");
+        merchant.setLongitude(new BigDecimal("121.4737"));
+        merchant.setLatitude(new BigDecimal("31.2304"));
         merchant.setStatus(MerchantStatusEnum.BUSINESS_OPEN.getCode());
         merchant.setOpeningTime(LocalTime.of(8, 0));
         merchant.setClosingTime(LocalTime.of(22, 0));
@@ -78,6 +80,8 @@ public final class TestDataFactory {
         dto.setReceiverPhone("13812345678");
         dto.setReceiverAddress("北京市朝阳区科技路 A 栋 3 楼");
         dto.setRemark("麻烦多放点辣椒，谢谢！");
+        dto.setLongitude(new BigDecimal("121.4737"));
+        dto.setLatitude(new BigDecimal("31.2304"));
         return dto;
     }
 
@@ -89,8 +93,9 @@ public final class TestDataFactory {
         order.setRequestId(UUID.randomUUID().toString());
         order.setMerchantId(merchantId);
         order.setMerchantName("测试商家");
-        order.setTotalAmount(DEFAULT_PRODUCT_PRICE);
+        order.setTotalAmount(DEFAULT_PRODUCT_PRICE.add(new BigDecimal("5.00")));
         order.setOriginalAmount(DEFAULT_PRODUCT_PRICE);
+        order.setDeliveryFee(new BigDecimal("5.00"));
         order.setDiscountAmount(BigDecimal.ZERO);
         order.setStatus(status);
         order.setReceiverName("张三");
@@ -101,6 +106,8 @@ public final class TestDataFactory {
         request.setReceiverPhone(order.getReceiverPhone());
         request.setReceiverAddress(order.getReceiverAddress());
         request.setRemark(order.getRemark());
+        request.setLongitude(new BigDecimal("121.4737"));
+        request.setLatitude(new BigDecimal("31.2304"));
         order.setRequestHash(new OrderRequestFingerprint().calculate(request));
         order.setCreateTime(now);
         order.setUpdateTime(now);

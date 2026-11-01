@@ -15,5 +15,6 @@ public class RiderTaskListVO {
     private Integer status;
     private String statusDesc;
     private LocalDateTime createTime;
-    //预留位，商家/用户距离
+    /** 骑手最近上报位置到商家取货点的 GEO 距离（公里）；未命中或降级时为 null。 */
+    private Double pickupDistanceKm;
 }

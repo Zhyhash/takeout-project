@@ -7,7 +7,6 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Exception.RedisGeoOperationException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
-import org.example.takeout.DeliveryTask.Domain.DeliveryFeeCalculator;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
 import org.example.takeout.DeliveryTask.Mapper.DeliveryTaskConverter;
@@ -61,9 +60,6 @@ class DeliveryTaskHallServiceTest {
     private OrderService orderService;
 
     @Mock
-    private DeliveryFeeCalculator deliveryFeeCalculator;
-
-    @Mock
     private RiderService riderService;
 
     @Mock
@@ -88,7 +84,6 @@ class DeliveryTaskHallServiceTest {
                 orderCommandService,
                 orderService,
                 org.mapstruct.factory.Mappers.getMapper(DeliveryTaskConverter.class),
-                deliveryFeeCalculator,
                 riderService,
                 deliveryTaskGeoService,
                 riderLocationService);
@@ -105,6 +100,8 @@ class DeliveryTaskHallServiceTest {
                 deliveryTaskService.getAvailableRiderTask(DEFAULT_RADIUS_KM);
 
         assertThat(taskIds(result)).containsExactly(9002L, 9004L, 9001L, 9003L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm)
+                .containsExactly(0.1, 0.5, null, null);
         verify(deliveryTaskGeoService).findNearbyTasks(121.4737, 31.2304, DEFAULT_RADIUS_KM);
     }
 
@@ -119,6 +116,7 @@ class DeliveryTaskHallServiceTest {
                 deliveryTaskService.getAvailableRiderTask(DEFAULT_RADIUS_KM);
 
         assertThat(taskIds(result)).containsExactly(9101L, 9102L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm).containsExactly(0.3, 0.3);
     }
 
     @Test
@@ -132,6 +130,7 @@ class DeliveryTaskHallServiceTest {
                 deliveryTaskService.getAvailableRiderTask(DEFAULT_RADIUS_KM);
 
         assertThat(taskIds(result)).containsExactly(7203L, 7202L, 7201L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm).containsOnlyNulls();
         verify(deliveryTaskMapper).selectList(any());
     }
 
@@ -149,6 +148,7 @@ class DeliveryTaskHallServiceTest {
         assertThat(taskIds(result).get(0)).isEqualTo(8601L);
         assertThat(taskIds(result).get(499)).isEqualTo(8102L);
         assertThat(taskIds(result)).doesNotContain(8101L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm).containsOnlyNulls();
 
         @SuppressWarnings("unchecked")
         org.mockito.ArgumentCaptor<Wrapper<DeliveryTask>> queryCaptor =
@@ -170,6 +170,7 @@ class DeliveryTaskHallServiceTest {
                 deliveryTaskService.getAvailableRiderTask(DEFAULT_RADIUS_KM);
 
         assertThat(taskIds(result)).containsExactly(7103L, 7102L, 7101L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm).containsOnlyNulls();
     }
 
     @Test
@@ -196,6 +197,7 @@ class DeliveryTaskHallServiceTest {
                 deliveryTaskService.getAvailableRiderTask(DEFAULT_RADIUS_KM);
 
         assertThat(taskIds(result)).containsExactly(7203L, 7202L, 7201L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm).containsOnlyNulls();
         verifyNoInteractions(deliveryTaskGeoService);
 
         @SuppressWarnings("unchecked")
@@ -227,6 +229,23 @@ class DeliveryTaskHallServiceTest {
                 deliveryTaskService.getAvailableRiderTask(DEFAULT_RADIUS_KM);
 
         assertThat(taskIds(result)).containsExactly(9002L, 9001L, 9003L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm).containsExactly(0.1, null, null);
+    }
+
+    @Test
+    void zeroGeoPickupDistanceIsPreservedAndNotConfusedWithUnknownDistance() {
+        givenRiderAt(RIDER_POINT);
+        givenWaitingTasks(tasks(9001L, 9002L));
+        when(deliveryTaskGeoService.findNearbyTasks(121.4737, 31.2304, DEFAULT_RADIUS_KM))
+                .thenReturn(List.of(distance(9002L, 0.0)));
+
+        List<RiderTaskListVO> result =
+                deliveryTaskService.getAvailableRiderTask(DEFAULT_RADIUS_KM);
+
+        assertThat(taskIds(result)).containsExactly(9002L, 9001L);
+        assertThat(result).extracting(RiderTaskListVO::getPickupDistanceKm)
+                .containsExactly(0.0, null);
+        verify(deliveryTaskGeoService).findNearbyTasks(121.4737, 31.2304, DEFAULT_RADIUS_KM);
     }
 
     @Test

@@ -4,7 +4,7 @@
 
 Tokeout 是一个基于 Spring Boot 的外卖后端练习项目。项目围绕用户、商家、骑手三类角色，实现了店铺与商品浏览、购物车、订单、商家履约和骑手配送的最小业务闭环。
 
-> 本仓库当前只包含后端服务，不包含 Web、App 或小程序前端。以下说明以当前工作区中的 Controller、Service、配置文件、`deploy/schema.sql` 和测试代码为准。
+> 本仓库包含 Spring Boot 后端及最小同源骑手 Web 页面，页面使用原生 HTML/CSS/JavaScript，没有独立前端构建链。启动后打开 `http://localhost:8080/rider-web/index.html`；登录、真实定位与手机 HTTPS 要求见[骑手 Web 接入说明](rider-web.md)。以下说明以当前工作区源码、配置和 SQL 为准。
 
 ## 1. 项目介绍
 
@@ -72,7 +72,8 @@ Spring Security 的过滤链目前配置为无状态并放行请求，实际 JWT
 │  ├─ application.yaml              主配置
 │  ├─ db/migration/                 Flyway 版本化迁移脚本
 │  ├─ mapper/ProductMapper.xml      商品恢复 SQL
-│  └─ static/images/                默认商品图片
+│  ├─ static/images/                默认商品图片
+│  └─ static/rider-web/             同源骑手页面与原生定位模块
 ├─ src/test/                        API、单元和集成测试
 ├─ Dockerfile
 ├─ compose.yaml
@@ -357,7 +358,7 @@ GEO 的单元/API 与独立 H2 事务回归可单独选择；`DeliveryTaskGeoTra
 mvn test "-Dtest=DeliveryTaskGeoServiceTest,DeliveryTaskGeoReconciliationJobTest,DeliveryTaskHallServiceTest,RiderLocationApiTest,DeliveryTaskGeoTransactionIntegrationTest"
 ```
 
-H2 套件使用真实 Mapper 和 Spring 事务，覆盖 205 条任务全量查询、行锁覆盖 Redis 操作、抢单提交后删除、出餐 `afterCommit` 独立事务及异常释放锁。真实 MySQL 行锁用例是 `DeliveryTaskGeoReconciliationIntegrationTest`，真实 Redis 成员修复用例是 `DeliveryTaskGeoRedisReconciliationIntegrationTest`，二者不能由 H2 结果替代。当前源码已将单任务对账隔离级别改为 RR，但一条单元测试仍断言 RC；该提交前差异见[本次核查记录](documentation-review-2026-10-28.md)。
+H2 套件使用真实 Mapper 和 Spring 事务，覆盖 205 条任务全量查询、行锁覆盖 Redis 操作、抢单提交后删除、出餐 `afterCommit` 独立事务及异常释放锁。真实 MySQL 行锁用例是 `DeliveryTaskGeoReconciliationIntegrationTest`，真实 Redis 成员修复用例是 `DeliveryTaskGeoRedisReconciliationIntegrationTest`，二者不能由 H2 结果替代。单任务对账及对应单测均已使用 RR；2026-10-28 修正断言后，GEO 单测和 H2 事务回归共 43 项通过，具体范围见[本次核查记录](documentation-review-2026-10-28.md)。
 
 三个局部 RC 事务的真实 MySQL 时序回归可单独运行：
 

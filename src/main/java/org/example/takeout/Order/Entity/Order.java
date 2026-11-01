@@ -41,6 +41,11 @@ public class Order {
     private BigDecimal totalAmount;
 
     /**
+     * 配送费
+     */
+    private BigDecimal deliveryFee;
+
+    /**
      * 订单状态
      */
     private Integer status;

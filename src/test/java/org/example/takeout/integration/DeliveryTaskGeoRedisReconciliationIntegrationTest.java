@@ -1,5 +1,8 @@
 package org.example.takeout.integration;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.DeliveryTask.Entity.DeliveryTask;
 import org.example.takeout.DeliveryTask.Enums.DeliveryTaskEnums;
@@ -9,6 +12,7 @@ import org.example.takeout.Merchant.Config.MerchantSseSchedule;
 import org.example.takeout.Product.Config.ProductImageCleanupService;
 import org.example.takeout.Rider.Config.RiderLocationCleanupScheduler;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -46,6 +50,14 @@ import static org.mockito.Mockito.when;
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 class DeliveryTaskGeoRedisReconciliationIntegrationTest {
+
+    @BeforeAll
+    static void initializeMybatisMetadata() {
+        // The mocked mapper does not register entity metadata. Initialize it
+        // explicitly so SQL wrapper rendering also works when this suite runs alone.
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), DeliveryTask.class);
+    }
 
     private static final String GEO_KEY =
             "test:delivery:available:geo:" + UUID.randomUUID().toString().replace("-", "");

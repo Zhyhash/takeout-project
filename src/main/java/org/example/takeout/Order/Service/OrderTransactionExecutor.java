@@ -42,14 +42,21 @@ public class OrderTransactionExecutor {
         Order order;
         try {
             order = new Order();
+
+            BigDecimal originalAmount = orderDataContext.getTotalAmount();
+            BigDecimal deliveryFee = orderDataContext.getDeliveryFee();
+            BigDecimal discountAmount = BigDecimal.ZERO;
+
+
             order.setUserId(userId);
             order.setRequestId(createOrderDTO.getRequestId());
             order.setOrderNo(createOrderNo());
             order.setMerchantId(orderDataContext.getMerchantId());
             order.setMerchantName(orderDataContext.getMerchantName());
-            order.setTotalAmount(orderDataContext.getTotalAmount());
-            order.setOriginalAmount(orderDataContext.getTotalAmount());
-            order.setDiscountAmount(BigDecimal.ZERO); // NOTE: 留作后续扩展
+            order.setTotalAmount(originalAmount.add(deliveryFee).subtract(discountAmount));
+            order.setOriginalAmount(originalAmount);
+            order.setDeliveryFee(deliveryFee);
+            order.setDiscountAmount(discountAmount); // NOTE: 留作后续扩展
 
             orderConvertor.toOrder(createOrderDTO, order);
             order.setStatus(OrderStatusEnum.WAIT_PAY.getCode());

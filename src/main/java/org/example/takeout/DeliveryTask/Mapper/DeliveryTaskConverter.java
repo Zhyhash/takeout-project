@@ -13,6 +13,8 @@ public interface DeliveryTaskConverter {
 
     @Mapping(source = "id", target = "taskId")
     @Mapping(source = "status", target = "statusDesc", qualifiedByName = "deliveryStatusDescription")
+    // 取货距离来自 GEO 查询结果，实体上没有对应字段；未由服务层填充时保持 null。
+    @Mapping(target = "pickupDistanceKm", ignore = true)
     RiderTaskListVO toRiderTaskListVO(DeliveryTask deliveryTask);
 
 

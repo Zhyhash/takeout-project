@@ -1,9 +1,14 @@
 package org.example.takeout.Order.DTO;
 
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
+
+import java.math.BigDecimal;
 
 
 @Data
@@ -24,4 +29,20 @@ public class CreateOrderDTO {
     private String receiverAddress;
     @Size(max = 200,message = "备注最大为200")
     private String remark;
+
+    /**
+     * 收货地点纬度，代表固定收货位置而非用户实时定位。
+     */
+    @NotNull(message = "收货地点纬度不能为空")
+    @DecimalMin(value = "-90", message = "纬度范围必须在-90到90之间")
+    @DecimalMax(value = "90", message = "纬度范围必须在-90到90之间")
+    private BigDecimal latitude;
+
+    /**
+     * 收货地点经度，代表固定收货位置而非用户实时定位。
+     */
+    @NotNull(message = "收货地点经度不能为空")
+    @DecimalMin(value = "-180", message = "经度范围必须在-180到180之间")
+    @DecimalMax(value = "180", message = "经度范围必须在-180到180之间")
+    private BigDecimal longitude;
 }

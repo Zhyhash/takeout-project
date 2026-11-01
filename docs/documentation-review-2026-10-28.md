@@ -27,6 +27,8 @@
 
 2026-10-28 较早的 GEO 修复阶段，RC 版本曾通过生产代码编译、137 项定向单元/API 回归及 4 项 H2 事务测试（均为 0 失败、0 错误、0 跳过）。H2 使用真实 Mapper 与 Spring 事务，覆盖 205 条任务全量查询、抢单并发、出餐 `afterCommit` 独立事务以及 Redis 异常释放行锁。真实 MySQL、Redis 集成测试当时未运行，不能由这些结果替代。
 
-当前 [GEO 服务](../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskGeoService.java)已改用 `ISOLATION_REPEATABLE_READ`，但 [GEO 单元测试](../src/test/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskGeoServiceTest.java)的 `reconcileAvailableTaskGeoUsesIndependentTransactionAndCommitsAfterLockedGeoWrite` 仍断言 `ISOLATION_READ_COMMITTED`。这是提交前尚未同步的测试预期，本轮仅报告，不修改测试；之前的 141 项通过不能作为当前 RR 版本的通过证据。
+文档整理时发现 [GEO 服务](../src/main/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskGeoService.java)已改用 `ISOLATION_REPEATABLE_READ`，但 [GEO 单元测试](../src/test/java/org/example/takeout/DeliveryTask/Service/DeliveryTaskGeoServiceTest.java)的 `reconcileAvailableTaskGeoUsesIndependentTransactionAndCommitsAfterLockedGeoWrite` 仍断言 `ISOLATION_READ_COMMITTED`。同日后续已将该断言修正为 `ISOLATION_REPEATABLE_READ`，保留独立事务、锁读及 Redis 操作后提交的验证，没有修改业务代码。
+
+修正后执行 `mvn -o "-Dtest=DeliveryTaskGeoServiceTest,DeliveryTaskGeoTransactionIntegrationTest" test`（本机运行时另通过 `argLine` 显式加载当前 Mockito Java agent 并设置 `jdk.net.URLClassPath.disableClassPathURLCheck=true`）：GEO 单测 39 项、H2 事务测试 4 项，共 43 项通过，0 失败、0 错误、0 跳过。此前 141 项未全部重跑，真实 MySQL、Redis 集成测试仍未运行。
 
 测试来源：[H2 事务回归](../src/test/java/org/example/takeout/integration/DeliveryTaskGeoTransactionIntegrationTest.java)、[真实 MySQL 并发回归](../src/test/java/org/example/takeout/integration/DeliveryTaskGeoReconciliationIntegrationTest.java)、[真实 Redis 成员与单任务修复](../src/test/java/org/example/takeout/integration/DeliveryTaskGeoRedisReconciliationIntegrationTest.java)。运行选择及外部依赖要求见[测试说明](project-guide.md#65-运行测试)。

@@ -56,6 +56,7 @@ class OrderPaymentNotificationTransactionTest {
                     id BIGINT PRIMARY KEY,
                     user_id BIGINT NOT NULL,
                     merchant_id BIGINT NOT NULL,
+                    delivery_fee DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
                     status INT NOT NULL,
                     cancel_source INT,
                     create_time TIMESTAMP NOT NULL,
@@ -210,7 +211,7 @@ class OrderPaymentNotificationTransactionTest {
         @Bean
         OrderService orderService(OrderMapper orderMapper, MerchantSseService merchantSseService) {
             return new OrderService(null, null, null, orderMapper, null, null, null, null,
-                    merchantSseService);
+                    merchantSseService, new org.example.takeout.Order.Domain.DeliveryFeeCalculator(), null);
         }
     }
 }

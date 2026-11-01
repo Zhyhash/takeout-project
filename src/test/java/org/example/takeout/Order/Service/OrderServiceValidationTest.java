@@ -9,6 +9,7 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Order.Assembler.OrderVOAssembler;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
+import org.example.takeout.Order.Domain.DeliveryFeeCalculator;
 import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
@@ -55,6 +56,8 @@ class OrderServiceValidationTest {
     private CartCheckoutService CartCheckoutService;
     @Spy
     private OrderRequestFingerprint orderRequestFingerprint = new OrderRequestFingerprint();
+    @Spy
+    private DeliveryFeeCalculator deliveryFeeCalculator = new DeliveryFeeCalculator();
     @InjectMocks
     private OrderService orderService;
 
@@ -91,6 +94,7 @@ class OrderServiceValidationTest {
         UserContextHolder.setUserId(21L);
         CreateOrderDTO dto = new CreateOrderDTO();
         dto.setRequestId("request-with-checkout-merchant");
+        setNearbyReceiver(dto);
         CartItem item = cartItem(1L);
         item.setProductId(101L);
         item.setQuantity(2);
@@ -104,6 +108,8 @@ class OrderServiceValidationTest {
         result.setProductMap(Map.of(101L, product));
         result.setMerchantId(301L);
         result.setMerchantName("Test merchant");
+        result.setLongitude(0.0);
+        result.setLatitude(0.0);
         Order order = new Order();
         order.setId(501L);
         CreateOrderVO view = new CreateOrderVO();
@@ -122,6 +128,7 @@ class OrderServiceValidationTest {
         assertSame(result.getProductMap(), context.getValue().getProductMap());
         assertEquals(List.of(item), context.getValue().getAvailableItems());
         assertEquals(new BigDecimal("25.00"), context.getValue().getTotalAmount());
+        assertEquals(new BigDecimal("5.00"), context.getValue().getDeliveryFee());
     }
 
     @Test
@@ -129,7 +136,8 @@ class OrderServiceValidationTest {
         UserContextHolder.setUserId(21L);
         CreateOrderDTO dto = new CreateOrderDTO();
         dto.setRequestId("request-at-maximum-amount");
-        CartAvailableResult checkout = checkoutWithPriceAndQuantity("500000.00", 2);
+        setNearbyReceiver(dto);
+        CartAvailableResult checkout = checkoutWithPriceAndQuantity("499997.50", 2);
         Order order = new Order();
         CreateOrderVO expected = new CreateOrderVO();
         when(CartCheckoutService.prepareCheckout(21L)).thenReturn(checkout);
@@ -140,7 +148,8 @@ class OrderServiceValidationTest {
 
         ArgumentCaptor<OrderDataContext> context = ArgumentCaptor.forClass(OrderDataContext.class);
         verify(orderTransactionExecutor).executeOrderCreation(context.capture(), eq(dto), eq(21L), anyString());
-        assertEquals(new BigDecimal("1000000.00"), context.getValue().getTotalAmount());
+        assertEquals(new BigDecimal("999995.00"), context.getValue().getTotalAmount());
+        assertEquals(new BigDecimal("5.00"), context.getValue().getDeliveryFee());
         verify(orderMapper).selectOne(any());
     }
 
@@ -154,6 +163,7 @@ class OrderServiceValidationTest {
         UserContextHolder.setUserId(21L);
         CreateOrderDTO dto = new CreateOrderDTO();
         dto.setRequestId("request-over-maximum-amount");
+        setNearbyReceiver(dto);
         when(CartCheckoutService.prepareCheckout(21L)).thenReturn(checkoutWithPriceAndQuantity(price, quantity));
 
         BusinessException failure = assertThrows(BusinessException.class, () -> orderService.createOrder(dto));
@@ -166,10 +176,70 @@ class OrderServiceValidationTest {
     }
 
     @Test
+    void createOrderRejectsWhenDeliveryFeePushesPaymentAboveMaximum() {
+        UserContextHolder.setUserId(21L);
+        CreateOrderDTO dto = new CreateOrderDTO();
+        dto.setRequestId("request-fee-over-maximum-amount");
+        setNearbyReceiver(dto);
+        when(CartCheckoutService.prepareCheckout(21L)).thenReturn(
+                checkoutWithPriceAndQuantity("999996.00", 1));
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderService.createOrder(dto));
+
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, failure.getCodeEnum());
+        assertEquals("订单支付总金额超过最大结算数，请清理购物车", failure.getMessage());
+        verify(orderMapper).selectOne(any());
+        verify(orderMapper, never()).insert(any(Order.class));
+        verifyNoInteractions(orderTransactionExecutor, orderConvertor, orderItemService, orderItemMapper);
+    }
+
+    @Test
+    void createOrderRejectsDeliveryDistanceOverThirtyKilometers() {
+        UserContextHolder.setUserId(21L);
+        CreateOrderDTO dto = new CreateOrderDTO();
+        dto.setRequestId("request-over-delivery-range");
+        dto.setLongitude(new BigDecimal("0.28"));
+        dto.setLatitude(BigDecimal.ZERO);
+        when(CartCheckoutService.prepareCheckout(21L)).thenReturn(
+                checkoutWithPriceAndQuantity("10.00", 1));
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderService.createOrder(dto));
+
+        assertEquals(ResultCodeEnum.BUSINESS_ERROR, failure.getCodeEnum());
+        assertEquals("配送距离超出服务范围（最长30公里），暂时无法下单", failure.getMessage());
+        verify(orderMapper).selectOne(any());
+        verify(orderMapper, never()).insert(any(Order.class));
+        verifyNoInteractions(orderTransactionExecutor, orderConvertor, orderItemService, orderItemMapper);
+    }
+
+    @Test
+    void createOrderRejectsCoordinatesJustOutsideDecimalBoundary() {
+        UserContextHolder.setUserId(21L);
+        CreateOrderDTO dto = new CreateOrderDTO();
+        dto.setRequestId("request-coordinate-outside-boundary");
+        dto.setLongitude(new BigDecimal("180.00000000000000000001"));
+        dto.setLatitude(BigDecimal.ZERO);
+        when(CartCheckoutService.prepareCheckout(21L)).thenReturn(
+                checkoutWithPriceAndQuantity("10.00", 1));
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderService.createOrder(dto));
+
+        assertEquals(ResultCodeEnum.PARAM_ERROR, failure.getCodeEnum());
+        assertEquals("收货地点经纬度超出有效范围", failure.getMessage());
+        verify(orderMapper).selectOne(any());
+        verify(orderMapper, never()).insert(any(Order.class));
+        verifyNoInteractions(orderTransactionExecutor, orderConvertor, orderItemService, orderItemMapper);
+    }
+
+    @Test
     void createOrderRejectsMissingCheckoutMerchantBeforeTransaction() {
         UserContextHolder.setUserId(21L);
         CreateOrderDTO dto = new CreateOrderDTO();
         dto.setRequestId("request-with-missing-merchant");
+        setNearbyReceiver(dto);
         CartAvailableResult result = new CartAvailableResult();
         result.setAllItems(List.of(cartItem(1L)));
         result.setAvailableItems(result.getAllItems());
@@ -252,6 +322,13 @@ class OrderServiceValidationTest {
         checkout.setProductMap(Map.of(101L, product));
         checkout.setMerchantId(301L);
         checkout.setMerchantName("Test merchant");
+        checkout.setLongitude(0.0);
+        checkout.setLatitude(0.0);
         return checkout;
+    }
+
+    private void setNearbyReceiver(CreateOrderDTO dto) {
+        dto.setLongitude(BigDecimal.ZERO);
+        dto.setLatitude(BigDecimal.ZERO);
     }
 }

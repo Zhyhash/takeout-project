@@ -36,3 +36,11 @@ mybatis-plus:
 jwt:
   secret: ${JWT_SECRET}
   expire-days: 7
+
+# Test-only Stripe. Actual key values must be supplied by the runtime environment.
+payment:
+  stripe:
+    enabled: ${STRIPE_ENABLED:false}
+    secret-key: ${STRIPE_SECRET_KEY:}
+    publishable-key: ${STRIPE_PUBLISHABLE_KEY:}
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}

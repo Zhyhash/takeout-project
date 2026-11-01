@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://js.stripe.com https://*.js.stripe.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.stripe.com https://maps.googleapis.com; frame-src https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com; img-src 'self' data: https://*.stripe.com; font-src 'self' https://*.stripe.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>Stripe 测试支付</title>
+  <!-- Stripe redirects can return a client secret in the query string. Clear it before loading external resources. -->
+  <script>
+    window.__stripeRedirectReturned = Boolean(window.location.search);
+    if (window.location.search) {
+      window.history.replaceState(null, document.title, window.location.pathname);
+    }
+  </script>
+  <script src="https://js.stripe.com/v3/"></script>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #172033; background: #f4f6fa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 36px 16px; }
+    main { max-width: 600px; margin: 0 auto; padding: 28px; background: #fff; border: 1px solid #e2e7ef; border-radius: 16px; box-shadow: 0 12px 34px #17203312; }
+    h1 { margin: 0 0 8px; font-size: 1.55rem; }
+    .intro, .hint { color: #526078; }
+    .notice { padding: 12px 14px; border-radius: 10px; background: #eef4ff; color: #274775; }
+    form { display: grid; gap: 14px; }
+    label { display: grid; gap: 6px; font-weight: 600; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid #cbd3df; border-radius: 8px; font: inherit; }
+    input:focus { outline: 3px solid #d4e3ff; border-color: #477bd4; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    button { border: 0; border-radius: 8px; padding: 10px 14px; font: inherit; font-weight: 650; cursor: pointer; color: #fff; background: #315fbd; }
+    button.secondary { color: #26466e; background: #e9eef7; }
+    button:disabled { cursor: wait; opacity: .58; }
+    #payment-element { min-height: 10px; }
+    #pay-button { display: none; }
+    #status { min-height: 1.5em; margin: 14px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #details { margin-top: 16px; padding: 14px; border: 1px solid #e2e7ef; border-radius: 10px; color: #34415a; }
+    #details:empty { display: none; }
+    .warning { margin-top: 22px; border-top: 1px solid #e2e7ef; padding-top: 14px; font-size: .9rem; color: #68758b; }
+    @media (max-width: 480px) { body { padding: 14px 10px; } main { padding: 20px 16px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Stripe 测试支付</h1>
+    <p class="intro">使用 Spring Boot 后端创建 CNY PaymentIntent。请勿输入真实银行卡资料。</p>
+    <p id="return-note" class="notice" hidden>已从 Stripe 返回。请再次输入订单号和用户登录令牌，然后读取本地状态；页面不会自动向 Stripe 查询。</p>
+
+    <form id="identity-form" autocomplete="off">
+      <label for="order-id">订单 ID
+        <input id="order-id" name="orderId" inputmode="numeric" pattern="[0-9]+" required>
+      </label>
+      <label for="bearer-token">用户登录令牌
+        <input id="bearer-token" name="token" type="password" autocomplete="off" spellcheck="false" required>
+      </label>
+      <div class="actions">
+        <button id="create-button" type="submit">读取订单并准备支付</button>
+        <button id="local-state-button" class="secondary" type="button">读取本地状态</button>
+        <button id="sync-button" class="secondary" type="button">Stripe 主动查询（备用）</button>
+      </div>
+    </form>
+
+    <section aria-label="测试银行卡付款">
+      <div id="payment-element"></div>
+      <button id="pay-button" type="button">确认测试付款</button>
+    </section>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="details" aria-label="后端订单和支付状态"></section>
+
+    <p class="warning">本页面只用于测试。订单状态以服务端数据库及签名通过的 Stripe Webhook/服务端查询为准；浏览器返回页面本身不会确认支付成功。</p>
+  </main>
+
+  <script>
+    (() => {
+      const api = {
+        identityForm: document.getElementById('identity-form'),
+        orderId: document.getElementById('order-id'),
+        token: document.getElementById('bearer-token'),
+        createButton: document.getElementById('create-button'),
+        localStateButton: document.getElementById('local-state-button'),
+        syncButton: document.getElementById('sync-button'),
+        payButton: document.getElementById('pay-button'),
+        paymentElement: document.getElementById('payment-element'),
+        status: document.getElementById('status'),
+        details: document.getElementById('details'),
+      };
+      let stripe;
+      let elements;
+      let paymentElement;
+      let activeOrderId = '';
+      let busy = false;
+
+      function setBusy(nextBusy) {
+        busy = nextBusy;
+        api.createButton.disabled = busy;
+        api.localStateButton.disabled = busy;
+        api.syncButton.disabled = busy;
+        api.payButton.disabled = busy;
+      }
+
+      function requestIdentity() {
+        const orderId = api.orderId.value.trim();
+        const token = api.token.value.trim();
+        if (!/^\d+$/.test(orderId)) throw new Error('请输入有效的数字订单 ID。');
+        if (!token) throw new Error('请输入用户登录令牌。');
+        return { orderId, token };
+      }
+
+      async function callApi(orderId, token, method, suffix = '') {
+        const response = await fetch(`/order/${encodeURIComponent(orderId)}/payment${suffix}`, {
+          method,
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+          cache: 'no-store',
+        });
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !body || Number(body.code) !== 200) {
+          throw new Error(body?.message || `后端请求失败（HTTP ${response.status}）。`);
+        }
+        return body.data;
+      }
+
+      function renderState(data) {
+        const orderStatus = Number(data?.orderStatus);
+        const paymentStatus = String(data?.paymentStatus || 'unknown').toLowerCase();
+        const confirmedPaid = paymentStatus === 'succeeded' && orderStatus >= 2 && orderStatus !== 4;
+        api.details.textContent = [
+          `订单 ID：${data?.orderId ?? activeOrderId}`,
+          `订单状态码：${Number.isFinite(orderStatus) ? orderStatus : '未知'}`,
+          `支付状态：${paymentStatus}`,
+          data?.amountMinor != null ? `金额：¥${(Number(data.amountMinor) / 100).toFixed(2)} CNY` : '',
+        ].filter(Boolean).join('\n');
+        if (confirmedPaid) {
+          api.status.textContent = '后端已确认订单支付成功。';
+        } else if (orderStatus === 4) {
+          api.status.textContent = '订单已取消；请按实验流程检查迟到的支付通知。';
+        } else if (paymentStatus === 'succeeded') {
+          api.status.textContent = 'Stripe 支付已成功，本地订单状态尚未更新；请稍后读取本地状态，等待 Webhook 处理结果。';
+        } else if (paymentStatus === 'processing' || paymentStatus === 'requires_action') {
+          api.status.textContent = '支付仍在处理中，请主动查询后端状态。';
+        } else if (paymentStatus === 'requires_payment_method') {
+          api.status.textContent = 'Stripe 需要新的付款方式。请重新准备支付并尝试测试卡。';
+        } else {
+          api.status.textContent = '状态来自后端查询；如尚未付款，可准备或继续测试支付。';
+        }
+      }
+
+      async function syncState({ retrieve = true } = {}) {
+        const { orderId, token } = requestIdentity();
+        activeOrderId = orderId;
+        const data = await callApi(orderId, token, retrieve ? 'POST' : 'GET', retrieve ? '/sync' : '');
+        renderState(data);
+        return data;
+      }
+
+      function clearPaymentElement() {
+        api.payButton.style.display = 'none';
+        if (paymentElement) paymentElement.unmount();
+        paymentElement = undefined;
+        elements = undefined;
+        stripe = undefined;
+        api.paymentElement.replaceChildren();
+      }
+
+      api.identityForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (busy) return;
+        setBusy(true);
+        api.status.textContent = '';
+        clearPaymentElement();
+        try {
+          const { orderId, token } = requestIdentity();
+          activeOrderId = orderId;
+          const data = await callApi(orderId, token, 'POST');
+          renderState(data);
+          if (String(data.currency).toLowerCase() !== 'cny') {
+            throw new Error('后端返回的币种不是 CNY，已停止加载支付表单。');
+          }
+          if (Number(data.orderStatus) !== 0 && Number(data.orderStatus) !== 1) {
+            api.status.textContent += '\n当前订单状态不可支付。';
+            return;
+          }
+          if (!data.clientSecret || !String(data.publishableKey || '').startsWith('pk_test_')) {
+            throw new Error('后端未返回测试环境所需的支付信息。');
+          }
+          if (typeof window.Stripe !== 'function') throw new Error('Stripe.js 未能加载，请检查网络后重试。');
+          stripe = window.Stripe(data.publishableKey);
+          elements = stripe.elements({ clientSecret: data.clientSecret });
+          paymentElement = elements.create('payment');
+          paymentElement.mount(api.paymentElement);
+          api.payButton.style.display = 'inline-block';
+          api.status.textContent += '\n支付表单已准备好。';
+        } catch (error) {
+          api.status.textContent = error?.message || '准备支付失败。';
+        } finally {
+          setBusy(false);
+        }
+      });
+
+      api.localStateButton.addEventListener('click', async () => {
+        if (busy) return;
+        setBusy(true);
+        try {
+          await syncState({ retrieve: false });
+        } catch (error) {
+          api.status.textContent = error?.message || '读取本地支付状态失败。';
+        } finally {
+          setBusy(false);
+        }
+      });
+
+      api.syncButton.addEventListener('click', async () => {
+        if (busy) return;
+        setBusy(true);
+        try {
+          const data = await syncState({ retrieve: true });
+          if (data?.clientSecret && data?.publishableKey?.startsWith('pk_test_')) {
+            api.status.textContent += '\n如需付款，请使用“读取订单并准备支付”重新挂载表单。';
+          }
+        } catch (error) {
+          api.status.textContent = error?.message || '查询支付状态失败。';
+        } finally {
+          setBusy(false);
+        }
+      });
+
+      api.payButton.addEventListener('click', async () => {
+        if (busy || !stripe || !elements || !activeOrderId) return;
+        setBusy(true);
+        try {
+          const result = await stripe.confirmPayment({
+            elements,
+            confirmParams: { return_url: `${window.location.origin}${window.location.pathname}` },
+            redirect: 'if_required',
+          });
+          const paymentError = result.error?.message || '';
+          if (paymentError) {
+            api.status.textContent = paymentError;
+          } else {
+            api.status.textContent = 'Stripe 表单已返回；正在读取本地订单状态。';
+          }
+          const data = await syncState({ retrieve: false });
+          renderState(data);
+          if (Number(data.orderStatus) === 0 || Number(data.orderStatus) === 1) {
+            if (paymentError) {
+              api.status.textContent = `付款未完成：${paymentError}。本地订单仍待支付；请调整付款方式后重试，或读取本地状态检查订单。`;
+            } else {
+              api.status.textContent = '本地订单仍待支付。请稍后点击“读取本地状态”检查 Webhook 处理结果；Stripe 主动查询仅供手动备用。';
+            }
+          }
+        } catch (error) {
+          api.status.textContent = error?.message || '无法确认支付，请主动查询后端状态。';
+        } finally {
+          setBusy(false);
+        }
+      });
+
+      if (window.__stripeRedirectReturned) {
+        document.getElementById('return-note').hidden = false;
+      }
+    })();
+  </script>
+</body>
+</html>

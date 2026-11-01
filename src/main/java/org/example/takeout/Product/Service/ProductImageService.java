@@ -49,6 +49,10 @@ public class ProductImageService {
     }
     private Set<String> findOrphanCandidates(Path uploadDir){
         Set<String> candidates = new HashSet<>();
+
+        if (Files.notExists(uploadDir)) {
+            return candidates;
+        }
         Instant expireTime = Instant.now().minus(Duration.ofHours(24));
 
         try (DirectoryStream<Path> files = Files.newDirectoryStream(uploadDir)) {

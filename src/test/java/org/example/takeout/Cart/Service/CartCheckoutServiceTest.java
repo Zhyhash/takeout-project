@@ -6,6 +6,7 @@ import org.example.takeout.Cart.Mapper.CartMapper;
 import org.example.takeout.CartHeader.Entity.CartHeader;
 import org.example.takeout.CartHeader.Manager.CartHeaderManager;
 import org.example.takeout.Common.Constants.DeleteConstant;
+import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Merchant.Entity.Merchant;
 import org.example.takeout.Merchant.Enums.MerchantStatusEnum;
 import org.example.takeout.Merchant.Service.MerchantQueryService;
@@ -18,6 +19,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -58,6 +60,8 @@ class CartCheckoutServiceTest {
         assertSame(products, result.getProductMap());
         assertEquals(201L, result.getMerchantId());
         assertEquals("Test merchant", result.getMerchantName());
+        assertEquals(121.4737, result.getLongitude());
+        assertEquals(31.2304, result.getLatitude());
         verify(cartMapper).selectList(any());
         verifyNoMoreInteractions(cartMapper);
         verify(merchantQueryService).selectMerchantById(201L);
@@ -80,6 +84,36 @@ class CartCheckoutServiceTest {
 
         assertEquals(List.of(item), result.getAllItems());
         assertTrue(result.getAvailableItems().isEmpty());
+    }
+
+    @Test
+    void checkoutRejectsMerchantWithoutPickupCoordinates() {
+        when(cartMapper.selectList(any())).thenReturn(List.of(cartItem(301L)));
+        when(productQueryService.selectProductsByIds(List.of(301L))).thenReturn(Map.of(
+                301L, product(301L, ProductStatusEnum.ON_SALE.getCode(), DeleteConstant.NOT_DELETED)));
+        when(cartHeaderManager.getByUserId(101L)).thenReturn(header());
+        Merchant merchant = merchant(MerchantStatusEnum.BUSINESS_OPEN.getCode());
+        merchant.setLongitude(null);
+        when(merchantQueryService.selectMerchantById(201L)).thenReturn(merchant);
+
+        assertThrows(BusinessException.class, () -> checkoutService.prepareCheckout(101L));
+    }
+
+    @Test
+    void checkoutRejectsMerchantCoordinatesOutsideGeographicRanges() {
+        when(cartMapper.selectList(any())).thenReturn(List.of(cartItem(301L)));
+        when(productQueryService.selectProductsByIds(List.of(301L))).thenReturn(Map.of(
+                301L, product(301L, ProductStatusEnum.ON_SALE.getCode(), DeleteConstant.NOT_DELETED)));
+        when(cartHeaderManager.getByUserId(101L)).thenReturn(header());
+        Merchant merchant = merchant(MerchantStatusEnum.BUSINESS_OPEN.getCode());
+        when(merchantQueryService.selectMerchantById(201L)).thenReturn(merchant);
+
+        merchant.setLongitude(new BigDecimal("180.0001"));
+        assertThrows(BusinessException.class, () -> checkoutService.prepareCheckout(101L));
+
+        merchant.setLongitude(new BigDecimal("121.4737"));
+        merchant.setLatitude(new BigDecimal("90.0001"));
+        assertThrows(BusinessException.class, () -> checkoutService.prepareCheckout(101L));
     }
 
     @Test
@@ -124,6 +158,8 @@ class CartCheckoutServiceTest {
         merchant.setId(201L);
         merchant.setMerchantName("Test merchant");
         merchant.setStatus(status);
+        merchant.setLongitude(new BigDecimal("121.4737"));
+        merchant.setLatitude(new BigDecimal("31.2304"));
         return merchant;
     }
 }

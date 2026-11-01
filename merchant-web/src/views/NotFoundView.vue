@@ -1,0 +1,1 @@
+<template><section class="surface page-state"><p class="eyebrow">404 / PAGE NOT FOUND</p><h1>这页暂时找不到了</h1><p class="muted">检查地址，或回到入口继续。</p><router-link class="text-link" to="/">返回入口 →</router-link></section></template>

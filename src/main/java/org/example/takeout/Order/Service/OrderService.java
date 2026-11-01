@@ -11,9 +11,11 @@ import org.example.takeout.Cart.Service.CartCheckoutService;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
+import org.example.takeout.Common.Utils.GeoDistanceUtils;
 import org.example.takeout.Merchant.Service.MerchantSseService;
 import org.example.takeout.Order.Assembler.OrderVOAssembler;
 import org.example.takeout.Order.DTO.CreateOrderDTO;
+import org.example.takeout.Order.Domain.DeliveryFeeCalculator;
 import org.example.takeout.Order.Domain.OrderDataContext;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
@@ -27,8 +29,10 @@ import org.example.takeout.Order.VO.CreateOrderVO;
 import org.example.takeout.Order.VO.OrderDetailVO;
 import org.example.takeout.Order.VO.OrderVO;
 import org.example.takeout.Product.Entity.Product;
+import org.example.takeout.Settlement.Service.SettlementService;
 import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -46,6 +50,8 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class OrderService {
+    @Value("${payment.stripe.enabled:false}")
+    private boolean stripePaymentsEnabled;
     private final OrderTransactionExecutor orderTransactionExecutor;
     private final OrderItemService orderItemService;
     private final OrderItemMapper orderItemMapper;
@@ -56,7 +62,8 @@ public class OrderService {
     private final OrderRequestFingerprint orderRequestFingerprint;
     private final BigDecimal MAX_ORDER_AMOUNT= BigDecimal.valueOf(1_000_000);
     private final MerchantSseService merchantSseService;
-
+    private final DeliveryFeeCalculator deliveryFeeCalculator;
+    private final SettlementService settlementService;
 
 
     public CreateOrderVO createOrder(CreateOrderDTO dto) {
@@ -72,7 +79,7 @@ public class OrderService {
 
         OrderDataContext context;
         try {
-            context = prepareOrderDataContext(userId);
+            context = prepareOrderDataContext(userId,dto);
         } catch (BusinessException e) {
             if (!Objects.equals(e.getCode(), ResultCodeEnum.CART_EMPTY.getCode())) {
                 throw e;
@@ -113,7 +120,7 @@ public class OrderService {
             );
         }
     }
-    private OrderDataContext prepareOrderDataContext(Long userId) {
+    private OrderDataContext prepareOrderDataContext(Long userId, CreateOrderDTO dto) {
         // 获取可用购物车（内部已校验商品/商家状态）
         CartAvailableResult result = CartCheckoutService.prepareCheckout(userId);
 
@@ -131,6 +138,17 @@ public class OrderService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "商品总金额超过最大结算数，请清理购物车");
         }
+        validateDeliveryCoordinates(dto);
+        double merchantLongitude = result.getLongitude();
+        double merchantLatitude = result.getLatitude();
+        double distanceKm= GeoDistanceUtils.distanceKm(merchantLongitude, merchantLatitude,
+                dto.getLongitude().doubleValue(), dto.getLatitude().doubleValue());
+        BigDecimal deliveryFee =
+                deliveryFeeCalculator.calculateDeliveryReward(distanceKm);
+        if (totalAmount.add(deliveryFee).compareTo(MAX_ORDER_AMOUNT) > 0) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单支付总金额超过最大结算数，请清理购物车");
+        }
 
         OrderDataContext orderDataContext = new OrderDataContext();
         orderDataContext.setTotalAmount(totalAmount);
@@ -138,7 +156,24 @@ public class OrderService {
         orderDataContext.setMerchantName(result.getMerchantName());
         orderDataContext.setProductMap(productMap);
         orderDataContext.setAvailableItems(availableCartItems);
+        orderDataContext.setDeliveryFee(deliveryFee);
         return orderDataContext;
+    }
+
+    /**
+     * 下单坐标代表固定的收货地点，是配送费的计价输入。
+     * 控制器已有 Bean Validation，这里兜底拦截绕过控制器直接调用服务层的场景。
+     */
+    private void validateDeliveryCoordinates(CreateOrderDTO dto) {
+        BigDecimal longitude = dto.getLongitude();
+        BigDecimal latitude = dto.getLatitude();
+        if (longitude == null || latitude == null) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "请提供收货地点经纬度");
+        }
+        if (longitude.abs().compareTo(BigDecimal.valueOf(180)) > 0
+                || latitude.abs().compareTo(BigDecimal.valueOf(90)) > 0) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "收货地点经纬度超出有效范围");
+        }
     }
 
     private  @NonNull List<CartItem> getCartItems(CartAvailableResult result) {
@@ -272,27 +307,31 @@ public class OrderService {
         orderItemService.increaseStocksOrderedByProductId(orderItems);
     }
 
-    //NOTE:模拟支付
-    private boolean paying(){return true;}
-    //NOTE:单个订单支付
+    /** Legacy local simulation, unavailable whenever Stripe test payments are enabled. */
     @Transactional(rollbackFor = Exception.class)
     public void payOrder(Long orderId){
-        Long userId = UserContextHolder.getUserId();
+        if (stripePaymentsEnabled) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "已启用 Stripe 测试支付，请使用订单支付接口或 /stripe-test.html");
+        }
+        if (!confirmStripePayment(orderId, UserContextHolder.getUserId())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
+        }
+    }
+
+    /** Called only after the payment integration has verified a trusted Stripe result. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean confirmStripePayment(Long orderId, Long userId) {
         int i = orderMapper.updateOrderStatusToPaying(orderId, userId,
                 OrderStatusEnum.WAIT_PAY.getCode(), OrderStatusEnum.PAYING.getCode(),
                 LocalDateTime.now().minusMinutes(30));
         if (i!=1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "订单不存在或当前状态不可支付");
+            return false;
         }
-        if (paying()){
-            int row = orderMapper.updateOrderStatusToPaid(orderId, userId,
+        int row = orderMapper.updateOrderStatusToPaid(orderId, userId,
                     OrderStatusEnum.PAYING.getCode(),
                     OrderStatusEnum.PAID.getCode(),LocalDateTime.now());
-            if (row!=1) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
-            }
-        }else {
+        if (row!=1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
         }
         Long merchantId = orderMapper.selectMerchantIdByOrderId(orderId);
@@ -302,19 +341,12 @@ public class OrderService {
                 merchantSseService.notifyNewOrder( merchantId );
             }
         });
+        return true;
     }
 
     //NOTE:用户点击确认查收
-    @Transactional(rollbackFor = Exception.class)
     public void checkedOrder(Long orderId){
-        Long userId = UserContextHolder.getUserId();
-
-        int i = orderMapper.updateOrderStatusToFinished(orderId,userId,
-                OrderStatusEnum.DELIVERED.getCode(),
-                OrderStatusEnum.FINISHED.getCode(),LocalDateTime.now());
-        if (i != 1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"订单不存在或当前状态不可确认");
-        }
+        settlementService.finishOrder(orderId, UserContextHolder.getUserId());
     }
 
     private List<Order> findMerchantOrdersByStatuses(Long merchantId, List<Integer> statuses) {
