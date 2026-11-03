@@ -10,7 +10,7 @@ import com.stripe.param.PaymentIntentCreateParams;
 
 import java.util.Map;
 
-/** Stripe Java SDK adapter. Only sends CNY amounts supplied by the server-side order service. */
+/** 将服务端支付操作和 Webhook 事件解析适配到 Stripe Java SDK，并只发送服务端提供的人民币金额。 */
 public final class StripePaymentGatewayImpl implements StripePaymentGateway {
     public static final String CURRENCY = "cny";
 
@@ -25,7 +25,7 @@ public final class StripePaymentGatewayImpl implements StripePaymentGateway {
     }
 
     @Override
-    public StripePaymentSnapshot create(long amountMinor, String orderReference, String idempotencyKey) {
+    public StripePaymentSnapshot createPaymentIntent(long amountMinor, String orderReference, String idempotencyKey) {
         if (amountMinor < 1) {
             throw new IllegalArgumentException("Stripe amount must be positive CNY minor units");
         }
@@ -46,28 +46,29 @@ public final class StripePaymentGatewayImpl implements StripePaymentGateway {
                 .putMetadata(ORDER_REFERENCE_METADATA_KEY, orderReference)
                 .build();
         try {
-            PaymentIntent intent = stripeClient.v1().paymentIntents().create(params, requestOptions(idempotencyKey));
-            return snapshot(intent, true);
+            PaymentIntent intent = stripeClient.v1().paymentIntents().create(params,
+                    buildIdempotentRequestOptions(idempotencyKey));
+            return mapPaymentIntentToSnapshot(intent, true);
         } catch (StripeException exception) {
             throw new StripeGatewayException(StripeGatewayException.Kind.REQUEST_FAILED);
         }
     }
 
     @Override
-    public StripePaymentSnapshot retrieve(String paymentIntentId) {
+    public StripePaymentSnapshot retrievePaymentIntent(String paymentIntentId) {
         if (paymentIntentId == null || !paymentIntentId.startsWith("pi_")) {
             throw new IllegalArgumentException("A PaymentIntent ID is required");
         }
         try {
             PaymentIntent intent = stripeClient.v1().paymentIntents().retrieve(paymentIntentId);
-            return snapshot(intent, true);
+            return mapPaymentIntentToSnapshot(intent, true);
         } catch (StripeException exception) {
             throw new StripeGatewayException(StripeGatewayException.Kind.REQUEST_FAILED);
         }
     }
 
     @Override
-    public StripePaymentEvent verifyEvent(String rawBody, String signature) {
+    public StripePaymentEvent verifySignatureAndParsePaymentEvent(String rawBody, String signature) {
         if (rawBody == null || signature == null || signature.isBlank()) {
             throw new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK);
         }
@@ -106,7 +107,7 @@ public final class StripePaymentGatewayImpl implements StripePaymentGateway {
                 throw new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK);
             }
             if (stripeObject instanceof PaymentIntent intent) {
-                payment = snapshot(intent, false, StripeGatewayException.Kind.INVALID_WEBHOOK);
+                payment = mapPaymentIntentToSnapshot(intent, false, StripeGatewayException.Kind.INVALID_WEBHOOK);
             } else {
                 throw new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK);
             }
@@ -114,16 +115,16 @@ public final class StripePaymentGatewayImpl implements StripePaymentGateway {
         return new StripePaymentEvent(event.getId(), event.getType(), eventLivemode, payment);
     }
 
-    private RequestOptions requestOptions(String idempotencyKey) {
+    private RequestOptions buildIdempotentRequestOptions(String idempotencyKey) {
         return RequestOptions.builder().setIdempotencyKey(idempotencyKey).build();
     }
 
-    private StripePaymentSnapshot snapshot(PaymentIntent intent, boolean includeClientSecret) {
-        return snapshot(intent, includeClientSecret, StripeGatewayException.Kind.REQUEST_FAILED);
+    private StripePaymentSnapshot mapPaymentIntentToSnapshot(PaymentIntent intent, boolean includeClientSecret) {
+        return mapPaymentIntentToSnapshot(intent, includeClientSecret, StripeGatewayException.Kind.REQUEST_FAILED);
     }
 
-    private StripePaymentSnapshot snapshot(PaymentIntent intent, boolean includeClientSecret,
-                                           StripeGatewayException.Kind missingLivemodeKind) {
+    private StripePaymentSnapshot mapPaymentIntentToSnapshot(PaymentIntent intent, boolean includeClientSecret,
+                                                              StripeGatewayException.Kind missingLivemodeKind) {
         if (intent == null || intent.getLivemode() == null) {
             throw new StripeGatewayException(missingLivemodeKind);
         }

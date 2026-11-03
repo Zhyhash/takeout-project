@@ -329,14 +329,23 @@ docker compose down
 
 ### 6.5 运行测试
 
-```powershell
-mvn test
+无需外部 MySQL/Redis 的本地回归分两组运行，第二组保留使用真实 H2 Mapper 和事务的集成测试：
 
-# 真 Redis 相关集成测试（部分套件同时依赖 MySQL）
-mvn test "-Dtest=RedisBasicIntegrationTest,RedisLoginAttemptStoreIntegrationTest,OrderCreateRateLimiterIntegrationTest,RiderLocationServiceIntegrationTest,RedisHashCartServiceExperimentIntegrationTest"
+```powershell
+mvn test "-Dtest=*Test,!*IntegrationTest"
+mvn test "-Dtest=CacheInvalidationTaskServiceIntegrationTest,DeliveryTaskLifecycleIntegrationTest,DeliveryTaskGeoTransactionIntegrationTest,RewardQueryServiceIntegrationTest"
+
+# 商家、用户和原生骑手页面的 JavaScript 测试
+npm --prefix merchant-web test
 ```
 
-默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表、重建购物车总表，并创建/清空缓存失效任务表，只能对专用测试库运行。部分 Redis 测试在依赖不可用时通过 assumption 跳过，`DeliveryTaskGeoRedisReconciliationIntegrationTest` 等套件则直接要求连接成功；不能假设缺少 Redis 时整套测试都会跳过。要覆盖 Redis 行为需提供 `127.0.0.1:6379`。如需连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
+完整后端测试仍使用 `mvn test`，需要准备专用 MySQL 和 Redis。仅运行真实 Redis 的业务回归可使用：
+
+```powershell
+mvn test "-Dtest=RedisLoginAttemptStoreIntegrationTest,OrderCreateRateLimiterIntegrationTest,RiderLocationServiceIntegrationTest,DeliveryTaskGeoServiceIntegrationTest,RedisHashCartServiceExperimentIntegrationTest"
+```
+
+默认测试配置使用 H2，但多组集成测试会直接连接 `localhost:3306/takeout_integration_test`，并使用 `root/root`。其中 `MysqlApiIntegrationTest` 会反复删除并重建九张核心业务表、重建购物车总表，并创建/清空缓存失效任务表，只能对专用测试库运行。登录计数和下单限流测试只加载 Redis 配置，不再依赖 MySQL；商品缓存失效集成测试仍需要 MySQL 和 Redis。部分 Redis 测试在依赖不可用时通过 assumption 跳过，`DeliveryTaskGeoRedisReconciliationIntegrationTest` 等套件则直接要求连接成功；不能假设缺少 Redis 时整套测试都会跳过。要覆盖 Redis 行为需提供 `127.0.0.1:6379`。如需连接 Compose 中的 MySQL，应先确认宿主机 `3306` 未被占用，再设置 `$env:MYSQL_PORT = '3306'` 后启动依赖容器。
 
 商家 SSE、NEW 标记 ACK 和支付提交后通知的定向回归可单独运行：
 
@@ -345,12 +354,6 @@ mvn test "-Dtest=MerchantSseServiceTest,MerchantSseMvcTest,MerchantOrderSeenData
 ```
 
 `MerchantSseServiceTest`、`MerchantSseMvcTest` 分别隔离验证 SSE 服务和 MVC 鉴权/异步上下文清理；`MerchantOrderSeenDatabaseTest` 使用真实 H2 Mapper 与 MVC 验证未查看查询/ACK 闭环，`OrderPaymentNotificationTransactionTest` 使用真实 H2 SQL 和 Spring 事务验证支付提交、回滚的通知时机。这四个套件无需 MySQL 或 Redis，不能替代 `V20261017` 在真实 MySQL 上的迁移、历史数据回填及索引验证。
-
-可按以下类名规则选择单元/API 与 H2 回归，排除 `*IntegrationTest` 套件：
-
-```powershell
-mvn test "-Dtest=*Test,!*IntegrationTest"
-```
 
 GEO 的单元/API 与独立 H2 事务回归可单独选择；`DeliveryTaskGeoTransactionIntegrationTest` 虽以 `IntegrationTest` 结尾，但不依赖外部 MySQL 或 Redis：
 

@@ -13,13 +13,13 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeWebhookController {
-    private final StripePaymentService payments;
+    private final StripePaymentService paymentService;
 
     @PostMapping(value = "/webhooks/stripe", consumes = "application/json")
-    public ResponseEntity<String> receive(@RequestBody String rawBody,
+    public ResponseEntity<String> receiveStripeWebhookEvent(@RequestBody String rawBody,
             @RequestHeader(value = "Stripe-Signature", required = false) String signature) {
         try {
-            payments.handleWebhook(rawBody, signature);
+            paymentService.verifyAndProcessWebhookEvent(rawBody, signature);
             return ResponseEntity.ok("received");
         } catch (StripeGatewayException invalid) {
             return ResponseEntity.status(invalid.getKind() == StripeGatewayException.Kind.INVALID_WEBHOOK ? 400 : 503)

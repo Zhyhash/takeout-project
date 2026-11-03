@@ -56,6 +56,7 @@ public final class TestDataFactory {
         product.setMerchantId(merchantId);
         product.setIsDeleted(DeleteConstant.NOT_DELETED);
         product.setStatus(ProductStatusEnum.ON_SALE.getCode());
+        product.setStockVersion(0);
         product.setVersion(0);
         return product;
     }
@@ -122,6 +123,7 @@ public final class TestDataFactory {
         item.setProductPrice(product.getPrice());
         item.setQuantity(quantity);
         item.setSubtotal(product.getPrice().multiply(BigDecimal.valueOf(quantity)));
+        item.setStockVersion(product.getStockVersion());
         item.setProductPicture(product.getImageUrl());
         return item;
     }

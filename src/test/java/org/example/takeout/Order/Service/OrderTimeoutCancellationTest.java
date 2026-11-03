@@ -35,7 +35,7 @@ class OrderTimeoutCancellationTest {
     private OrderService orderService;
 
     @Test
-    void shouldCancelExpiredWaitingOrderAndRestoreStock() {
+    void shouldCancelExpiredWaitingOrderAndDelegateStockRestoration() {
         Long orderId = 1L;
         Long productId = 10L;
         LocalDateTime expiredBefore = LocalDateTime.now().minusMinutes(30);
@@ -44,6 +44,7 @@ class OrderTimeoutCancellationTest {
         item.setOrderId(orderId);
         item.setProductId(productId);
         item.setQuantity(2);
+        item.setStockVersion(0);
 
         when(orderMapper.updateTimeoutOrderToCancelled(
                 orderId,

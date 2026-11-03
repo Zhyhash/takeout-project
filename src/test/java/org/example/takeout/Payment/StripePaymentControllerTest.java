@@ -40,7 +40,7 @@ class StripePaymentControllerTest {
 
     @Test
     void createUsesOnlyPathOrderIdAndDisablesCaching() throws Exception {
-        when(payments.create(42L)).thenReturn(view("requires_payment_method", 0, "pi_test_42"));
+        when(payments.createOrReuseOrderPaymentIntent(42L)).thenReturn(view("requires_payment_method", 0, "pi_test_42"));
 
         mockMvc.perform(post("/order/42/payment")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -50,13 +50,13 @@ class StripePaymentControllerTest {
                 .andExpect(jsonPath("$.data.orderId").value(42))
                 .andExpect(jsonPath("$.data.clientSecret").value("pi_test_secret"));
 
-        verify(payments).create(42L);
+        verify(payments).createOrReuseOrderPaymentIntent(42L);
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void getReturnsServerPaymentStatusWithoutClientSecretOrClientVerdict() throws Exception {
-        when(payments.get(42L)).thenReturn(viewWithoutClientSecret("succeeded", 2, "pi_test_42"));
+        when(payments.getLocalOrderPaymentStatus(42L)).thenReturn(viewWithoutClientSecret("succeeded", 2, "pi_test_42"));
 
         mockMvc.perform(get("/order/42/payment"))
                 .andExpect(status().isOk())
@@ -67,13 +67,13 @@ class StripePaymentControllerTest {
                 .andExpect(jsonPath("$.data.success").doesNotExist())
                 .andExpect(jsonPath("$.data.paid").doesNotExist());
 
-        verify(payments).get(42L);
+        verify(payments).getLocalOrderPaymentStatus(42L);
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void syncReturnsServerPaymentStatusWithoutClientSecretOrClientVerdict() throws Exception {
-        when(payments.sync(42L)).thenReturn(viewWithoutClientSecret("processing", 0, "pi_test_42"));
+        when(payments.syncOrderPaymentStatusFromStripe(42L)).thenReturn(viewWithoutClientSecret("processing", 0, "pi_test_42"));
 
         mockMvc.perform(post("/order/42/payment/sync"))
                 .andExpect(status().isOk())
@@ -84,21 +84,21 @@ class StripePaymentControllerTest {
                 .andExpect(jsonPath("$.data.success").doesNotExist())
                 .andExpect(jsonPath("$.data.paid").doesNotExist());
 
-        verify(payments).sync(42L);
+        verify(payments).syncOrderPaymentStatusFromStripe(42L);
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void webhookWithoutSignatureIsRejectedAsBadRequest() throws Exception {
         doThrow(new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK))
-                .when(payments).handleWebhook(anyString(), isNull());
+                .when(payments).verifyAndProcessWebhookEvent(anyString(), isNull());
 
         mockMvc.perform(post("/webhooks/stripe")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isBadRequest());
 
-        verify(payments).handleWebhook("{\"id\":\"evt_test\"}", null);
+        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", null);
         verifyNoMoreInteractions(payments);
     }
 
@@ -112,14 +112,14 @@ class StripePaymentControllerTest {
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
                         .string("received"));
 
-        verify(payments).handleWebhook("{\"id\":\"evt_test\"}", "valid");
+        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "valid");
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void webhookWithInvalidSignatureIsRejectedAsBadRequest() throws Exception {
         doThrow(new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK))
-                .when(payments).handleWebhook(anyString(), eq("invalid"));
+                .when(payments).verifyAndProcessWebhookEvent(anyString(), eq("invalid"));
 
         mockMvc.perform(post("/webhooks/stripe")
                         .header("Stripe-Signature", "invalid")
@@ -127,14 +127,14 @@ class StripePaymentControllerTest {
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isBadRequest());
 
-        verify(payments).handleWebhook("{\"id\":\"evt_test\"}", "invalid");
+        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "invalid");
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void webhookBusinessProcessingFailureIsRetryableServiceUnavailable() throws Exception {
         doThrow(new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "database unavailable"))
-                .when(payments).handleWebhook(anyString(), eq("valid"));
+                .when(payments).verifyAndProcessWebhookEvent(anyString(), eq("valid"));
 
         mockMvc.perform(post("/webhooks/stripe")
                         .header("Stripe-Signature", "valid")
@@ -142,14 +142,14 @@ class StripePaymentControllerTest {
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isServiceUnavailable());
 
-        verify(payments).handleWebhook("{\"id\":\"evt_test\"}", "valid");
+        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "valid");
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void webhookUnhandledRuntimeFailureIsRetryableServiceUnavailable() throws Exception {
         doThrow(new IllegalStateException("processing failed"))
-                .when(payments).handleWebhook(anyString(), eq("valid"));
+                .when(payments).verifyAndProcessWebhookEvent(anyString(), eq("valid"));
 
         mockMvc.perform(post("/webhooks/stripe")
                         .header("Stripe-Signature", "valid")
@@ -157,7 +157,7 @@ class StripePaymentControllerTest {
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isServiceUnavailable());
 
-        verify(payments).handleWebhook("{\"id\":\"evt_test\"}", "valid");
+        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "valid");
         verifyNoMoreInteractions(payments);
     }
 

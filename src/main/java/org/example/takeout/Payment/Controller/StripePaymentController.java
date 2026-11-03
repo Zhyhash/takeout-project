@@ -16,20 +16,23 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/order/{id}/payment")
 @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripePaymentController {
-    private final StripePaymentService payments;
+    private final StripePaymentService paymentService;
 
     @PostMapping
-    public ResponseEntity<?> create(@PathVariable @Positive Long id) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(Result.success(payments.create(id)));
+    public ResponseEntity<?> createOrReuseOrderPaymentIntent(@PathVariable("id") @Positive Long orderId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(Result.success(paymentService.createOrReuseOrderPaymentIntent(orderId)));
     }
 
     @GetMapping
-    public ResponseEntity<?> get(@PathVariable @Positive Long id) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(Result.success(payments.get(id)));
+    public ResponseEntity<?> getLocalOrderPaymentStatus(@PathVariable("id") @Positive Long orderId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(Result.success(paymentService.getLocalOrderPaymentStatus(orderId)));
     }
 
     @PostMapping("/sync")
-    public ResponseEntity<?> sync(@PathVariable @Positive Long id) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(Result.success(payments.sync(id)));
+    public ResponseEntity<?> syncOrderPaymentStatusFromStripe(@PathVariable("id") @Positive Long orderId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(Result.success(paymentService.syncOrderPaymentStatusFromStripe(orderId)));
     }
 }

@@ -22,19 +22,19 @@ class StripePaymentConfigurationTest {
     @Test
     void enabledConfigurationAcceptsOnlyRestrictedTestKeys() {
         StripePaymentProperties properties = validProperties();
-        StripePaymentConfiguration.validateTestConfiguration(properties);
+        StripePaymentConfiguration.validateStripeTestCredentials(properties);
 
         properties.setSecretKey("sk_test_not_restricted");
         StripePaymentProperties unrestrictedProperties = properties;
         assertThatIllegalStateException()
-                .isThrownBy(() -> StripePaymentConfiguration.validateTestConfiguration(unrestrictedProperties))
+                .isThrownBy(() -> StripePaymentConfiguration.validateStripeTestCredentials(unrestrictedProperties))
                 .withMessage("payment.stripe.secret-key must be a restricted Stripe test key (rk_test_)");
 
         properties = validProperties();
         properties.setSecretKey("rk_live_rejected");
         StripePaymentProperties liveKeyProperties = properties;
         assertThatIllegalStateException()
-                .isThrownBy(() -> StripePaymentConfiguration.validateTestConfiguration(liveKeyProperties));
+                .isThrownBy(() -> StripePaymentConfiguration.validateStripeTestCredentials(liveKeyProperties));
     }
 
     @Test
@@ -43,13 +43,13 @@ class StripePaymentConfigurationTest {
         properties.setPublishableKey("pk_live_rejected");
         StripePaymentProperties livePublishableProperties = properties;
         assertThatIllegalStateException()
-                .isThrownBy(() -> StripePaymentConfiguration.validateTestConfiguration(livePublishableProperties));
+                .isThrownBy(() -> StripePaymentConfiguration.validateStripeTestCredentials(livePublishableProperties));
 
         properties = validProperties();
         properties.setWebhookSecret("not-a-signing-secret");
         StripePaymentProperties invalidWebhookKeyProperties = properties;
         assertThatIllegalStateException()
-                .isThrownBy(() -> StripePaymentConfiguration.validateTestConfiguration(invalidWebhookKeyProperties));
+                .isThrownBy(() -> StripePaymentConfiguration.validateStripeTestCredentials(invalidWebhookKeyProperties));
     }
 
     @Test

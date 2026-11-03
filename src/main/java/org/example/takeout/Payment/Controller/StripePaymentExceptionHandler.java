@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice(assignableTypes = StripePaymentController.class)
 public class StripePaymentExceptionHandler {
     @ExceptionHandler(StripeGatewayException.class)
-    public ResponseEntity<?> unavailable(StripeGatewayException failure) {
+    public ResponseEntity<?> handleStripeGatewayFailure(StripeGatewayException failure) {
         return ResponseEntity.status(503).cacheControl(CacheControl.noStore()).body(
                 Result.error(ResultCodeEnum.BUSINESS_ERROR,
                         "Stripe 测试支付请求失败，请检查受限密钥权限或稍后重试"));

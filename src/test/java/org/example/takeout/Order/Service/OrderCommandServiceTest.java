@@ -66,11 +66,12 @@ class OrderCommandServiceTest {
     }
 
     @Test
-    void rejectOrderCancelsPaidOrderAndRestoresStock() {
+    void rejectOrderCancelsPaidOrderAndDelegatesStockRestoration() {
         OrderItem item = new OrderItem();
         item.setOrderId(501L);
         item.setProductId(901L);
         item.setQuantity(2);
+        item.setStockVersion(0);
         when(orderMapper.updateOrderStatusToCancelledByMerchant(
                 501L,
                 101L,

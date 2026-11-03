@@ -251,27 +251,6 @@ class CategoryProductServiceIntegrationTest {
         assertEquals(loserVersionBeforeRestore, productVersion(loserId));
     }
 
-
-
-    //NOTE：测试连续一百次执行商品创建与分类删除的并发场景时不会产生孤儿商品
-    @RepeatedTest(value = 100, name = "第 {currentRepetition} 次 / 共 {totalRepetitions} 次")
-    void testMyMethod(RepetitionInfo repetitionInfo) {
-        int current = repetitionInfo.getCurrentRepetition();
-
-        try {
-            // 直接调用，如果抛出异常，JUnit 会自动标记为失败
-            shouldNotLeaveOrphanProductWhenCreatingProductAndDeletingCategoryConcurrently();
-
-            // 每10次打印进度（可选）
-            if (current % 10 == 0) {
-                System.out.println("✅ 已完成: " + current + "/100");
-            }
-        } catch (Exception e) {
-            // 如果抛异常，用 Assertions.fail() 明确标记失败并附带详细信息
-            Assertions.fail("第 " + current + " 次执行失败！异常信息: " + e.getMessage(), e);
-        }
-    }
-
     //NOTE：测试商品创建与所属分类删除并发执行时不会产生孤儿商品
     @Test
     void shouldNotLeaveOrphanProductWhenCreatingProductAndDeletingCategoryConcurrently()

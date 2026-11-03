@@ -31,6 +31,8 @@ npm run build
 npm run preview
 ```
 
+`npm test` 同时运行本目录的前端测试和仓库原生骑手页面的测试（`../src/test/js/`）。
+
 本机 esbuild 若遇到 Windows 临时目录权限问题：
 
 ```powershell

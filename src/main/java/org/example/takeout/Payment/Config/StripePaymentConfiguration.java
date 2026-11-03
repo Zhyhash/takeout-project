@@ -14,7 +14,7 @@ public class StripePaymentConfiguration {
     @Bean
     @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
     public StripePaymentGateway stripePaymentGateway(StripePaymentProperties properties) {
-        validateTestConfiguration(properties);
+        validateStripeTestCredentials(properties);
         StripeClient client = StripeClient.builder()
                 .setApiKey(properties.getSecretKey())
                 .setConnectTimeout(5_000)
@@ -24,7 +24,7 @@ public class StripePaymentConfiguration {
         return new StripePaymentGatewayImpl(client, properties.getWebhookSecret());
     }
 
-    static void validateTestConfiguration(StripePaymentProperties properties) {
+    static void validateStripeTestCredentials(StripePaymentProperties properties) {
         if (properties.getSecretKey() == null || !properties.getSecretKey().startsWith("rk_test_")) {
             throw new IllegalStateException("payment.stripe.secret-key must be a restricted Stripe test key (rk_test_)");
         }

@@ -115,6 +115,16 @@ mvn -o '-Dtest=Stripe*Test,OrderPaymentNotificationTransactionTest,OrderTimeoutT
 
 本次环境中动态挂载测试代理曾在 Spring 上下文启动阶段等待，验证时显式指定了缓存中 Mockito 5.20.0 JAR 的 `-javaagent`，未修改项目的全局 Maven 测试配置。编译、相关改动的 `git diff --check` 及测试页语法检查均通过；没有执行 Git commit。
 
+## 代码阅读顺序
+
+1. **创建或复用支付请求**：从 `StripePaymentService.createOrReuseOrderPaymentIntent` 进入；`getOrCreateOrderPaymentRecord` 在短事务中校验订单并保存稳定幂等键。事务结束后，服务按需调用 `createPaymentIntent` 或 `retrievePaymentIntent`，再用 `bindPaymentIntentToOrder` 或 `syncPaymentStatusFromSnapshot` 保存结果。
+2. **主动查询与本地只读**：`syncOrderPaymentStatusFromStripe` 在事务外查询 Stripe，再由 `syncPaymentStatusFromSnapshot` 在短事务内更新状态并在成功时确认订单。`getLocalOrderPaymentStatus` 只读取本地状态，不请求 Stripe。
+3. **Webhook**：`verifyAndProcessWebhookEvent` 验签并筛选受支持的测试事件；`recordWebhookPaymentEvent` 在短事务内去重、保存支付状态，并在成功时确认订单。主动查询和 Webhook 都复用 `updatePaymentStatusAndConfirmOrderIfSucceeded`。
+
+`OrderStripePaymentMapper` 只操作 `order_stripe_payments`，`StripePaymentEventMapper` 只操作 `stripe_payment_events`。Stripe 网络请求在数据库事务外；查询或 Webhook 结果由本地短事务统一保存，支付成功时也在该事务内确认订单。
+
+2026-11-03 重构验证：109 项通过，0 失败、0 跳过。
+
 ## Stripe 相关文件
 
 - `pom.xml`：Stripe Java SDK；`src/main/resources/application.yaml`：环境变量占位配置。

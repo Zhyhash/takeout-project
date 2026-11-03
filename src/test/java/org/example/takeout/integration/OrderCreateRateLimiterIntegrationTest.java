@@ -2,28 +2,26 @@ package org.example.takeout.integration;
 
 import org.example.takeout.Order.Limited.OrderCreateRateLimiter;
 import org.example.takeout.testsupport.RedisTestSupport;
+import org.example.takeout.testsupport.RedisOnlyTestConfiguration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
 import java.util.concurrent.ThreadLocalRandom;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@SpringBootTest
-@ActiveProfiles("redis-test")
+@SpringJUnitConfig(
+        classes = RedisOnlyTestConfiguration.class,
+        initializers = ConfigDataApplicationContextInitializer.class)
 class OrderCreateRateLimiterIntegrationTest {
 
     @Autowired
     private OrderCreateRateLimiter rateLimiter;
-
-    @Autowired
-    private RedisTemplate<Object, Object> redisTemplate;
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
@@ -51,8 +49,6 @@ class OrderCreateRateLimiterIntegrationTest {
             assertTrue(rateLimiter.tryAcquire(secondUserId),
                     "a different user should have a separate limit");
         } finally {
-            redisTemplate.delete(firstKey);
-            redisTemplate.delete(secondKey);
             stringRedisTemplate.delete(firstKey);
             stringRedisTemplate.delete(secondKey);
         }

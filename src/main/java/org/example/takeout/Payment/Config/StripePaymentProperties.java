@@ -16,5 +16,4 @@ public class StripePaymentProperties {
     private String secretKey;
     private String publishableKey;
     private String webhookSecret;
-
 }

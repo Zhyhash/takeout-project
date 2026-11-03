@@ -1,10 +1,10 @@
 package org.example.takeout.Payment.Gateway;
 
-/** Small, testable boundary around Stripe SDK calls. */
+/** 将 Stripe 支付意图操作与 Webhook 签名验证、事件解析封装为可替换的业务边界。 */
 public interface StripePaymentGateway {
-    StripePaymentSnapshot create(long amountMinor, String orderReference, String idempotencyKey);
+    StripePaymentSnapshot createPaymentIntent(long amountMinor, String orderReference, String idempotencyKey);
 
-    StripePaymentSnapshot retrieve(String paymentIntentId);
+    StripePaymentSnapshot retrievePaymentIntent(String paymentIntentId);
 
-    StripePaymentEvent verifyEvent(String rawBody, String signature);
+    StripePaymentEvent verifySignatureAndParsePaymentEvent(String rawBody, String signature);
 }

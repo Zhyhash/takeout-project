@@ -35,17 +35,17 @@ class StripePaymentGatewayImplTest {
     }
 
     @Test
-    void createRejectsInvalidServerAmountAndMissingIdempotencyBeforeNetworkCall() {
+    void createPaymentIntentRejectsInvalidServerAmountAndMissingIdempotencyBeforeNetworkCall() {
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> gateway.create(0, "ORD123", "attempt-1"));
+                .isThrownBy(() -> gateway.createPaymentIntent(0, "ORD123", "attempt-1"));
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> gateway.create(-1, "ORD123", "attempt-1"));
+                .isThrownBy(() -> gateway.createPaymentIntent(-1, "ORD123", "attempt-1"));
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> gateway.create(100, "ORD123", " "));
+                .isThrownBy(() -> gateway.createPaymentIntent(100, "ORD123", " "));
     }
 
     @Test
-    void createSendsCnyMinorAmountOrderReferenceAndIdempotencyWithoutNetwork() throws Exception {
+    void createPaymentIntentSendsCnyMinorAmountOrderReferenceAndIdempotencyWithoutNetwork() throws Exception {
         PaymentIntent paymentIntent = validPaymentIntent("pi_created", 12345L, "ORD-2026-123");
         paymentIntent.setAmountReceived(0L);
         paymentIntent.setStatus("requires_payment_method");
@@ -58,7 +58,7 @@ class StripePaymentGatewayImplTest {
         StripePaymentGateway responseGateway = new StripePaymentGatewayImpl(
                 responseClient, "whsec_placeholder");
 
-        StripePaymentSnapshot snapshot = responseGateway.create(
+        StripePaymentSnapshot snapshot = responseGateway.createPaymentIntent(
                 12345L, "ORD-2026-123", "order-ORD-2026-123-attempt-1");
 
         ArgumentCaptor<PaymentIntentCreateParams> paramsCaptor =
@@ -88,8 +88,8 @@ class StripePaymentGatewayImplTest {
     }
 
     @Test
-    void malformedWebhookSignatureUsesASafeTypedError() {
-        assertThatThrownBy(() -> gateway.verifyEvent("{}", "invalid-signature"))
+    void verifySignatureAndParsePaymentEventRejectsMalformedSignatureWithSafeTypedError() {
+        assertThatThrownBy(() -> gateway.verifySignatureAndParsePaymentEvent("{}", "invalid-signature"))
                 .isInstanceOf(StripeGatewayException.class)
                 .satisfies(error -> {
                     StripeGatewayException gatewayError = (StripeGatewayException) error;
@@ -99,7 +99,7 @@ class StripePaymentGatewayImplTest {
     }
 
     @Test
-    void signedWebhookWithMissingLivemodeIsRejected() throws Exception {
+    void verifySignatureAndParsePaymentEventRejectsSignedWebhookWithMissingLivemode() throws Exception {
         String rawBody = """
                 {"id":"evt_test","object":"event","created":1700000000,
                  "type":"payment_intent.succeeded",
@@ -107,14 +107,14 @@ class StripePaymentGatewayImplTest {
                 """;
         String signature = signPayload(rawBody, "whsec_placeholder");
 
-        assertThatThrownBy(() -> gateway.verifyEvent(rawBody, signature))
+        assertThatThrownBy(() -> gateway.verifySignatureAndParsePaymentEvent(rawBody, signature))
                 .isInstanceOf(StripeGatewayException.class)
                 .satisfies(error -> assertThat(((StripeGatewayException) error).getKind())
                         .isEqualTo(StripeGatewayException.Kind.INVALID_WEBHOOK));
     }
 
     @Test
-    void signedPaymentIntentWebhookWithMissingApiVersionIsRejected() throws Exception {
+    void verifySignatureAndParsePaymentEventRejectsPaymentIntentWebhookWithMissingApiVersion() throws Exception {
         String rawBody = """
                 {"id":"evt_test_missing_api_version","object":"event","created":1700000000,
                  "type":"payment_intent.succeeded","livemode":false,
@@ -124,14 +124,14 @@ class StripePaymentGatewayImplTest {
                 """;
         String signature = signPayload(rawBody, "whsec_placeholder");
 
-        assertThatThrownBy(() -> gateway.verifyEvent(rawBody, signature))
+        assertThatThrownBy(() -> gateway.verifySignatureAndParsePaymentEvent(rawBody, signature))
                 .isInstanceOf(StripeGatewayException.class)
                 .satisfies(error -> assertThat(((StripeGatewayException) error).getKind())
                         .isEqualTo(StripeGatewayException.Kind.INVALID_WEBHOOK));
     }
 
     @Test
-    void signedWebhookWithMissingPaymentIntentLivemodeIsRejected() throws Exception {
+    void verifySignatureAndParsePaymentEventRejectsPaymentIntentWithMissingLivemode() throws Exception {
         String rawBody = """
                 {"id":"evt_test_pi_missing_livemode","object":"event","api_version":"%s","created":1700000000,
                  "type":"payment_intent.succeeded","livemode":false,
@@ -141,14 +141,14 @@ class StripePaymentGatewayImplTest {
                 """.formatted(Stripe.API_VERSION);
         String signature = signPayload(rawBody, "whsec_placeholder");
 
-        assertThatThrownBy(() -> gateway.verifyEvent(rawBody, signature))
+        assertThatThrownBy(() -> gateway.verifySignatureAndParsePaymentEvent(rawBody, signature))
                 .isInstanceOf(StripeGatewayException.class)
                 .satisfies(error -> assertThat(((StripeGatewayException) error).getKind())
                         .isEqualTo(StripeGatewayException.Kind.INVALID_WEBHOOK));
     }
 
     @Test
-    void signedPaymentIntentWebhookMapsVerifiedPaymentWithoutClientSecret() throws Exception {
+    void verifySignatureAndParsePaymentEventMapsVerifiedPaymentWithoutClientSecret() throws Exception {
         String rawBody = """
                 {"id":"evt_test_123","object":"event","api_version":"%s",
                  "created":1700000000,"data":{"object":{"id":"pi_test_123",
@@ -159,7 +159,7 @@ class StripePaymentGatewayImplTest {
                 """.formatted(Stripe.API_VERSION);
         String signature = signPayload(rawBody, "whsec_placeholder");
 
-        StripePaymentEvent event = gateway.verifyEvent(rawBody, signature);
+        StripePaymentEvent event = gateway.verifySignatureAndParsePaymentEvent(rawBody, signature);
 
         assertThat(event.id()).isEqualTo("evt_test_123");
         assertThat(event.type()).isEqualTo("payment_intent.succeeded");
@@ -176,14 +176,15 @@ class StripePaymentGatewayImplTest {
             assertThat(payment.toString()).doesNotContain("pi_test_123_secret_do_not_return");
         });
 
-        assertThatThrownBy(() -> gateway.verifyEvent(rawBody.replace("12345", "12346"), signature))
+        assertThatThrownBy(() -> gateway.verifySignatureAndParsePaymentEvent(
+                rawBody.replace("12345", "12346"), signature))
                 .isInstanceOf(StripeGatewayException.class)
                 .satisfies(error -> assertThat(((StripeGatewayException) error).getKind())
                         .isEqualTo(StripeGatewayException.Kind.INVALID_WEBHOOK));
     }
 
     @Test
-    void retrieveRejectsMissingLivemodeAndPreservesTrueFromSdkResponse() throws Exception {
+    void retrievePaymentIntentRejectsMissingLivemodeAndPreservesTrueFromSdkResponse() throws Exception {
         PaymentIntent paymentIntent = new PaymentIntent();
         paymentIntent.setId("pi_test_123");
         paymentIntent.setAmount(1250L);
@@ -199,7 +200,7 @@ class StripePaymentGatewayImplTest {
 
         StripePaymentGateway responseGateway = new StripePaymentGatewayImpl(
                 responseClient, "whsec_placeholder");
-        assertThatThrownBy(() -> responseGateway.retrieve("pi_test_123"))
+        assertThatThrownBy(() -> responseGateway.retrievePaymentIntent("pi_test_123"))
                 .isInstanceOf(StripeGatewayException.class)
                 .satisfies(error -> assertThat(((StripeGatewayException) error).getKind())
                         .isEqualTo(StripeGatewayException.Kind.REQUEST_FAILED));
@@ -213,7 +214,7 @@ class StripePaymentGatewayImplTest {
         StripePaymentGateway liveModeGateway = new StripePaymentGatewayImpl(
                 liveModeClient, "whsec_placeholder");
 
-        assertThat(liveModeGateway.retrieve("pi_test_live_mode").livemode()).isTrue();
+        assertThat(liveModeGateway.retrievePaymentIntent("pi_test_live_mode").livemode()).isTrue();
         verify(liveModeClient.v1().paymentIntents()).retrieve("pi_test_live_mode");
     }
 

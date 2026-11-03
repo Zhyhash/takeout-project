@@ -43,20 +43,20 @@ class StripePaymentServiceTest {
         Order order = payableOrder(new BigDecimal("123.45"));
         OrderStripePayment payment = paymentAttempt(null, null);
         StripePaymentSnapshot snapshot = snapshot("pi_stored_amount", "requires_payment_method", 0L);
-        when(transactions.requireUserOrder(ORDER_ID, USER_ID)).thenReturn(order);
-        when(transactions.prepare(ORDER_ID, USER_ID, 12_345L)).thenReturn(payment);
-        when(gateway.create(12_345L, String.valueOf(ORDER_ID), "attempt-stable")).thenReturn(snapshot);
-        when(transactions.attach(ORDER_ID, snapshot))
+        when(transactions.requireOrderOwnedByUser(ORDER_ID, USER_ID)).thenReturn(order);
+        when(transactions.getOrCreateOrderPaymentRecord(ORDER_ID, USER_ID, 12_345L)).thenReturn(payment);
+        when(gateway.createPaymentIntent(12_345L, String.valueOf(ORDER_ID), "attempt-stable")).thenReturn(snapshot);
+        when(transactions.bindPaymentIntentToOrder(ORDER_ID, snapshot))
                 .thenReturn(paymentAttempt("pi_stored_amount", "requires_payment_method"));
 
-        StripePaymentView result = service.create(ORDER_ID);
+        StripePaymentView result = service.createOrReuseOrderPaymentIntent(ORDER_ID);
 
         assertEquals(12_345L, result.amountMinor());
         assertEquals("cny", result.currency());
         assertEquals("requires_payment_method", result.paymentStatus());
-        verify(transactions).prepare(ORDER_ID, USER_ID, 12_345L);
-        verify(gateway).create(12_345L, String.valueOf(ORDER_ID), "attempt-stable");
-        verify(transactions).attach(ORDER_ID, snapshot);
+        verify(transactions).getOrCreateOrderPaymentRecord(ORDER_ID, USER_ID, 12_345L);
+        verify(gateway).createPaymentIntent(12_345L, String.valueOf(ORDER_ID), "attempt-stable");
+        verify(transactions).bindPaymentIntentToOrder(ORDER_ID, snapshot);
         verifyNoMoreInteractions(gateway);
     }
 
@@ -65,18 +65,18 @@ class StripePaymentServiceTest {
         Order order = payableOrder(new BigDecimal("54.32"));
         OrderStripePayment payment = paymentAttempt("pi_existing", "requires_action");
         StripePaymentSnapshot snapshot = snapshot("pi_existing", "requires_action", 0L, 5_432L);
-        when(transactions.requireUserOrder(ORDER_ID, USER_ID)).thenReturn(order);
-        when(transactions.prepare(ORDER_ID, USER_ID, 5_432L)).thenReturn(payment);
-        when(gateway.retrieve("pi_existing")).thenReturn(snapshot);
-        when(transactions.apply(snapshot, null, null)).thenReturn(payment);
+        when(transactions.requireOrderOwnedByUser(ORDER_ID, USER_ID)).thenReturn(order);
+        when(transactions.getOrCreateOrderPaymentRecord(ORDER_ID, USER_ID, 5_432L)).thenReturn(payment);
+        when(gateway.retrievePaymentIntent("pi_existing")).thenReturn(snapshot);
+        when(transactions.syncPaymentStatusFromSnapshot(snapshot)).thenReturn(payment);
 
-        StripePaymentView result = service.create(ORDER_ID);
+        StripePaymentView result = service.createOrReuseOrderPaymentIntent(ORDER_ID);
 
         assertEquals("pi_existing", result.paymentIntentId());
         assertEquals("requires_action", result.paymentStatus());
-        verify(gateway).retrieve("pi_existing");
-        verify(gateway, never()).create(anyLong(), anyString(), anyString());
-        verify(transactions).apply(snapshot, null, null);
+        verify(gateway).retrievePaymentIntent("pi_existing");
+        verify(gateway, never()).createPaymentIntent(anyLong(), anyString(), anyString());
+        verify(transactions).syncPaymentStatusFromSnapshot(snapshot);
     }
 
     @Test
@@ -84,26 +84,27 @@ class StripePaymentServiceTest {
         Order order = payableOrder(new BigDecimal("88.00"));
         OrderStripePayment payment = paymentAttempt(null, null);
         payment.setAmountMinor(8_800L);
-        when(transactions.requireUserOrder(ORDER_ID, USER_ID)).thenReturn(order);
-        when(transactions.prepare(ORDER_ID, USER_ID, 8_800L)).thenReturn(payment);
-        when(gateway.create(8_800L, String.valueOf(ORDER_ID), "attempt-stable"))
+        when(transactions.requireOrderOwnedByUser(ORDER_ID, USER_ID)).thenReturn(order);
+        when(transactions.getOrCreateOrderPaymentRecord(ORDER_ID, USER_ID, 8_800L)).thenReturn(payment);
+        when(gateway.createPaymentIntent(8_800L, String.valueOf(ORDER_ID), "attempt-stable"))
                 .thenThrow(new IllegalStateException("stripe unavailable"));
 
-        assertThrows(IllegalStateException.class, () -> service.create(ORDER_ID));
+        assertThrows(IllegalStateException.class, () -> service.createOrReuseOrderPaymentIntent(ORDER_ID));
 
         assertEquals(OrderStatusEnum.WAIT_PAY.getCode(), order.getStatus());
-        verify(transactions, never()).apply(any(), any(), any());
-        verify(transactions, never()).attach(anyLong(), any());
+        verify(transactions, never()).syncPaymentStatusFromSnapshot(any());
+        verify(transactions, never()).recordWebhookPaymentEvent(any());
+        verify(transactions, never()).bindPaymentIntentToOrder(anyLong(), any());
     }
 
     @Test
     void invalidFenPrecisionIsRejectedBeforeCreatingAnyStripeObject() {
         Order order = payableOrder(new BigDecimal("12.345"));
-        when(transactions.requireUserOrder(ORDER_ID, USER_ID)).thenReturn(order);
+        when(transactions.requireOrderOwnedByUser(ORDER_ID, USER_ID)).thenReturn(order);
 
-        assertThrows(RuntimeException.class, () -> service.create(ORDER_ID));
+        assertThrows(RuntimeException.class, () -> service.createOrReuseOrderPaymentIntent(ORDER_ID));
 
-        verify(transactions, never()).prepare(anyLong(), anyLong(), anyLong());
+        verify(transactions, never()).getOrCreateOrderPaymentRecord(anyLong(), anyLong(), anyLong());
         verifyNoInteractions(gateway);
     }
 
@@ -112,17 +113,17 @@ class StripePaymentServiceTest {
         Order order = payableOrder(new BigDecimal("123.45"));
         OrderStripePayment payment = paymentAttempt(null, null);
         StripePaymentSnapshot snapshot = snapshot("pi_cancel_race", "requires_payment_method", 0L);
-        when(transactions.requireUserOrder(ORDER_ID, USER_ID)).thenReturn(order);
-        when(transactions.prepare(ORDER_ID, USER_ID, 12_345L)).thenReturn(payment);
-        when(gateway.create(12_345L, String.valueOf(ORDER_ID), "attempt-stable"))
+        when(transactions.requireOrderOwnedByUser(ORDER_ID, USER_ID)).thenReturn(order);
+        when(transactions.getOrCreateOrderPaymentRecord(ORDER_ID, USER_ID, 12_345L)).thenReturn(payment);
+        when(gateway.createPaymentIntent(12_345L, String.valueOf(ORDER_ID), "attempt-stable"))
                 .thenAnswer(invocation -> {
                     order.setStatus(OrderStatusEnum.CANCELLED.getCode());
                     return snapshot;
                 });
-        when(transactions.attach(ORDER_ID, snapshot))
+        when(transactions.bindPaymentIntentToOrder(ORDER_ID, snapshot))
                 .thenReturn(paymentAttempt("pi_cancel_race", "requires_payment_method"));
 
-        StripePaymentView result = service.create(ORDER_ID);
+        StripePaymentView result = service.createOrReuseOrderPaymentIntent(ORDER_ID);
 
         assertEquals(OrderStatusEnum.CANCELLED.getCode(), result.orderStatus());
         assertNull(result.clientSecret());
@@ -130,12 +131,12 @@ class StripePaymentServiceTest {
 
     @Test
     void webhookRequiresVerifiedTestEventAndIgnoresUnrelatedEventTypes() {
-        when(gateway.verifyEvent("signed-raw-body", "signature"))
+        when(gateway.verifySignatureAndParsePaymentEvent("signed-raw-body", "signature"))
                 .thenReturn(new StripePaymentEvent("evt_test_unrelated", "charge.succeeded", false, null));
 
-        service.handleWebhook("signed-raw-body", "signature");
+        service.verifyAndProcessWebhookEvent("signed-raw-body", "signature");
 
-        verify(gateway).verifyEvent("signed-raw-body", "signature");
+        verify(gateway).verifySignatureAndParsePaymentEvent("signed-raw-body", "signature");
         verifyNoInteractions(transactions);
     }
 

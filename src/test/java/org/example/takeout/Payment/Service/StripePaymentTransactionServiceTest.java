@@ -1,5 +1,6 @@
 package org.example.takeout.Payment.Service;
 
+import org.apache.ibatis.annotations.Mapper;
 import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Config.MybatisPlusConfig;
@@ -12,13 +13,18 @@ import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Payment.Config.StripePaymentProperties;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
 import org.example.takeout.Payment.Gateway.StripePaymentGateway;
+import org.example.takeout.Payment.Gateway.StripePaymentEvent;
 import org.example.takeout.Payment.Gateway.StripePaymentSnapshot;
-import org.example.takeout.Payment.Mapper.StripePaymentMapper;
+import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
+import org.example.takeout.Payment.Mapper.StripePaymentEventMapper;
+import org.example.takeout.Payment.VO.StripePaymentView;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
@@ -54,7 +60,8 @@ class StripePaymentTransactionServiceTest {
     private static final String INTENT_ID = "pi_test_takeout_501";
 
     @Autowired private StripePaymentTransactionService transactions;
-    @Autowired private StripePaymentMapper paymentMapper;
+    @Autowired private OrderStripePaymentMapper orderPaymentMapper;
+    @Autowired private StripePaymentEventMapper paymentEventMapper;
     @Autowired private OrderMapper orderMapper;
     @Autowired private OrderService orderService;
     @Autowired private MerchantSseService merchantSseService;
@@ -144,33 +151,38 @@ class StripePaymentTransactionServiceTest {
     void successfulWebhookUpdatesExistingOrderAndNotifiesMerchantOnlyOnce() {
         StripePaymentSnapshot paid = snapshot("succeeded", 12_345L);
 
-        transactions.apply(paid, "evt_success_1", "payment_intent.succeeded");
-        transactions.apply(paid, "evt_success_1", "payment_intent.succeeded");
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_success_1", "payment_intent.succeeded", false, paid));
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_success_1", "payment_intent.succeeded", false, paid));
         // A distinct Stripe event for the same intent must also be harmless to the order CAS.
-        transactions.apply(paid, "evt_success_2", "payment_intent.succeeded");
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_success_2", "payment_intent.succeeded", false, paid));
 
         Order savedOrder = orderMapper.selectById(ORDER_ID);
         assertEquals(OrderStatusEnum.PAID.getCode(), savedOrder.getStatus());
         assertNotNull(savedOrder.getPayTime());
-        assertEquals("succeeded", paymentMapper.findByOrderId(ORDER_ID).getStripeStatus());
-        assertEquals(2, paymentMapper.eventExists("evt_success_1") + paymentMapper.eventExists("evt_success_2"));
+        assertEquals("succeeded", orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getStripeStatus());
+        assertEquals(2, paymentEventMapper.countEventsByEventId("evt_success_1") + paymentEventMapper.countEventsByEventId("evt_success_2"));
         verify(merchantSseService, times(1)).notifyNewOrder(MERCHANT_ID);
         verifyNoMoreInteractions(merchantSseService);
     }
 
     @Test
     void failedPaymentCanBeRetriedAndAnOlderFailureCannotUndoSuccess() {
-        transactions.apply(snapshot("requires_payment_method", 0L), "evt_failed", "payment_intent.payment_failed");
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_failed", "payment_intent.payment_failed", false, snapshot("requires_payment_method", 0L)));
         assertEquals(OrderStatusEnum.WAIT_PAY.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
         verifyNoInteractions(merchantSseService);
 
         StripePaymentSnapshot paid = snapshot("succeeded", 12_345L);
-        transactions.apply(paid, "evt_success", "payment_intent.succeeded");
-        transactions.apply(snapshot("requires_payment_method", 0L), "evt_delayed_failure",
-                "payment_intent.payment_failed");
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_success", "payment_intent.succeeded", false, paid));
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_delayed_failure", "payment_intent.payment_failed", false, snapshot("requires_payment_method", 0L)));
 
         assertEquals(OrderStatusEnum.PAID.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
-        assertEquals("succeeded", paymentMapper.findByOrderId(ORDER_ID).getStripeStatus());
+        assertEquals("succeeded", orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getStripeStatus());
         verify(merchantSseService).notifyNewOrder(MERCHANT_ID);
         verifyNoMoreInteractions(merchantSseService);
     }
@@ -180,11 +192,12 @@ class StripePaymentTransactionServiceTest {
         jdbc.update("UPDATE orders SET status = ?, cancel_source = 1 WHERE id = ?",
                 OrderStatusEnum.CANCELLED.getCode(), ORDER_ID);
 
-        transactions.apply(snapshot("succeeded", 12_345L), "evt_late_success", "payment_intent.succeeded");
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_late_success", "payment_intent.succeeded", false, snapshot("succeeded", 12_345L)));
 
         assertEquals(OrderStatusEnum.CANCELLED.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
         assertNull(orderMapper.selectById(ORDER_ID).getPayTime());
-        assertEquals("succeeded", paymentMapper.findByOrderId(ORDER_ID).getStripeStatus());
+        assertEquals("succeeded", orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getStripeStatus());
         verifyNoInteractions(merchantSseService);
     }
 
@@ -193,12 +206,13 @@ class StripePaymentTransactionServiceTest {
         jdbc.update("UPDATE orders SET create_time = ? WHERE id = ?",
                 LocalDateTime.now().minusMinutes(31), ORDER_ID);
 
-        transactions.apply(snapshot("succeeded", 12_345L), "evt_expired_success", "payment_intent.succeeded");
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_expired_success", "payment_intent.succeeded", false, snapshot("succeeded", 12_345L)));
 
         assertEquals(OrderStatusEnum.WAIT_PAY.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
         assertNull(orderMapper.selectById(ORDER_ID).getPayTime());
-        assertEquals("succeeded", paymentMapper.findByOrderId(ORDER_ID).getStripeStatus());
-        assertEquals(1, paymentMapper.eventExists("evt_expired_success"));
+        assertEquals("succeeded", orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getStripeStatus());
+        assertEquals(1, paymentEventMapper.countEventsByEventId("evt_expired_success"));
         verifyNoInteractions(merchantSseService);
     }
 
@@ -212,13 +226,14 @@ class StripePaymentTransactionServiceTest {
             Future<?> webhook = executor.submit(() -> {
                 ready.countDown();
                 assertTrue(start.await(5, TimeUnit.SECONDS));
-                transactions.apply(paid, "evt_concurrent_success", "payment_intent.succeeded");
+                transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                        "evt_concurrent_success", "payment_intent.succeeded", false, paid));
                 return null;
             });
             Future<?> activeSync = executor.submit(() -> {
                 ready.countDown();
                 assertTrue(start.await(5, TimeUnit.SECONDS));
-                transactions.apply(paid, null, null);
+                transactions.syncPaymentStatusFromSnapshot(paid);
                 return null;
             });
             assertTrue(ready.await(5, TimeUnit.SECONDS));
@@ -230,7 +245,7 @@ class StripePaymentTransactionServiceTest {
         }
 
         assertEquals(OrderStatusEnum.PAID.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
-        assertEquals(1, paymentMapper.eventExists("evt_concurrent_success"));
+        assertEquals(1, paymentEventMapper.countEventsByEventId("evt_concurrent_success"));
         verify(merchantSseService, times(1)).notifyNewOrder(MERCHANT_ID);
         verifyNoMoreInteractions(merchantSseService);
     }
@@ -245,12 +260,12 @@ class StripePaymentTransactionServiceTest {
             Future<OrderStripePayment> first = executor.submit(() -> {
                 ready.countDown();
                 assertTrue(start.await(5, TimeUnit.SECONDS));
-                return transactions.prepare(ORDER_ID, USER_ID, 12_345L);
+                return transactions.getOrCreateOrderPaymentRecord(ORDER_ID, USER_ID, 12_345L);
             });
             Future<OrderStripePayment> second = executor.submit(() -> {
                 ready.countDown();
                 assertTrue(start.await(5, TimeUnit.SECONDS));
-                return transactions.prepare(ORDER_ID, USER_ID, 12_345L);
+                return transactions.getOrCreateOrderPaymentRecord(ORDER_ID, USER_ID, 12_345L);
             });
             assertTrue(ready.await(5, TimeUnit.SECONDS));
             start.countDown();
@@ -262,7 +277,7 @@ class StripePaymentTransactionServiceTest {
         }
 
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM order_stripe_payments", Integer.class));
-        assertEquals(12_345L, paymentMapper.findByOrderId(ORDER_ID).getAmountMinor());
+        assertEquals(12_345L, orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getAmountMinor());
     }
 
     @Test
@@ -278,7 +293,7 @@ class StripePaymentTransactionServiceTest {
         jdbc.update("DELETE FROM order_stripe_payments WHERE order_id = ?", ORDER_ID);
         AtomicBoolean networkCallInsideTransaction = new AtomicBoolean(true);
         StripePaymentSnapshot created = snapshot("requires_payment_method", 0L);
-        when(gateway.create(eq(12_345L), eq(String.valueOf(ORDER_ID)), anyString()))
+        when(gateway.createPaymentIntent(eq(12_345L), eq(String.valueOf(ORDER_ID)), anyString()))
                 .thenAnswer(invocation -> {
                     networkCallInsideTransaction.set(TransactionSynchronizationManager.isActualTransactionActive());
                     return created;
@@ -286,14 +301,14 @@ class StripePaymentTransactionServiceTest {
 
         new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
             assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
-            payments.create(ORDER_ID);
+            payments.createOrReuseOrderPaymentIntent(ORDER_ID);
             assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
         });
 
         assertFalse(networkCallInsideTransaction.get());
-        assertEquals("pi_test_takeout_501", paymentMapper.findByOrderId(ORDER_ID).getPaymentIntentId());
+        assertEquals("pi_test_takeout_501", orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getPaymentIntentId());
         assertEquals(OrderStatusEnum.WAIT_PAY.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
-        verify(gateway).create(eq(12_345L), eq(String.valueOf(ORDER_ID)), anyString());
+        verify(gateway).createPaymentIntent(eq(12_345L), eq(String.valueOf(ORDER_ID)), anyString());
         verifyNoInteractions(merchantSseService);
     }
 
@@ -301,16 +316,18 @@ class StripePaymentTransactionServiceTest {
     void paymentAndEventReceiptRollBackTogetherAndCanBeRetried() {
         assertThrows(IllegalStateException.class, () -> new TransactionTemplate(transactionManager)
                 .executeWithoutResult(status -> {
-                    transactions.apply(snapshot("succeeded", 12_345L), "evt_retry", "payment_intent.succeeded");
+                    transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                            "evt_retry", "payment_intent.succeeded", false, snapshot("succeeded", 12_345L)));
                     throw new IllegalStateException("force rollback");
                 }));
 
         assertEquals(OrderStatusEnum.WAIT_PAY.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
-        assertEquals("requires_payment_method", paymentMapper.findByOrderId(ORDER_ID).getStripeStatus());
-        assertEquals(0, paymentMapper.eventExists("evt_retry"));
+        assertEquals("requires_payment_method", orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getStripeStatus());
+        assertEquals(0, paymentEventMapper.countEventsByEventId("evt_retry"));
         verifyNoInteractions(merchantSseService);
 
-        transactions.apply(snapshot("succeeded", 12_345L), "evt_retry", "payment_intent.succeeded");
+        transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                "evt_retry", "payment_intent.succeeded", false, snapshot("succeeded", 12_345L)));
         assertEquals(OrderStatusEnum.PAID.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
         verify(merchantSseService).notifyNewOrder(MERCHANT_ID);
         verifyNoMoreInteractions(merchantSseService);
@@ -319,21 +336,85 @@ class StripePaymentTransactionServiceTest {
     @Test
     void mismatchedAmountCurrencyOrOrderReferenceIsRejectedBeforePaymentConfirmation() {
         assertThrows(RuntimeException.class, () ->
-                transactions.apply(new StripePaymentSnapshot(INTENT_ID, 12_346L, 12_346L,
-                        "cny", "succeeded", false, String.valueOf(ORDER_ID), null),
-                        "evt_wrong_amount", "payment_intent.succeeded"));
+                transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                        "evt_wrong_amount", "payment_intent.succeeded", false, new StripePaymentSnapshot(INTENT_ID, 12_346L, 12_346L,
+                        "cny", "succeeded", false, String.valueOf(ORDER_ID), null))));
         assertThrows(RuntimeException.class, () ->
-                transactions.apply(new StripePaymentSnapshot(INTENT_ID, 12_345L, 12_345L,
-                        "usd", "succeeded", false, String.valueOf(ORDER_ID), null),
-                        "evt_wrong_currency", "payment_intent.succeeded"));
+                transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                        "evt_wrong_currency", "payment_intent.succeeded", false, new StripePaymentSnapshot(INTENT_ID, 12_345L, 12_345L,
+                        "usd", "succeeded", false, String.valueOf(ORDER_ID), null))));
         assertThrows(RuntimeException.class, () ->
-                transactions.apply(new StripePaymentSnapshot(INTENT_ID, 12_345L, 12_345L,
-                        "cny", "succeeded", false, "other-order", null),
-                        "evt_wrong_order", "payment_intent.succeeded"));
+                transactions.recordWebhookPaymentEvent(new StripePaymentEvent(
+                        "evt_wrong_order", "payment_intent.succeeded", false, new StripePaymentSnapshot(INTENT_ID, 12_345L, 12_345L,
+                        "cny", "succeeded", false, "other-order", null))));
 
         assertEquals(OrderStatusEnum.WAIT_PAY.getCode(), orderMapper.selectById(ORDER_ID).getStatus());
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM stripe_payment_events", Integer.class));
         verifyNoInteractions(merchantSseService);
+    }
+
+    @Test
+    void paymentIntentBindingFailureCanBeRetriedWithTheSameIdempotencyKey() {
+        jdbc.update(
+                "DELETE FROM order_stripe_payments WHERE order_id = ?",
+                ORDER_ID
+        );
+        jdbc.execute("""
+                ALTER TABLE order_stripe_payments
+                ADD CONSTRAINT chk_f01_reject_attach
+                CHECK (
+                    payment_intent_id IS NULL
+                    OR payment_intent_id <> 'pi_f01_attach'
+                )
+                """);
+        StripePaymentSnapshot created =
+                new StripePaymentSnapshot(
+                        "pi_f01_attach",
+                        12_345L,
+                        0L,
+                        "cny",
+                        "requires_payment_method",
+                        false,
+                        String.valueOf(ORDER_ID),
+                        "secret_f01"
+                );
+        when(gateway.createPaymentIntent(
+                eq(12_345L),
+                eq(String.valueOf(ORDER_ID)),
+                anyString()
+        )).thenReturn(created);
+        assertThrows(
+                RuntimeException.class,
+                () -> payments.createOrReuseOrderPaymentIntent(ORDER_ID)
+        );
+
+        OrderStripePayment saved =
+                orderPaymentMapper.selectPaymentByOrderId(ORDER_ID);
+
+        assertNotNull(saved);
+        assertNull(saved.getPaymentIntentId());
+        assertNotNull(saved.getIdempotencyKey());
+
+        verify(gateway, times(1)).createPaymentIntent(
+                eq(12_345L),
+                eq(String.valueOf(ORDER_ID)),
+                anyString()
+        );
+
+        jdbc.execute("ALTER TABLE order_stripe_payments DROP CONSTRAINT chk_f01_reject_attach");
+
+        StripePaymentView recovered = payments.createOrReuseOrderPaymentIntent(ORDER_ID);
+
+        assertEquals(created.id(), recovered.paymentIntentId());
+        assertEquals(created.id(), orderPaymentMapper.selectPaymentByOrderId(ORDER_ID).getPaymentIntentId());
+        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+        verify(gateway, times(2)).createPaymentIntent(
+                eq(12_345L), eq(String.valueOf(ORDER_ID)), keyCaptor.capture());
+        assertEquals(saved.getIdempotencyKey(), keyCaptor.getAllValues().get(0));
+        assertEquals(
+                keyCaptor.getAllValues().get(0),
+                keyCaptor.getAllValues().get(1)
+        );
     }
 
     private static StripePaymentSnapshot snapshot(String status, long amountReceived) {
@@ -345,8 +426,8 @@ class StripePaymentTransactionServiceTest {
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement
     @Import(MybatisPlusConfig.class)
-    @MapperScan(basePackageClasses = {StripePaymentMapper.class, OrderMapper.class},
-            annotationClass = org.apache.ibatis.annotations.Mapper.class)
+    @MapperScan(basePackageClasses = {OrderStripePaymentMapper.class, StripePaymentEventMapper.class, OrderMapper.class},
+            annotationClass = Mapper.class)
     static class TestConfig {
         @Bean
         DataSource dataSource() {
@@ -376,9 +457,9 @@ class StripePaymentTransactionServiceTest {
         }
 
         @Bean
-        StripePaymentTransactionService transactionService(StripePaymentMapper paymentMapper,
-                OrderMapper orderMapper, OrderService orderService) {
-            return new StripePaymentTransactionService(paymentMapper, orderMapper, orderService);
+        StripePaymentTransactionService transactionService(OrderStripePaymentMapper orderPaymentMapper,
+                StripePaymentEventMapper paymentEventMapper, OrderMapper orderMapper, OrderService orderService) {
+            return new StripePaymentTransactionService(orderPaymentMapper, paymentEventMapper, orderMapper, orderService);
         }
 
         @Bean
@@ -393,7 +474,7 @@ class StripePaymentTransactionServiceTest {
 
         @Bean
         StripePaymentService stripePaymentService(StripePaymentTransactionService transactions,
-                StripePaymentGateway gateway, StripePaymentProperties properties) {
+                                                  StripePaymentGateway gateway, StripePaymentProperties properties) {
             return new StripePaymentService(transactions, gateway, properties);
         }
     }
