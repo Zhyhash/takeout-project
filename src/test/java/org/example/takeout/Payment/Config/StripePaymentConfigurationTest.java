@@ -20,6 +20,17 @@ class StripePaymentConfigurationTest {
     }
 
     @Test
+    void recoverySchedulerIsSeparateFromTheDefaultOrderTimeoutScheduler() {
+        contextRunner.withPropertyValues("payment.stripe.enabled=true", "payment.stripe.secret-key=rk_test_placeholder",
+                "payment.stripe.publishable-key=pk_test_placeholder", "payment.stripe.webhook-secret=whsec_placeholder")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean("stripePaymentRecoveryScheduler"))
+                            .isNotSameAs(context.getBean("taskScheduler"));
+                });
+    }
+
+    @Test
     void enabledConfigurationAcceptsOnlyRestrictedTestKeys() {
         StripePaymentProperties properties = validProperties();
         StripePaymentConfiguration.validateStripeTestCredentials(properties);

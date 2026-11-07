@@ -2,9 +2,12 @@ package org.example.takeout.Payment.Gateway;
 
 import com.stripe.StripeClient;
 import com.stripe.Stripe;
+import com.stripe.exception.ApiConnectionException;
+import com.stripe.exception.InvalidRequestException;
 import com.stripe.model.PaymentIntent;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.PaymentIntentCreateParams;
+import com.stripe.param.PaymentIntentCancelParams;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -20,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.verify;
@@ -30,8 +34,71 @@ class StripePaymentGatewayImplTest {
             new StripeClient("rk_test_placeholder"), "whsec_placeholder");
 
     @Test
+    void cancellationUsesTheSpecificIntentAndStableKeyAndNeverReturnsClientSecret() throws Exception {
+        StripeClient client = mock(StripeClient.class, RETURNS_DEEP_STUBS);
+        PaymentIntent canceled = validPaymentIntent("pi_abandoned", 12345L, "501");
+        canceled.setStatus("canceled");
+        canceled.setAmountReceived(0L);
+        canceled.setClientSecret("do_not_return");
+        when(client.v1().paymentIntents().cancel(org.mockito.ArgumentMatchers.eq("pi_abandoned"),
+                any(PaymentIntentCancelParams.class), any(RequestOptions.class))).thenReturn(canceled);
+        StripePaymentSnapshot result = new StripePaymentGatewayImpl(client, "whsec_placeholder")
+                .cancelPaymentIntent("pi_abandoned", "cancel-original-key");
+        ArgumentCaptor<RequestOptions> options = ArgumentCaptor.forClass(RequestOptions.class);
+        verify(client.v1().paymentIntents()).cancel(org.mockito.ArgumentMatchers.eq("pi_abandoned"),
+                any(PaymentIntentCancelParams.class), options.capture());
+        assertThat(options.getValue().getIdempotencyKey()).isEqualTo("cancel-original-key");
+        assertThat(result.status()).isEqualTo("canceled");
+        assertThat(result.clientSecret()).isNull();
+    }
+
+    @Test
     void paymentAmountsUseCny() {
         assertThat(StripePaymentGatewayImpl.CURRENCY).isEqualTo("cny");
+    }
+
+    @Test
+    void cancellationRejectedByStripeIsADeterminedFailureThatKeepsTheSdkCause() throws Exception {
+        StripeClient client = mock(StripeClient.class, RETURNS_DEEP_STUBS);
+        InvalidRequestException rejected = new InvalidRequestException(
+                "This PaymentIntent's status does not allow cancellation.",
+                null, null, "payment_intent_unexpected_state", 400, null);
+        when(client.v1().paymentIntents().cancel(anyString(), any(PaymentIntentCancelParams.class),
+                any(RequestOptions.class))).thenThrow(rejected);
+
+        StripePaymentGatewayImpl refusingGateway = new StripePaymentGatewayImpl(client, "whsec_placeholder");
+
+        assertThatThrownBy(() -> refusingGateway.cancelPaymentIntent("pi_already_paid", "cancel-refused"))
+                .isInstanceOf(StripeGatewayException.class)
+                .satisfies(error -> {
+                    StripeGatewayException gatewayError = (StripeGatewayException) error;
+                    assertThat(gatewayError.getKind()).isEqualTo(StripeGatewayException.Kind.REQUEST_REJECTED);
+                    assertThat(gatewayError.getStripeErrorCode()).isEqualTo("payment_intent_unexpected_state");
+                    assertThat(gatewayError.getHttpStatus()).isEqualTo(400);
+                    assertThat(gatewayError.isOutcomeUnknown()).isFalse();
+                    // 原始 SDK 异常必须保留，否则堆栈到网关这一层就断了。
+                    assertThat(gatewayError.getCause()).isSameAs(rejected);
+                });
+    }
+
+    @Test
+    void cancellationTimeoutIsAnUnknownOutcomeThatKeepsTheSdkCause() throws Exception {
+        StripeClient client = mock(StripeClient.class, RETURNS_DEEP_STUBS);
+        ApiConnectionException timeout = new ApiConnectionException("Read timed out");
+        when(client.v1().paymentIntents().cancel(anyString(), any(PaymentIntentCancelParams.class),
+                any(RequestOptions.class))).thenThrow(timeout);
+
+        StripePaymentGatewayImpl timingOutGateway = new StripePaymentGatewayImpl(client, "whsec_placeholder");
+
+        assertThatThrownBy(() -> timingOutGateway.cancelPaymentIntent("pi_pending", "cancel-timeout"))
+                .isInstanceOf(StripeGatewayException.class)
+                .satisfies(error -> {
+                    StripeGatewayException gatewayError = (StripeGatewayException) error;
+                    assertThat(gatewayError.getKind()).isEqualTo(StripeGatewayException.Kind.OUTCOME_UNKNOWN);
+                    assertThat(gatewayError.isOutcomeUnknown()).isTrue();
+                    assertThat(gatewayError.getHttpStatus()).isNull();
+                    assertThat(gatewayError.getCause()).isSameAs(timeout);
+                });
     }
 
     @Test
@@ -203,7 +270,7 @@ class StripePaymentGatewayImplTest {
         assertThatThrownBy(() -> responseGateway.retrievePaymentIntent("pi_test_123"))
                 .isInstanceOf(StripeGatewayException.class)
                 .satisfies(error -> assertThat(((StripeGatewayException) error).getKind())
-                        .isEqualTo(StripeGatewayException.Kind.REQUEST_FAILED));
+                        .isEqualTo(StripeGatewayException.Kind.OUTCOME_UNKNOWN));
         verify(responseClient.v1().paymentIntents()).retrieve("pi_test_123");
 
         PaymentIntent liveModeIntent = validPaymentIntent("pi_test_live_mode", 1250L, "123");

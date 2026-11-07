@@ -66,81 +66,50 @@ class OrderCommandServiceTest {
     }
 
     @Test
-    void rejectOrderCancelsPaidOrderAndDelegatesStockRestoration() {
+    void legacySimulatedOrderCanStillBeRejectedAndRestoreInventory() {
         OrderItem item = new OrderItem();
-        item.setOrderId(501L);
-        item.setProductId(901L);
-        item.setQuantity(2);
-        item.setStockVersion(0);
-        when(orderMapper.updateOrderStatusToCancelledByMerchant(
-                501L,
-                101L,
-                OrderStatusEnum.PAID.getCode(),
-                OrderStatusEnum.CANCELLED.getCode(),
-                OrderCancelSourceEnum.MERCHANT.getCode())).thenReturn(1);
+        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 2));
+        when(orderMapper.updateOrderStatusToCancelledByMerchant(501L, 101L, 2, 4, 2)).thenReturn(1);
         when(orderItemService.findOrderItemsByOrderId(501L)).thenReturn(List.of(item));
-
-        assertDoesNotThrow(() -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-
+        orderCommandService.rejectOrderByMerchant(501L, 101L);
         verify(orderItemService).increaseStocksOrderedByProductId(List.of(item));
-        verify(orderMapper, never()).selectById(501L);
+    }
+
+    @Test
+    void stripePaymentCannotReportFakeRefundEvenWhenStripeFeatureIsDisabled() {
+        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 2));
+        when(orderMapper.countStripePaymentsForOrder(501L)).thenReturn(1);
+        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
+        verify(orderMapper, never()).updateOrderStatusToCancelledByMerchant(anyLong(), anyLong(), anyInt(), anyInt(), anyInt());
+        verifyNoInteractions(orderItemService);
     }
 
     @Test
     void repeatedRejectIsIdempotentForSameMerchant() {
-        mockRejectUpdateMiss();
-        Order order = order(101L, OrderStatusEnum.CANCELLED.getCode());
-        order.setCancelSource(OrderCancelSourceEnum.MERCHANT.getCode());
-        when(orderMapper.selectById(501L)).thenReturn(order);
-
+        Order canceled = order(101L, 4);
+        canceled.setCancelSource(2);
+        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(canceled);
         assertDoesNotThrow(() -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-
         verifyNoInteractions(orderItemService);
     }
 
     @Test
-    void rejectOrderRejectsOrderOwnedByAnotherMerchant() {
-        mockRejectUpdateMiss();
-        when(orderMapper.selectById(501L))
-                .thenReturn(order(202L, OrderStatusEnum.PAID.getCode()));
-
-        BusinessException exception = assertThrows(
-                BusinessException.class,
-                () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-
-        assertEquals("订单不存在或无权操作该订单", exception.getMessage());
-        verifyNoInteractions(orderItemService);
-    }
-
-    @Test
-    void rejectOrderRejectsOrderNotInPaidState() {
-        mockRejectUpdateMiss();
-        when(orderMapper.selectById(501L))
-                .thenReturn(order(101L, OrderStatusEnum.PREPARING.getCode()));
-
-        BusinessException exception = assertThrows(
-                BusinessException.class,
-                () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-
-        assertEquals(
-                "订单未处于已支付状态，当前状态码：" + OrderStatusEnum.PREPARING.getCode(),
-                exception.getMessage());
+    void rejectOrderRejectsAnotherMerchantAndPayingOrPreparingOrders() {
+        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(202L, 2));
+        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
+        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 1));
+        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
+        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 5));
+        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
         verifyNoInteractions(orderItemService);
     }
 
     @Test
     void rejectOrderRejectsOrderWithoutDetails() {
-        when(orderMapper.updateOrderStatusToCancelledByMerchant(
-                501L,
-                101L,
-                OrderStatusEnum.PAID.getCode(),
-                OrderStatusEnum.CANCELLED.getCode(),
-                OrderCancelSourceEnum.MERCHANT.getCode())).thenReturn(1);
+        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 2));
+        when(orderMapper.updateOrderStatusToCancelledByMerchant(501L, 101L, 2, 4, 2)).thenReturn(1);
         when(orderItemService.findOrderItemsByOrderId(501L)).thenReturn(List.of());
-
-        assertThrows(BusinessException.class,
-                () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-
+        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
         verify(orderItemService, never()).increaseStocksOrderedByProductId(any());
     }
 
@@ -252,15 +221,6 @@ class OrderCommandServiceTest {
                 101L,
                 OrderStatusEnum.PREPARING.getCode(),
                 OrderStatusEnum.READY.getCode())).thenReturn(0);
-    }
-
-    private void mockRejectUpdateMiss() {
-        when(orderMapper.updateOrderStatusToCancelledByMerchant(
-                501L,
-                101L,
-                OrderStatusEnum.PAID.getCode(),
-                OrderStatusEnum.CANCELLED.getCode(),
-                OrderCancelSourceEnum.MERCHANT.getCode())).thenReturn(0);
     }
 
     private Order order(Long merchantId, Integer status) {

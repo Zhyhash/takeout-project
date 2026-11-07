@@ -13,6 +13,11 @@ import java.util.List;
 
 @Mapper
 public interface OrderMapper extends BaseMapper<Order> {
+    @Select("SELECT * FROM orders WHERE id = #{orderId} FOR UPDATE")
+    Order selectOrderForUpdate(Long orderId);
+
+    @Select("SELECT COUNT(*) FROM order_stripe_payments WHERE order_id = #{orderId}")
+    int countStripePaymentsForOrder(Long orderId);
     @Select("""
         SELECT id
         FROM orders
@@ -73,7 +78,7 @@ public interface OrderMapper extends BaseMapper<Order> {
 
     @Update("""
         UPDATE orders
-        SET status = #{newStatus}
+        SET status = #{newStatus}, payment_started_at = CURRENT_TIMESTAMP
         WHERE id = #{orderId}
         AND user_id = #{userId}
         AND status =#{oldStatus}
@@ -84,6 +89,21 @@ public interface OrderMapper extends BaseMapper<Order> {
                                   @Param("oldStatus") Integer oldStatus,
                                   @Param("newStatus") Integer newStatus,
                                   @Param("expiredBefore") LocalDateTime expiredBefore);
+
+    /** Only used by the existing non-Stripe local simulation. */
+    @Update("""
+        UPDATE orders SET status = 2, pay_time = CURRENT_TIMESTAMP
+        WHERE id = #{orderId} AND user_id = #{userId} AND status = 0
+          AND create_time > #{expiredBefore}
+        """)
+    int completeSimulatedPayment(@Param("orderId") Long orderId, @Param("userId") Long userId,
+                                 @Param("expiredBefore") LocalDateTime expiredBefore);
+
+    @Update("""
+        UPDATE orders SET status = 4, cancel_source = #{cancelSource}
+        WHERE id = #{orderId} AND status = 1
+        """)
+    int cancelStripePaymentOrder(@Param("orderId") Long orderId, @Param("cancelSource") Integer cancelSource);
 
     @Update("""
         UPDATE orders

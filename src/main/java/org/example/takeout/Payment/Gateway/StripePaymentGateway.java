@@ -6,5 +6,7 @@ public interface StripePaymentGateway {
 
     StripePaymentSnapshot retrievePaymentIntent(String paymentIntentId);
 
+    StripePaymentSnapshot cancelPaymentIntent(String paymentIntentId, String idempotencyKey);
+
     StripePaymentEvent verifySignatureAndParsePaymentEvent(String rawBody, String signature);
 }

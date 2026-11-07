@@ -1382,6 +1382,9 @@ class MysqlApiIntegrationTest {
 
         jdbcTemplate.execute("drop table if exists delivery_task");
         jdbcTemplate.execute("drop table if exists rider");
+        // Payment reference rows are children of orders, including tables initialized by other integration fixtures.
+        jdbcTemplate.execute("drop table if exists stripe_payment_events");
+        jdbcTemplate.execute("drop table if exists order_stripe_payments");
         jdbcTemplate.execute("drop table if exists order_item");
         // The ledger references orders; drop it before resetting the order table.
         jdbcTemplate.execute("drop table if exists income_record");

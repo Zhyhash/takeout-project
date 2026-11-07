@@ -82,7 +82,7 @@ $env:STRIPE_WEBHOOK_SECRET = [System.Net.NetworkCredential]::new('', $webhook).P
 
 新增接口：`POST /order/{id}/payment` 创建或复用支付请求，`GET /order/{id}/payment` 只读取本地记录，`POST /order/{id}/payment/sync` 主动查询 Stripe 并处理可信结果。它们都要求用户 JWT 并检查订单归属。`POST /webhooks/stripe` 仅依赖 Stripe 签名验证，不要求用户 JWT。只有创建接口会在订单仍可支付时返回 `clientSecret`，响应禁止缓存。
 
-启用 Stripe 后，现有 `PATCH /order/{id}/pay` 模拟支付入口会拒绝直接支付；本轮使用独立测试页，不扩展 Vue 工程。支付过程仍由原订单状态机约束，`stripe_status` 只是保存 Stripe 原生状态的观察值，没有新增订单支付状态机。
+启用 Stripe 后，现有 `PATCH /order/{id}/pay` 模拟支付入口会拒绝直接支付；本轮使用独立测试页，不扩展 Vue 工程。支付资格以 `WAIT_PAY → PAYING` 独立提交；`stripe_status` 保存 Stripe 原生状态，`reconciliation_state` 单独表示本地协调进度。
 
 数据库变更为 `V20261030_1__stripe_test_payments.sql`：新增 `order_stripe_payments` 及 `stripe_payment_events` 两张表，已同步到 `deploy/migrations` 和 `deploy/schema.sql`。现有库通过 Flyway 执行增量迁移；本次已只读核对运行库的成功迁移记录及真实支付数据。两张表仅存金额、币种、关联 ID、幂等键和事件 ID，不保存 API key、Webhook secret、`client_secret` 或完整支付报文。
 
@@ -90,9 +90,13 @@ $env:STRIPE_WEBHOOK_SECRET = [System.Net.NetworkCredential]::new('', $webhook).P
 
 币种固定为 CNY，不做汇率换算。服务端从数据库读取订单 `total_amount`，校验金额最多有两位小数，再精确乘以 100 转成 Stripe 的最小货币单位（例如 `¥12.34` 对应 `1234`）；客户端传来的价格不参与扣款金额计算。Stripe API 金额限制及账户可用性仍须由沙盒实际请求验证；请求失败时订单不会被当作支付成功。
 
-本轮不做自动对账、取消补偿或退款。30 分钟超时和订单取消规则继续有效；取消与 Stripe 成功通知交错时，晚到事件可能造成 Stripe 支付成功而本地订单仍为取消状态。当前实现不会据此复活订单、恢复库存或通知商家；按要求先保留该状态差异，后续再手动实验研究。
+后台恢复任务会扫描未完成支付。领取方式是原子地把 `next_retry_at` 推到未来（占位），同一时刻只有一个调用者能成功；创建超时或绑定失败保留 `PAYING`，失败后无需额外收尾，等下一个退避周期即可重新领取。没有 PaymentIntent ID 时只在本地准备起 23 小时内复用原幂等键（该窗口由 `create_time + 23h` 推导，不单独存列），已有 ID 则 retrieve；退避从 15 秒增加到 30 分钟，最多 96 次，超限或创建结果无法确定时进入 `REVIEW`，需要人工核实，禁止盲目创建第二笔。单次占位时长取「退避间隔」与 60 秒的较大者，保证网关调用期间不会被重复领取。
 
-商家拒单也保留原有模拟退款行为，本轮不会向 Stripe 发起退款。已下发给浏览器的 PaymentIntent 在订单取消后不会被远端自动撤销。临近 30 分钟期限才成功、但确认到达时已过期的付款，也可能只记录 Stripe 成功而不推进本地订单。Webhook 与主动查询共用短事务结算入口；同一事件或不同事件重复报告同一个成功 PaymentIntent，不会重复通知商家。
+订单支付期限仍为创建后 30 分钟。进入 `PAYING` 后，原超时取消任务和用户取消都不能直接取消；恢复任务先查 Stripe，对未完成 PaymentIntent 请求取消，只有可信 `canceled` 且未收款时才事务取消订单并按原库存版本规则归还库存。取消被 Stripe 明确拒绝（最常见是用户恰好在同一刻完成支付）时，改用 `retrieve` 拉取真实状态并按它收场；`processing`、网络超时或其它未知结果继续保留库存。迟到 `succeeded` 仍按 `PAYING → PAID` 确认，不能因本地期限已到丢弃成功结果。
+
+真实退款尚未实现：启用 Stripe 时商家拒单已付订单会被明确拒绝，即使功能关闭，带 Stripe 支付记录的订单也不能走本地拒单模拟。只有未启用 Stripe 且无 Stripe 支付记录的既有本地模拟订单保留原拒单退库行为。Webhook 去重、支付状态和订单结果在同一事务提交，订单确认失败返回非 2xx，事件不会被成功去重。商家 SSE 仅在首次订单确认提交后触发。
+
+新增迁移 `V20261105__stripe_payment_recovery.sql` 建立恢复字段，`V20261106_1__drop_stripe_recovery_lease_columns.sql` 随后移除租约、幂等过期时间与诊断列。恢复参数、人工处理边界见 [支付重构交付报告](stripe-payment-refactor-report.md)。新迁移也保护旧版 `WAIT_PAY` 支付记录；发现没有支付记录的孤立 `PAYING` 会在修改结构前阻断迁移，需要先核实历史记录。
 
 每笔订单仅持久化关联一个 PaymentIntent，网络失败和银行卡拒付重试复用这个对象。如果你在控制台把它取消，当前接口不会自动创建第二个 PaymentIntent。
 

@@ -1,12 +1,12 @@
 # 数据库迁移与脚本镜像
 
-最近复核：2026-10-28。本说明由 `deploy/migrations/README.md` 移至文档包，SQL 文件没有移动；本文命令均在项目根目录执行。本轮仅静态核对，未运行迁移、测试或连接真实 MySQL/Redis。
+最近复核：2026-11-05。SQL 权威来源和部署镜像仍按下述目录管理；本次已运行真实 MySQL 随机独立库迁移测试，新版支付迁移与验证结果见文末及支付重构报告。
 
-`src/main/resources/db/migration` 是 Flyway 迁移的权威来源。应用启动时仅扫描该 classpath 目录，`deploy/migrations` 保存同名、同内容的 SQL 镜像，便于部署审阅。本次静态核对两个目录各有 19 份 SQL，文件名集合相同，逐文件 SHA-256 一致。
+`src/main/resources/db/migration` 是 Flyway 迁移的权威来源。应用启动时仅扫描该 classpath 目录，`deploy/migrations` 保存同名、同内容的 SQL 镜像，便于部署审阅。当前两个目录各有 24 份 SQL；本次新增支付恢复迁移的权威文件与镜像 SHA-256 一致。
 
 部署镜像目录 `deploy/migrations` 同步权威目录的所有 `B`、`V` SQL。`B20261008__initial_schema.sql` 用于已创建的空数据库，在应用启动时累计建表，再执行 `V20261009` 及以后的迁移；已有 Flyway 迁移历史的数据库会忽略该基线，继续升级。[Flyway 官方累计基线说明](https://documentation.red-gate.com/flyway/flyway-concepts/migrations/baseline-migrations)介绍了 `B` 脚本的选择和执行规则。
 
-当前两个目录各有 19 份 SQL，最新版本为 `V20261027`。空库执行累计基线后，再执行 `V20261009` 至 `V20261027` 共 10 份后续迁移；已处于 `20261008` 基线的旧库也升级这 10 个版本。
+当前最新版本为 `V20261106_1`。空库执行累计基线后，再执行 `V20261009` 至 `V20261106_1` 共 16 份后续迁移；已处于 `20261008` 基线的旧库也升级这 16 个版本。
 
 新增变更时，在权威目录创建更高版本的 `V<版本>__<描述>.sql`，再同步到 `deploy/migrations`。同类迁移的版本不得重复；累计基线可以与相同版本的 `V` 脚本并存。超时取消退避使用 `V20261008__timeout_cancel_backoff.sql`。
 
@@ -76,3 +76,19 @@ Get-ChildItem -LiteralPath 'src/main/resources/db/migration' -Filter '*.sql' -Fi
 ```
 
 同步后应核对两个目录的 SQL 文件名集合和内容。`deploy/schema.sql` 负责空库初始化，已有数据库的升级由 Flyway 新版本完成。
+
+## Stripe 支付恢复迁移（2026-11-05）
+
+`V20261105__stripe_payment_recovery.sql` 新增订单 `payment_started_at` 和支付记录的协调状态、幂等截止时间、重试次数、下次重试时间、租约及安全诊断码；增加状态/次数约束及到期扫描索引。旧支付记录对应的 `WAIT_PAY` 转为 `PAYING` 防止被超时取消，成功时间不在迁移中伪造；已有终态一致记录标为协调完成。创建结果未知且原键窗口已过的记录标为 `REVIEW`。迁移在任何结构修改之前检查孤立 `PAYING`，若无本地支付记录则停止，需先核实远端，禁止直接补一个新幂等键。
+
+权威 SQL 与部署镜像同内容，空库快照同步新字段；旧迁移不改校验和。恢复参数、测试与人工核实边界见 [支付重构交付报告](stripe-payment-refactor-report.md)。
+
+## 移除恢复租约与冗余列（2026-11-06）
+
+`V20261106_1__drop_stripe_recovery_lease_columns.sql` 删除 `lease_token`、`lease_until`、`idempotency_expires_at`、`last_error` 四列，保留 `reconciliation_state`、`retry_count`、`next_retry_at`。
+
+- 租约原本只为多实例并发恢复同一笔支付而存在。占位改由 `claimAttempt` 把 `next_retry_at` 推到未来完成：第二个调用者的 `next_retry_at <= now` 条件随即不成立，互斥效果等价，且进程崩溃后只需等一个退避周期即可重新领取。
+- `idempotency_expires_at` 恒等于 `create_time + 23h`，属于可推导数据，改为按 `PaymentPolicy.IDEMPOTENCY_TTL` 现算。
+- `last_error` 只用于运维排查，不参与任何业务判断，改由应用日志的 `reason` 字段承载。
+
+`V20261105` 保持原样不修改校验和；新库会先加列再删列，这是迁移历史的真实痕迹，不影响最终结构。

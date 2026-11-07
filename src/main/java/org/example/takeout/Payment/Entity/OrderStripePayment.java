@@ -29,4 +29,13 @@ public class OrderStripePayment {
 
     /** 本地支付关联或状态的最近更新时间，由写入支付信息的 SQL 维护。 */
     private LocalDateTime updateTime;
+
+    /** Local coordination state, independent of the Stripe status: PENDING, COMPLETE, REVIEW. */
+    private String reconciliationState;
+
+    /** 已进行的恢复尝试次数，用于计算退避间隔并设置有上限，避免无限重试。 */
+    private Integer retryCount;
+
+    /** 下一次允许恢复扫描到这笔记录的时间；同时也充当"本次尝试已占位"的标记。 */
+    private LocalDateTime nextRetryAt;
 }

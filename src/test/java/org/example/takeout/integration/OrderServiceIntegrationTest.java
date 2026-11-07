@@ -129,6 +129,7 @@ class OrderServiceIntegrationTest {
         OrderDeliveryFeeSchemaTestFixture.ensureDeliveryFeeColumn(jdbcTemplate);
         OrderCancelSourceSchemaTestFixture.ensureCancelSourceColumn(jdbcTemplate);
         StockVersionSchemaTestFixture.ensureStockVersionColumns(jdbcTemplate);
+        StripePaymentSchemaTestFixture.ensureTables(jdbcTemplate);
         deleteTestData();
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_USER_ID);
         CartHeaderTestFixture.insertEmpty(jdbcTemplate, TEST_OTHER_USER_ID);

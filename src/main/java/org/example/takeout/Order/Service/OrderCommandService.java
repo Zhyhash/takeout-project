@@ -11,6 +11,7 @@ import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Record.MarkReadyResult;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -24,6 +25,8 @@ import java.util.List;
 public class OrderCommandService {
     private final OrderMapper orderMapper;
     private final OrderItemService orderItemService;
+    @Value("${payment.stripe.enabled:false}")
+    private boolean stripePaymentsEnabled;
 
     // 以下订单接单和备餐状态修改接口提供给商家领域使用。
     public void acceptOrderByMerchant(@NonNull Long orderId, Long merchantId) {
@@ -50,11 +53,25 @@ public class OrderCommandService {
     }
 
     /**
-     * 商家拒单：仅允许取消本商家已支付的订单，成功后模拟退款并归还原订单库存。
-     * 同一商家重复拒单时幂等返回，不再重复退款和归还库存。
+     * 真实支付尚未实现退款，拒绝有 Stripe 支付记录或启用 Stripe 时的已付订单取消。
+     * 未启用 Stripe 的既有本地模拟订单保留拒单及库存归还行为，不宣称发生退款。
      */
     @Transactional(rollbackFor = Exception.class)
     public void rejectOrderByMerchant(@NonNull Long orderId, Long merchantId) {
+        Order current = orderMapper.selectOrderForUpdate(orderId);
+        if (current == null || !merchantId.equals(current.getMerchantId())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或无权操作该订单");
+        }
+        if (OrderStatusEnum.CANCELLED.getCode().equals(current.getStatus())
+                && OrderCancelSourceEnum.MERCHANT.getCode().equals(current.getCancelSource())) return;
+        if (!OrderStatusEnum.PAID.getCode().equals(current.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "订单未处于已支付状态，当前状态码：" + current.getStatus());
+        }
+        if (stripePaymentsEnabled || orderMapper.countStripePaymentsForOrder(orderId) != 0) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "尚未实现 Stripe 退款，不能取消已支付订单，请人工处理退款");
+        }
         int rows = orderMapper.updateOrderStatusToCancelledByMerchant(
                 orderId,
                 merchantId,
@@ -79,15 +96,8 @@ public class OrderCommandService {
                     "订单未处于已支付状态，当前状态码：" + order.getStatus());
         }
 
-        if (!refunding()) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "退款失败，订单取消失败");
-        }
-
         restoreOrderStock(orderId);
     }
-
-    //NOTE:模拟退款，与 OrderService 的模拟支付保持一致
-    private boolean refunding(){return true;}
 
     private void restoreOrderStock(Long orderId) {
         List<OrderItem> orderItems = orderItemService.findOrderItemsByOrderId(orderId);

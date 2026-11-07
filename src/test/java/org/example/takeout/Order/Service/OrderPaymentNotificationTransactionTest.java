@@ -130,7 +130,7 @@ class OrderPaymentNotificationTransactionTest {
     }
 
     @Test
-    void databaseFailureAfterEnteringPayingRollsBackAndSendsNoNotification() {
+    void databaseFailureDuringSimulatedPaymentRollsBackAndSendsNoNotification() {
         jdbcTemplate.execute("ALTER TABLE orders ADD CONSTRAINT reject_paid CHECK (status <> 2)");
 
         assertThrows(DataAccessException.class, () -> orderService.payOrder(ORDER_ID));

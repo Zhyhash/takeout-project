@@ -314,26 +314,63 @@ public class OrderService {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "已启用 Stripe 测试支付，请使用订单支付接口或 /stripe-test.html");
         }
-        if (!confirmStripePayment(orderId, UserContextHolder.getUserId())) {
+        if (orderMapper.completeSimulatedPayment(orderId, UserContextHolder.getUserId(),
+                LocalDateTime.now().minusMinutes(30)) != 1) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
         }
+        notifyMerchantAfterPaymentCommit(orderId);
     }
 
-    /** Called only after the payment integration has verified a trusted Stripe result. */
+    /** Acquires payment eligibility; the caller persists the payment record in the same transaction. */
     @Transactional(rollbackFor = Exception.class)
-    public boolean confirmStripePayment(Long orderId, Long userId) {
-        int i = orderMapper.updateOrderStatusToPaying(orderId, userId,
+    public Order beginStripePayment(Long orderId, Long userId) {
+        int rows = orderMapper.updateOrderStatusToPaying(orderId, userId,
                 OrderStatusEnum.WAIT_PAY.getCode(), OrderStatusEnum.PAYING.getCode(),
                 LocalDateTime.now().minusMinutes(30));
-        if (i!=1) {
-            return false;
+        // A locking read sees the CAS winner under MySQL REPEATABLE READ as well.
+        Order order = orderMapper.selectOrderForUpdate(orderId);
+        if (order == null || !Objects.equals(userId, order.getUserId())
+                || (rows != 1 && !OrderStatusEnum.PAYING.getCode().equals(order.getStatus()))) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在、已过期或当前状态不可支付");
         }
+        return order;
+    }
+
+    /** Called only for a validated succeeded snapshot, never for PaymentIntent creation alone. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean confirmOrderPayment(Long orderId, Long userId) {
         int row = orderMapper.updateOrderStatusToPaid(orderId, userId,
                     OrderStatusEnum.PAYING.getCode(),
                     OrderStatusEnum.PAID.getCode(),LocalDateTime.now());
         if (row!=1) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或当前状态不可支付");
+            Order order = orderMapper.selectOrderForUpdate(orderId);
+            return order != null && Objects.equals(userId, order.getUserId())
+                    && Set.of(2, 3, 5, 6, 7, 8).contains(order.getStatus());
         }
+        notifyMerchantAfterPaymentCommit(orderId);
+        return true;
+    }
+
+    /** Only a trusted Stripe canceled snapshot permits cancelling a PAYING order. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean cancelConfirmedStripePayment(Long orderId) {
+        Order order = orderMapper.selectOrderForUpdate(orderId);
+        if (order == null)
+            return false;
+        if (OrderStatusEnum.CANCELLED.getCode().equals(order.getStatus()))
+            return true;
+
+        int source = order.getCreateTime() != null
+                && !order.getCreateTime().isAfter(LocalDateTime.now().minusMinutes(30))
+                ? OrderCancelSourceEnum.TIMEOUT.getCode() : OrderCancelSourceEnum.PLATFORM.getCode();
+
+        if (orderMapper.cancelStripePaymentOrder(orderId, source) != 1)
+            return false;
+        restoreOrderStock(orderId);
+        return true;
+    }
+
+    private void notifyMerchantAfterPaymentCommit(Long orderId) {
         Long merchantId = orderMapper.selectMerchantIdByOrderId(orderId);
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -341,7 +378,6 @@ public class OrderService {
                 merchantSseService.notifyNewOrder( merchantId );
             }
         });
-        return true;
     }
 
     //NOTE:用户点击确认查收

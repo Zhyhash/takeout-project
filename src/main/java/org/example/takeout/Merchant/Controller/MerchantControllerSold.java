@@ -116,7 +116,7 @@ public class MerchantControllerSold {
     }
 
     /**
-     * 商家拒单：仅允许取消本商家已支付的订单，成功后模拟退款并归还库存。
+     * 商家拒单：本地模拟订单取消并归还库存；真实支付退款尚未支持时拒绝操作。
      */
     @PatchMapping("/orders/{orderId}/reject")
     public Result<?> rejectOrder(@PathVariable @Min(1) Long orderId) {

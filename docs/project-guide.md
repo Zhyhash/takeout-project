@@ -19,7 +19,7 @@ Tokeout 是一个基于 Spring Boot 的外卖后端练习项目。项目围绕�
 ```text
 用户浏览店铺并加入购物车
   -> 创建订单
-  -> 模拟支付
+  -> Stripe 测试支付
   -> 商家接单
   -> 商家确认出餐并创建配送任务
   -> 骑手抢单
@@ -162,8 +162,8 @@ Authorization: Bearer <token>
 ```text
 WAIT_PAY
   ├─ 用户取消 / 30 分钟超时 -> CANCELLED（归还库存，cancel_source=1/3）
-  └─ 模拟支付 -> PAYING -> PAID
-       ├─ 商家拒单 -> CANCELLED（模拟退款 + 归还库存，cancel_source=2）
+  └─ 取得支付资格并提交 -> PAYING -> Stripe 可信 succeeded -> PAID
+       ├─ 仅本地模拟订单商家拒单 -> CANCELLED（归还库存，cancel_source=2）
        └─ 商家接单 -> PREPARING
             -> 商家确认出餐 -> READY + 创建 WAIT_ASSIGN 配送任务
             -> 骑手抢单 -> DELIVERING
@@ -171,7 +171,7 @@ WAIT_PAY
             -> 用户确认收货 -> FINISHED
 ```
 
-商家拒单只允许从 `PAID` 发起，在同一事务内把订单改为 `CANCELLED`、记录 `cancel_source=2`、模拟退款并归还库存；同一商家重复拒单幂等返回，不会重复退款或归还库存。接口为 `PATCH /merchant/orders/{orderId}/reject`，仅允许商家身份。
+真实 Stripe 退款未实现，Stripe 已付订单拒绝商家拒单取消。关闭 Stripe 且无 Stripe 记录的既有本地模拟订单可从 `PAID` 在同一事务改为 `CANCELLED`、记录 `cancel_source=2` 并归还库存；重复拒单不重复归还库存。接口为 `PATCH /merchant/orders/{orderId}/reject`，仅允许商家身份。
 
 商家出餐、骑手抢单和骑手送达会在各自事务内同步推进订单与配送任务。配送任务保存商家、收货人、电话、地址、取货坐标和配送奖励快照，避免履约过程中基础资料变化影响已有任务。出餐提交后按任务状态修复可接任务 GEO，抢单提交后删除索引；Redis 失败不回滚已提交业务事务，由定时对账补偿。
 
@@ -530,7 +530,7 @@ mysql -u root -p --execute="source deploy/demo-data.sql"
 
 ## 11. 已知限制
 
-- `PATCH /order/{id}/pay` 与商家拒单中的退款都是本地模拟（`paying()`/`refunding()` 恒为 `true`），没有接入支付网关、回调验签、真实退款、对账或持久化消息投递。
+- `PATCH /order/{id}/pay` 仅在 Stripe 关闭时保留本地模拟。Stripe 测试支付、回调验签和数据库恢复任务已接入，真实退款、完整账单对账和持久化通知投递尚未实现；商家拒单不能宣称退款成功。详见 [支付重构报告](stripe-payment-refactor-report.md)。
 - 商家 SSE 仅提供当前进程内的一商家一连接提醒；多标签页、多实例通知和事件可靠回放尚未实现，前端补查及展示后 ACK 也需由独立前端接入。
 - Flyway 迁移使用应用启动时的数据库连接；`deploy/schema.sql` 只能初始化空库，不能替代版本迁移。
 - 核心关联大多没有数据库外键，部分关联 ID 的有符号/无符号定义也不完全一致；当前入口如何维护关系、哪些异常仅在数据不变量被破坏后出现，见[当前项目风险与架构复核](当前项目风险与架构复核_2026-10-11.md)。

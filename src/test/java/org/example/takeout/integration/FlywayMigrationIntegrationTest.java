@@ -44,11 +44,62 @@ class FlywayMigrationIntegrationTest {
 
     private static final String BASELINE_VERSION = "20261008";
     private static final String VERSION_14 = "20261014";
-    private static final String LATEST_VERSION = "20261030.2";
+    private static final String LATEST_VERSION = "20261106.1";
     private static final String HISTORICAL_TIME = "2024-01-02 03:04:05";
     private static final List<String> BUSINESS_TABLES = List.of(
             "cache_invalidation_task", "cart", "cart_header", "category", "delivery_task",
             "income_record", "merchant", "order_item", "orders", "product", "rider", "user");
+
+    @Test
+    void stripeRecoveryMigrationProtectsLegacyAttemptsAndKeepsUnknownCreationForReview() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            database.baselinedFlyway("20261030.2").migrate();
+            insertMerchant(database, 10, 7);
+            insertUser(database, 1);
+            database.execute("INSERT INTO orders (id, order_no, user_id, merchant_id, merchant_name, total_amount, "
+                    + "status, receiver_name, receiver_phone, receiver_address, request_id, request_hash) "
+                    + "VALUES (60, 'stripe-recovery', 1, 10, 'merchant', 12.50, 0, "
+                    + "'receiver', '13800000001', 'address', 'stripe-recovery', REPEAT('a', 64))");
+            database.execute("INSERT INTO order_stripe_payments "
+                    + "(order_id, amount_minor, currency, idempotency_key, create_time) "
+                    + "VALUES (60, 1250, 'cny', 'original-recovery-key', NOW() - INTERVAL 2 DAY)");
+            // 这个用例验证 V20261105 本身的行为，因此目标版本固定在该版本，
+            // 不随后续删除租约列的迁移一起前进。
+            Flyway flyway = database.flyway("20261105", false, BASELINE_VERSION);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(database.scalar("SELECT status FROM orders WHERE id = 60")).isEqualTo("1");
+            assertThat(database.scalar("SELECT pay_time FROM orders WHERE id = 60")).isNull();
+            assertThat(database.scalar("SELECT payment_started_at FROM orders WHERE id = 60")).isNotNull();
+            assertThat(database.rows("SELECT reconciliation_state, last_error, idempotency_key, next_retry_at "
+                    + "FROM order_stripe_payments WHERE order_id = 60"))
+                    .containsExactly(row("REVIEW", "CREATE_RESULT_UNKNOWN_IDEMPOTENCY_EXPIRED", "original-recovery-key", null));
+            assertThatThrownBy(() -> database.execute("UPDATE order_stripe_payments SET reconciliation_state = 'succeeded'"))
+                    .isInstanceOf(SQLException.class);
+            assertThatThrownBy(() -> database.execute("UPDATE order_stripe_payments SET retry_count = -1"))
+                    .isInstanceOf(SQLException.class);
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+        }
+    }
+
+    @Test
+    void stripeRecoveryMigrationStopsBeforeChangingOrphanPayingOrders() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            database.baselinedFlyway("20261030.2").migrate();
+            insertMerchant(database, 10, 7);
+            insertUser(database, 1);
+            database.execute("INSERT INTO orders (id, order_no, user_id, merchant_id, merchant_name, total_amount, "
+                    + "status, receiver_name, receiver_phone, receiver_address, request_id, request_hash) "
+                    + "VALUES (60, 'orphan-paying', 1, 10, 'merchant', 12.50, 1, "
+                    + "'receiver', '13800000001', 'address', 'orphan-paying', REPEAT('a', 64))");
+            assertThatThrownBy(() -> database.flyway(LATEST_VERSION, false, BASELINE_VERSION).migrate())
+                    .isInstanceOf(FlywayException.class).hasStackTraceContaining("chk_no_orphan_paying_orders");
+            assertThat(database.scalar("SELECT status FROM orders WHERE id = 60")).isEqualTo("1");
+            assertThat(database.scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() "
+                    + "AND table_name = 'orders' AND column_name = 'payment_started_at'")).isEqualTo("0");
+        }
+    }
 
     @Test
     void stripePaymentMigrationKeepsOrdersAndAddsDurableUniqueReferences() throws Exception {
@@ -108,7 +159,7 @@ class FlywayMigrationIntegrationTest {
             Map<String, List<List<String>>> before = database.businessRows();
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(14);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(16);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SELECT user_id, merchant_id FROM cart_header ORDER BY user_id"))
@@ -213,7 +264,7 @@ class FlywayMigrationIntegrationTest {
                     + "('RIDER', 10, 62, 'DELIVERY_REWARD', 6.75, '2024-03-04 05:06:07')");
 
             Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
 
             // 历史字符串编码按显式值映射转换为整数，而不是按枚举 ordinal。
             assertThat(database.rows("SELECT beneficiary_type, beneficiary_id, order_id, type, amount, "
@@ -254,7 +305,7 @@ class FlywayMigrationIntegrationTest {
                     + "('RIDER', 10, 60, 'DELIVERY_REWARD', 5.00, '" + HISTORICAL_TIME + "')");
 
             Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
 
             assertThat(database.rows("SELECT beneficiary_type, beneficiary_id, order_id, type, amount, "
                     + "DATE_FORMAT(create_time, '%Y-%m-%d %H:%i:%s') FROM income_record "
@@ -317,7 +368,7 @@ class FlywayMigrationIntegrationTest {
                     + HISTORICAL_TIME + "' WHERE id = 52");
             database.execute("UPDATE delivery_task SET update_time = NULL WHERE id = 53");
 
-            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(14);
+            assertThat(database.baselinedFlyway(LATEST_VERSION).migrate().migrationsExecuted).isEqualTo(16);
 
             assertThat(database.rows("SELECT id, delivery_reward, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM delivery_task ORDER BY id"))
@@ -346,7 +397,7 @@ class FlywayMigrationIntegrationTest {
                     + "'13800000001', 'address', 'fee-null-request', REPEAT('b', 64), '" + HISTORICAL_TIME + "')");
 
             Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(5);
 
             assertThat(database.rows("SELECT id, delivery_fee, DATE_FORMAT(update_time, '%Y-%m-%d %H:%i:%s') "
                     + "FROM orders ORDER BY id"))
@@ -435,7 +486,7 @@ class FlywayMigrationIntegrationTest {
             assertThat(database.rows("SHOW TABLES")).isEmpty();
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(15);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(16);
 
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.rows("SHOW TABLES").stream().map(values -> values.get(0)))
@@ -455,7 +506,7 @@ class FlywayMigrationIntegrationTest {
             database.executeDeploymentScript(Path.of("deploy", "schema.sql"));
             Flyway flyway = database.flyway(LATEST_VERSION, true, "1");
 
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(22);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(23);
             assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(LATEST_VERSION);
             assertThat(database.scalar("SELECT COUNT(*) FROM information_schema.tables "
                     + "WHERE table_schema = DATABASE() AND table_name = 'account_transaction'"))
@@ -733,7 +784,11 @@ class FlywayMigrationIntegrationTest {
                     """);
 
             Flyway flyway = database.flyway(LATEST_VERSION, false, BASELINE_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(8);
+            // The historical fixture includes PAYING. Give it its durable record before the recovery preflight.
+            assertThat(database.flyway("20261030.2", false, BASELINE_VERSION).migrate().migrationsExecuted).isEqualTo(8);
+            database.execute("INSERT INTO order_stripe_payments (order_id, amount_minor, currency, idempotency_key) "
+                    + "VALUES (102, 1000, 'cny', 'seen-payment-102')");
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
 
             assertLatestColumnDefinitions(database);
             assertThat(database.rows("SELECT id, merchant_seen, "
@@ -765,7 +820,7 @@ class FlywayMigrationIntegrationTest {
                     """);
 
             Flyway flyway = database.baselinedFlyway(LATEST_VERSION);
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(14);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(16);
 
             assertThat(database.column("orders", "cancel_source", "is_nullable")).isEqualTo("YES");
             assertThat(database.column("orders", "cancel_source", "column_default")).isNull();

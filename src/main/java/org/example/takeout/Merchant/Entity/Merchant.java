@@ -37,7 +37,7 @@ public class Merchant {
 
     private Integer status;
 
-    /** Available internal reward balance; writes use settlement's atomic SQL. */
+    /** 骑手当前可用余额。 */
     @TableField(updateStrategy = FieldStrategy.NEVER)
     private BigDecimal balance;
 

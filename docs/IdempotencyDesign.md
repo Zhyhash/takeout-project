@@ -100,14 +100,14 @@
 | 接口/操作 | 当前保护 | 幂等结论 |
 |---|---|---|
 | `PATCH /order/{id}/cancel` | `WAIT_PAY -> CANCELLED` 条件更新并写 `cancel_source=1`；同一事务按订单明细的库存基准版本尝试回补 | 状态转换和回补副作用只执行一次；用户再次请求时，已取消订单直接返回，不重放首次响应；基准版本已变化的明细跳过回补 |
-| `PATCH /order/{id}/pay` | `WAIT_PAY -> PAYING -> PAID` 条件更新 | 当前模拟支付下结果安全；不代表真实渠道扣款幂等 |
+| `PATCH /order/{id}/pay` | 关闭 Stripe 时 `WAIT_PAY -> PAID` 本地模拟条件更新 | Stripe 启用时拒绝此模拟入口 |
 | `PATCH /order/{id}/confirm` | `DELIVERED -> FINISHED` 条件更新 | 重复或并发确认只有一次成功 |
 | `POST /category` | 服务层提前查重，数据库唯一键 `(merchant_id, category_name)` 最终兜底 | 并发重复分类被数据库阻止；重复调用不重放首次响应 |
 | 商品实体更新 | `product.version` 与 MyBatis-Plus 乐观锁；上下架统一合法性检查与目标状态更新 | Mapper 层过期版本更新失败；上下架和同状态重试已由 API/MySQL 集成测试验证 |
 | 商家资料或营业状态更新 | `merchant.version` 乐观锁 | 防止旧版本静默覆盖新版本 |
 | `PATCH /merchant/orders/{id}/accept` | `PAID -> PREPARING` 条件更新并校验商家归属 | 已是 `PREPARING` 时幂等返回，其他状态返回业务错误 |
 | `PATCH /merchant/orders/{id}/ready` | 同一事务执行 `PREPARING -> READY` 并创建任务；`delivery_task.order_id` 唯一 | 已是 `READY` 且任务仍为未接取的 `WAIT_ASSIGN` 时幂等返回；任务缺失或不一致时拒绝 |
-| `PATCH /merchant/orders/{id}/reject` | `PAID -> CANCELLED` 条件更新，并在同一事务记录 `cancel_source=2`、模拟退款和按版本回补库存 | 只对该商家已以商家拒单来源取消的订单幂等返回；用户取消或系统超时取消不会被误判为拒单成功；版本已变化的明细不回补 |
+| `PATCH /merchant/orders/{id}/reject` | `PAID -> CANCELLED` 条件更新，仅用于无 Stripe 记录的本地模拟订单，在同一事务记录 `cancel_source=2` 和按版本回补库存；Stripe 已付订单阻止取消 | 只对该商家已以商家拒单来源取消的订单幂等返回；用户取消或系统超时取消不会被误判为拒单成功；版本已变化的明细不回补 |
 | `PATCH /rider/delivery-tasks/{id}/claim` | 任务按 `WAIT_ASSIGN + rider_id IS NULL` 条件更新，并在同一事务推进订单 | 当前骑手重试幂等；其他骑手并发只能一人成功 |
 | `PATCH /rider/delivery-tasks/{id}/complete` | 按任务归属及 `DELIVERING` 条件更新，并在同一事务推进订单 | 已完成且订单已送达/完成时，当前骑手重试幂等 |
 | `DELETE /cart/items` | 删除条件包含当前用户，删除行数必须匹配请求数量 | 首次成功后重复删除会报错，最终状态安全 |
@@ -141,13 +141,7 @@
 
 ### 5.1 真实支付与事务外副作用
 
-当前 `paying()` 只是本地返回成功。接入支付渠道后，需要以支付单号或渠道交易号实现：
-
-- 发起支付幂等；
-- 支付回调去重；
-- 主动查询与回调并发协调；
-- 退款幂等；
-- 数据库订单与渠道账单对账。
+Stripe 已通过持久化幂等键、事件去重、数据库租约和统一结果事务实现发起、回调与主动查询协调，详见 [支付重构报告](stripe-payment-refactor-report.md)。真实退款和完整渠道账单对账尚未实现；幂等键过期且远端创建结果未知时保留待人工核实，禁止新建第二笔支付。
 
 同理，取消订单未来若加入退款、消息、优惠券或第三方库存，数据库状态前置条件不足以单独保证外部系统只执行一次。
 

@@ -20,6 +20,7 @@ public class StripeWebhookController {
             @RequestHeader(value = "Stripe-Signature", required = false) String signature) {
         try {
             paymentService.verifyAndProcessWebhookEvent(rawBody, signature);
+
             return ResponseEntity.ok("received");
         } catch (StripeGatewayException invalid) {
             return ResponseEntity.status(invalid.getKind() == StripeGatewayException.Kind.INVALID_WEBHOOK ? 400 : 503)
