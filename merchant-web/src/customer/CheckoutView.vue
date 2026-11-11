@@ -49,13 +49,29 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
-import { createOrder, getCart } from '../api/customerApi.js'
-import { getSession } from '../auth.js'
-import { deliveryCoordinateError, EXAMPLE_DELIVERY_COORDINATES, normalizeDeliveryCoordinates } from './checkoutCoordinates.js'
-import { archiveCheckoutIntent, beginCheckoutAttempt, createCheckoutSubmitLock, isDefinitelyRejectedCreate, markCheckoutAttemptUncertain, readArchivedCheckoutIntent, readCheckoutIntent, recordCreatedOrder, restoreArchivedCheckoutIntent, settleKnownCheckoutRejection, writeCheckoutIntent } from './checkoutIntent.js'
+import {computed, onMounted, onUnmounted, reactive, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {useRoute, useRouter} from 'vue-router'
+import {createOrder, getCart} from '../api/customerApi.js'
+import {getSession} from '../auth.js'
+import {
+  deliveryCoordinateError,
+  EXAMPLE_DELIVERY_COORDINATES,
+  normalizeDeliveryCoordinates
+} from './checkoutCoordinates.js'
+import {
+  archiveCheckoutIntent,
+  beginCheckoutAttempt,
+  createCheckoutSubmitLock,
+  isDefinitelyRejectedCreate,
+  markCheckoutAttemptUncertain,
+  readArchivedCheckoutIntent,
+  readCheckoutIntent,
+  recordCreatedOrder,
+  restoreArchivedCheckoutIntent,
+  settleKnownCheckoutRejection,
+  writeCheckoutIntent
+} from './checkoutIntent.js'
 
 const defaultImage = '/images/default-product.svg'
 const route = useRoute()

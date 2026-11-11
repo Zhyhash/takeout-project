@@ -1,11 +1,6 @@
 package org.example.takeout.Payment.Gateway;
 
-import com.stripe.exception.ApiConnectionException;
-import com.stripe.exception.AuthenticationException;
-import com.stripe.exception.CardException;
-import com.stripe.exception.InvalidRequestException;
-import com.stripe.exception.PermissionException;
-import com.stripe.exception.StripeException;
+import com.stripe.exception.*;
 import lombok.Getter;
 
 /**
@@ -61,8 +56,7 @@ public final class StripeGatewayException extends RuntimeException {
             kind = Kind.OUTCOME_UNKNOWN;
         } else if (failure instanceof InvalidRequestException
                 || failure instanceof CardException
-                || failure instanceof AuthenticationException
-                || failure instanceof PermissionException) {
+                || failure instanceof AuthenticationException) {
             kind = Kind.REQUEST_REJECTED;
         } else {
             // ApiException(5xx)、RateLimitException 以及其它未知类型：没有可信的业务结论。
@@ -88,8 +82,8 @@ public final class StripeGatewayException extends RuntimeException {
         return switch (kind) {
             case CONFIGURATION -> "Stripe test payment configuration is invalid";
             case INVALID_WEBHOOK -> "Stripe webhook signature is invalid";
-            case REQUEST_REJECTED -> "Stripe rejected the payment request;" + detail;
-            case OUTCOME_UNKNOWN -> "Stripe payment outcome is unknown;" + detail;
+            case REQUEST_REJECTED -> "Stripe rejected the payment request" + detail;
+            case OUTCOME_UNKNOWN -> "Stripe operation outcome is unknown" + detail;
         };
     }
 }

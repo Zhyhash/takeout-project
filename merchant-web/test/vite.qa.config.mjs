@@ -1,4 +1,4 @@
-import { defineConfig, mergeConfig } from 'vite'
+import {defineConfig, mergeConfig} from 'vite'
 import appConfig from '../vite.config.js'
 
 // A serve-only device substitute for browser QA; never included in production.

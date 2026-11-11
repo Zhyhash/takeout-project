@@ -1,6 +1,6 @@
-import { createRiderApi } from '@rider-core/api.mjs'
-import { createRoleHttp } from './http.js'
-import { clearRoleSession } from '../auth.js'
+import {createRiderApi} from '@rider-core/api.mjs'
+import {createRoleHttp} from './http.js'
+import {clearRoleSession} from '../auth.js'
 
 const http = createRoleHttp('rider')
 const apiBaseUrl = () => new URL('/', window.location.origin)

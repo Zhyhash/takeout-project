@@ -1,7 +1,8 @@
 <template><span v-if="show" ref="badge" class="new-badge" aria-label="新订单">NEW</span></template>
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { notificationState, queueOrderSeen } from './state.js'
+import {computed, nextTick, onBeforeUnmount, onMounted, ref, watch} from 'vue'
+import {notificationState, queueOrderSeen} from './state.js'
+
 const props = defineProps({ orderId: [Number, String], unseen: Boolean })
 const badge = ref()
 const show = computed(() => props.unseen && !notificationState.acknowledged.includes(String(props.orderId)))

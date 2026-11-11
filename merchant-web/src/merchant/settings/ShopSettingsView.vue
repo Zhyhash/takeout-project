@@ -157,12 +157,12 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
-import { getSession } from '../../auth.js'
-import { getPublicShopSettings, updateShopBusinessStatus, updateShopSettings } from '../../api/shopSettingsApi.js'
-import { normalizeShopSettingsPayload } from './shopSettingsPayload.js'
+import {computed, onMounted, onUnmounted, reactive, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {useRouter} from 'vue-router'
+import {getSession} from '../../auth.js'
+import {getPublicShopSettings, updateShopBusinessStatus, updateShopSettings} from '../../api/shopSettingsApi.js'
+import {normalizeShopSettingsPayload} from './shopSettingsPayload.js'
 
 const router = useRouter()
 const session = computed(() => getSession('merchant'))

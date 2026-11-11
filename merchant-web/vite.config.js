@@ -1,6 +1,6 @@
-import { defineConfig } from 'vite'
+import {defineConfig} from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { fileURLToPath, URL } from 'node:url'
+import {fileURLToPath, URL} from 'node:url'
 
 // 后端默认端口 8080（application.yaml 未自定义）。
 // 代理让浏览器视角保持同源，避免后端没有 CORS 配置导致的跨域失败。

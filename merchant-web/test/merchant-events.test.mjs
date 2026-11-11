@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { createSseParser, openMerchantEventStream } from '../src/merchant/notifications/stream.js'
+import {test} from 'node:test'
+import {createSseParser, openMerchantEventStream} from '../src/merchant/notifications/stream.js'
 
 const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve() }
 function fakeTimers() {

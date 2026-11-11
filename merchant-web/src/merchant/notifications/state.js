@@ -1,7 +1,7 @@
-import { reactive } from 'vue'
-import { clearRoleSession, getSession } from '../../auth.js'
-import { getUnseenOrders, markOrdersSeen } from '../../api/merchantApi.js'
-import { openMerchantEventStream } from './stream.js'
+import {reactive} from 'vue'
+import {clearRoleSession, getSession} from '../../auth.js'
+import {getUnseenOrders, markOrdersSeen} from '../../api/merchantApi.js'
+import {openMerchantEventStream} from './stream.js'
 
 export const notificationState = reactive({
   connection: 'idle', unseenIds: [], syncing: false, error: '', ackError: '', revision: 0, acknowledged: [],

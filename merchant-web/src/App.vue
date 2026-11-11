@@ -32,11 +32,11 @@
   </div>
 </template>
 <script setup>
-import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { getSession, logoutRole } from './auth.js'
-import { roleHome, roleLabels } from './router.js'
+import {computed, ref, watch} from 'vue'
+import {useRoute, useRouter} from 'vue-router'
+import {ElMessage} from 'element-plus'
+import {getSession, logoutRole} from './auth.js'
+import {roleHome, roleLabels} from './router.js'
 import MerchantNotificationBar from './merchant/notifications/MerchantNotificationBar.vue'
 
 const route = useRoute(), router = useRouter()

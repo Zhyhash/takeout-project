@@ -187,14 +187,17 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { createLocationTracker } from '@rider-core/location-tracker.mjs'
-import { formatPickupDistance } from '@rider-core/distance-display.mjs'
-import { getSession, clearRoleSession, registerSessionCleanup } from '../auth.js'
+import {computed, onBeforeUnmount, onMounted, ref, watch} from 'vue'
+import {onBeforeRouteLeave, useRouter} from 'vue-router'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {createLocationTracker} from '@rider-core/location-tracker.mjs'
+import {formatPickupDistance} from '@rider-core/distance-display.mjs'
+import {clearRoleSession, getSession, registerSessionCleanup} from '../auth.js'
 import {
-  claimRiderTask, completeRiderTask, createRiderLocationClient, getCurrentTasks,
+  claimRiderTask,
+  completeRiderTask,
+  createRiderLocationClient,
+  getCurrentTasks,
   getRiderTaskDetail,
 } from '../api/riderApi.js'
 

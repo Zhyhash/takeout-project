@@ -1,12 +1,12 @@
 # 数据库迁移与脚本镜像
 
-最近复核：2026-11-05。SQL 权威来源和部署镜像仍按下述目录管理；本次已运行真实 MySQL 随机独立库迁移测试，新版支付迁移与验证结果见文末及支付重构报告。
+最近复核：2026-11-08。SQL 权威来源和部署镜像仍按下述目录管理；支付和退款迁移说明见文末。
 
-`src/main/resources/db/migration` 是 Flyway 迁移的权威来源。应用启动时仅扫描该 classpath 目录，`deploy/migrations` 保存同名、同内容的 SQL 镜像，便于部署审阅。当前两个目录各有 24 份 SQL；本次新增支付恢复迁移的权威文件与镜像 SHA-256 一致。
+`src/main/resources/db/migration` 是 Flyway 迁移的权威来源。应用启动时仅扫描该 classpath 目录，`deploy/migrations` 保存同名、同内容的 SQL 镜像，便于部署审阅。当前两个目录各有 26 份 SQL，文件名与内容保持一致。
 
 部署镜像目录 `deploy/migrations` 同步权威目录的所有 `B`、`V` SQL。`B20261008__initial_schema.sql` 用于已创建的空数据库，在应用启动时累计建表，再执行 `V20261009` 及以后的迁移；已有 Flyway 迁移历史的数据库会忽略该基线，继续升级。[Flyway 官方累计基线说明](https://documentation.red-gate.com/flyway/flyway-concepts/migrations/baseline-migrations)介绍了 `B` 脚本的选择和执行规则。
 
-当前最新版本为 `V20261106_1`。空库执行累计基线后，再执行 `V20261009` 至 `V20261106_1` 共 16 份后续迁移；已处于 `20261008` 基线的旧库也升级这 16 个版本。
+当前最新版本为 `V20261108`。空库执行累计基线后，再执行 `V20261009` 至 `V20261108` 共 17 份后续迁移；已处于 `20261008` 基线的旧库也升级这 17 个版本。
 
 新增变更时，在权威目录创建更高版本的 `V<版本>__<描述>.sql`，再同步到 `deploy/migrations`。同类迁移的版本不得重复；累计基线可以与相同版本的 `V` 脚本并存。超时取消退避使用 `V20261008__timeout_cancel_backoff.sql`。
 
@@ -92,3 +92,9 @@ Get-ChildItem -LiteralPath 'src/main/resources/db/migration' -Filter '*.sql' -Fi
 - `last_error` 只用于运维排查，不参与任何业务判断，改由应用日志的 `reason` 字段承载。
 
 `V20261105` 保持原样不修改校验和；新库会先加列再删列，这是迁移历史的真实痕迹，不影响最终结构。
+
+## Stripe 订单退款表（2026-11-08）
+
+`V20261108__stripe_order_refunds.sql` 新增 `order_stripe_refunds`，以 `order_id` 为主键，每笔订单最多保存一条退款记录。`refund_id` 可空且唯一，供远端创建结果确认后关联；`idempotency_key` 必填且唯一，供同一退款操作重试时复用。金额使用最小货币单位，币种、Stripe 状态及本地对账状态单独保存；`reconciliation_state` 必填且无默认值，由写入方显式指定。
+
+`create_time`、`update_time` 默认取数据库当前时间，记录变更时数据库自动更新 `update_time`。部署镜像及 `deploy/schema.sql` 同步该表；本次只增加数据结构和实体，退款请求、回调及恢复逻辑尚未接入。

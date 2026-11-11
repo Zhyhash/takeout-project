@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { createServer } from 'vite'
+import {after, before, test} from 'node:test'
+import {fileURLToPath} from 'node:url'
+import {createServer} from 'vite'
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url))
 let vite

@@ -14,7 +14,9 @@ public enum OrderStatusEnum {
     PREPARING(5,"商家正在制作菜品"),
     READY(6,"菜品制作完成，等待骑手接单"),
     DELIVERING(7,"骑手正在配送"),
-    DELIVERED(8,"骑手已经送达");
+    DELIVERED(8,"骑手已经送达"),
+    REFUNDING(9,"退款中"),
+    REFUNDED(10,"已退款");
 
 
     // getter 方法

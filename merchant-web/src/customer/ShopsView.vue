@@ -62,9 +62,9 @@
 </template>
 
 <script setup>
-import { onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { listShops } from '../api/customerApi.js'
+import {onUnmounted, ref, watch} from 'vue'
+import {useRoute, useRouter} from 'vue-router'
+import {listShops} from '../api/customerApi.js'
 
 const defaultImage = '/images/default-product.svg'
 const route = useRoute()

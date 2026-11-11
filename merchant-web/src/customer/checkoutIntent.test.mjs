@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict'
-import { afterEach, beforeEach, test } from 'node:test'
+import {afterEach, beforeEach, test} from 'node:test'
 import {
-  archiveCheckoutIntent,
-  beginCheckoutAttempt,
-  createCheckoutSubmitLock,
-  isDefinitelyRejectedCreate,
-  readArchivedCheckoutIntent,
-  readCheckoutIntent,
-  recordCreatedOrder,
-  restoreArchivedCheckoutIntent,
-  settleKnownCheckoutRejection,
-  writeCheckoutIntent,
+    archiveCheckoutIntent,
+    beginCheckoutAttempt,
+    createCheckoutSubmitLock,
+    isDefinitelyRejectedCreate,
+    readArchivedCheckoutIntent,
+    readCheckoutIntent,
+    recordCreatedOrder,
+    restoreArchivedCheckoutIntent,
+    settleKnownCheckoutRejection,
+    writeCheckoutIntent,
 } from './checkoutIntent.js'
 
 let storageDescriptor

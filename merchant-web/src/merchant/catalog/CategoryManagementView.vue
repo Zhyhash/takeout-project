@@ -57,10 +57,10 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { getSession } from '../../auth.js'
-import { createMerchantCategory, deleteMerchantCategory, listMerchantCategories } from '../../api/catalogApi.js'
+import {onBeforeUnmount, onMounted, ref} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {getSession} from '../../auth.js'
+import {createMerchantCategory, deleteMerchantCategory, listMerchantCategories} from '../../api/catalogApi.js'
 
 const categories = ref([]), loading = ref(false), loadError = ref('')
 const createVisible = ref(false), creating = ref(false), categoryName = ref(''), nameError = ref('')

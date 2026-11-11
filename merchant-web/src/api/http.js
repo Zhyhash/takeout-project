@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { clearRoleSession, getSession } from '../auth.js'
+import {clearRoleSession, getSession} from '../auth.js'
 
 const clients = new Map()
 export function apiError(kind, message, code = null, status = null) {

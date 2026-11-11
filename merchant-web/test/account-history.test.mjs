@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createServer } from 'vite'
+import {after, before, test} from 'node:test'
+import {dirname, resolve} from 'node:path'
+import {fileURLToPath} from 'node:url'
+import {createServer} from 'vite'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const storageValues = new Map()

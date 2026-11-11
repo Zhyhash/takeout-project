@@ -7,12 +7,7 @@ import org.example.takeout.Common.Utils.Context.UserContextHolder;
 import org.example.takeout.Product.VO.ProductVO;
 import org.example.takeout.User.Service.BrowseHistoryService;
 import org.springframework.validation.annotation.Validated;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 

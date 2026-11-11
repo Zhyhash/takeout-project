@@ -1,6 +1,7 @@
 package org.example.takeout.Payment.Entity;
 
 import lombok.Data;
+
 import java.time.LocalDateTime;
 
 /** 订单的 Stripe 支付关联记录，对应 order_stripe_payments 表；订单业务状态仍由订单表维护。 */

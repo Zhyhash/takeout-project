@@ -55,11 +55,11 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
-import { registerAccount } from '../api/accountApi.js'
-import { roleLabels } from '../router.js'
+import {computed, onBeforeUnmount, reactive, ref, watch} from 'vue'
+import {ElMessage} from 'element-plus'
+import {useRoute, useRouter} from 'vue-router'
+import {registerAccount} from '../api/accountApi.js'
+import {roleLabels} from '../router.js'
 
 const props = defineProps({ role: { type: String, required: true } })
 const router = useRouter()

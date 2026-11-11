@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
-import { after, afterEach, before, test } from 'node:test'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createServer } from 'vite'
+import {after, afterEach, before, test} from 'node:test'
+import {dirname, resolve} from 'node:path'
+import {fileURLToPath} from 'node:url'
+import {createServer} from 'vite'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const originalDescriptors = new Map(['sessionStorage', 'document', 'navigator', 'fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']

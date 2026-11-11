@@ -46,11 +46,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
-import { changeCartItem, clearCart, getCart, removeCartItems } from '../api/customerApi.js'
-import { getSession } from '../auth.js'
+import {computed, onMounted, onUnmounted, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {useRoute, useRouter} from 'vue-router'
+import {changeCartItem, clearCart, getCart, removeCartItems} from '../api/customerApi.js'
+import {getSession} from '../auth.js'
 
 const defaultImage = '/images/default-product.svg'
 const route = useRoute()

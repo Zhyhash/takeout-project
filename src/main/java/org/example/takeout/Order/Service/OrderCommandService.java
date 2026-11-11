@@ -1,18 +1,24 @@
 package org.example.takeout.Order.Service;
 
 import lombok.NonNull;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
-import org.example.takeout.Order.Enums.OrderCancelSourceEnum;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Record.MarkReadyResult;
-import org.springframework.stereotype.Service;
+import org.example.takeout.Payment.Service.StripeRefundService;
+import org.example.takeout.Payment.VO.RefundPreparation;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.core.task.TaskRejectedException;
+import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 
@@ -21,12 +27,23 @@ import java.util.List;
  * 负责商家接单、拒单、备餐完成及配送中、已送达状态的流转和状态校验。
  */
 @Service
-@RequiredArgsConstructor
+@Slf4j
 public class OrderCommandService {
     private final OrderMapper orderMapper;
     private final OrderItemService orderItemService;
+    private final StripeRefundService stripeRefundService;
+    @Qualifier("applicationTaskExecutor")
+    private final TaskExecutor taskExecutor;
+    
     @Value("${payment.stripe.enabled:false}")
     private boolean stripePaymentsEnabled;
+
+    public OrderCommandService(OrderMapper orderMapper, OrderItemService orderItemService, StripeRefundService stripeRefundService, @Qualifier("applicationTaskExecutor") TaskExecutor taskExecutor) {
+        this.orderMapper = orderMapper;
+        this.orderItemService = orderItemService;
+        this.stripeRefundService = stripeRefundService;
+        this.taskExecutor = taskExecutor;
+    }
 
     // 以下订单接单和备餐状态修改接口提供给商家领域使用。
     public void acceptOrderByMerchant(@NonNull Long orderId, Long merchantId) {
@@ -58,45 +75,30 @@ public class OrderCommandService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void rejectOrderByMerchant(@NonNull Long orderId, Long merchantId) {
-        Order current = orderMapper.selectOrderForUpdate(orderId);
-        if (current == null || !merchantId.equals(current.getMerchantId())) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在或无权操作该订单");
-        }
-        if (OrderStatusEnum.CANCELLED.getCode().equals(current.getStatus())
-                && OrderCancelSourceEnum.MERCHANT.getCode().equals(current.getCancelSource())) return;
-        if (!OrderStatusEnum.PAID.getCode().equals(current.getStatus())) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "订单未处于已支付状态，当前状态码：" + current.getStatus());
-        }
-        if (stripePaymentsEnabled || orderMapper.countStripePaymentsForOrder(orderId) != 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "尚未实现 Stripe 退款，不能取消已支付订单，请人工处理退款");
-        }
-        int rows = orderMapper.updateOrderStatusToCancelledByMerchant(
-                orderId,
-                merchantId,
-                OrderStatusEnum.PAID.getCode(),
-                OrderStatusEnum.CANCELLED.getCode(),
-                OrderCancelSourceEnum.MERCHANT.getCode()
-        );
+        RefundPreparation refundPreparation =
+                stripeRefundService.prepareRefund(orderId, merchantId);
+        if (refundPreparation.newlyCreated()) {
+            restoreOrderStock(orderId);
 
-        if (rows != 1) {
-            Order order = orderMapper.selectById(orderId);
-            if (order == null || !merchantId.equals(order.getMerchantId())) {
-                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                        "订单不存在或无权操作该订单");
-            }
-
-            if (OrderStatusEnum.CANCELLED.getCode().equals(order.getStatus())
-                    && OrderCancelSourceEnum.MERCHANT.getCode().equals(order.getCancelSource())) {
-                return;
-            }
-
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "订单未处于已支付状态，当前状态码：" + order.getStatus());
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            try {
+                                taskExecutor.execute(() -> {
+                                    try {
+                                        stripeRefundService.refundRejectedOrder(orderId);
+                                    } catch (Exception e) {
+                                        log.error("Stripe 退款执行失败，orderId={}", orderId, e);
+                                    }
+                                });
+                            } catch (TaskRejectedException e) {
+                                log.error("退款任务提交失败，orderId={}", orderId, e);
+                            }
+                        }
+                    }
+            );
         }
-
-        restoreOrderStock(orderId);
     }
 
     private void restoreOrderStock(Long orderId) {

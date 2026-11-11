@@ -14,11 +14,11 @@
   </div>
 </template>
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { createRoleHttp } from '../api/http.js'
-import { setRoleSession } from '../auth.js'
-import { roleLabels, safeRedirect } from '../router.js'
+import {computed, onBeforeUnmount, reactive, ref, watch} from 'vue'
+import {useRoute, useRouter} from 'vue-router'
+import {createRoleHttp} from '../api/http.js'
+import {setRoleSession} from '../auth.js'
+import {roleLabels, safeRedirect} from '../router.js'
 
 const props = defineProps({ role: { type: String, required: true } })
 const route = useRoute(), router = useRouter()

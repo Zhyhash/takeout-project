@@ -3,7 +3,9 @@ package org.example.takeout.Payment;
 import org.example.takeout.Common.Auth.AuthPathMatcher;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
-import static org.junit.jupiter.api.Assertions.*;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StripePaymentAuthTest {
     @Test

@@ -2,8 +2,8 @@ package org.example.takeout.integration;
 
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Redis.RedisLoginAttemptStore;
-import org.example.takeout.testsupport.RedisTestSupport;
 import org.example.takeout.testsupport.RedisOnlyTestConfiguration;
+import org.example.takeout.testsupport.RedisTestSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

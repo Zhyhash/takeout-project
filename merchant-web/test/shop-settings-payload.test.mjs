@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeShopSettingsPayload } from '../src/merchant/settings/shopSettingsPayload.js'
+import {normalizeShopSettingsPayload} from '../src/merchant/settings/shopSettingsPayload.js'
 
 const baseline = {
   merchantName: '青禾小馆',

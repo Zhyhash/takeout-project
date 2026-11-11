@@ -216,14 +216,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { session } from '../auth.js'
-import { acceptOrder, completePreparation, listMerchantOrders, rejectOrder } from '../api/merchantApi.js'
-import { amountText, formatTime, statusTagType } from '../display.js'
+import {computed, onMounted, onUnmounted, reactive, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {session} from '../auth.js'
+import {acceptOrder, completePreparation, listMerchantOrders, rejectOrder} from '../api/merchantApi.js'
+import {amountText, formatTime, statusTagType} from '../display.js'
 import OrderDetailDrawer from './OrderDetailDrawer.vue'
 import NewOrderBadge from '../merchant/notifications/NewOrderBadge.vue'
-import { notificationState } from '../merchant/notifications/state.js'
+import {notificationState} from '../merchant/notifications/state.js'
 
 const TYPE_LABELS = {
   PENDING: '已支付、等待商家接单',

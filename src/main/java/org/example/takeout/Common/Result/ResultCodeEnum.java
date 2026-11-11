@@ -26,6 +26,8 @@ public enum ResultCodeEnum {
 
     SERVICE_UNAVAILABLE(2003,"当前服务不可用，请稍后再试"),
 
+    PAYMENT_ERROR(3001,"支付异常"),
+
     SERVER_ERROR(5000, "服务器异常");
 
     private final Integer code;

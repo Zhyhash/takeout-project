@@ -1,5 +1,5 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
-import { getSession } from './auth.js'
+import {createRouter, createWebHashHistory} from 'vue-router'
+import {getSession} from './auth.js'
 
 export const roleHome = { customer: '/customer/shops', merchant: '/merchant/orders', rider: '/rider/tasks' }
 export const roleLabels = { customer: '顾客', merchant: '商家', rider: '骑手' }

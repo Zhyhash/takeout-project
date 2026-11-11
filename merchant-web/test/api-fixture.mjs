@@ -1,6 +1,6 @@
 // Local browser-QA fixture only. This does not change the application API client or add a mock mode.
 // Start it only with TAKEOUT_UI_QA_FIXTURE=1; it listens on loopback port 18080.
-import { createServer } from 'node:http'
+import {createServer} from 'node:http'
 
 const PORT = 18080
 const tokenByRole = {

@@ -112,11 +112,11 @@
 </template>
 
 <script setup>
-import { onUnmounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { session } from '../auth.js'
-import { acceptOrder, completePreparation, getOrderDetail, rejectOrder } from '../api/merchantApi.js'
-import { amountText, formatTime, statusTagType } from '../display.js'
+import {onUnmounted, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {session} from '../auth.js'
+import {acceptOrder, completePreparation, getOrderDetail, rejectOrder} from '../api/merchantApi.js'
+import {amountText, formatTime, statusTagType} from '../display.js'
 
 // 后端公开的默认商品图（classpath 静态资源，开发/预览经 Vite 代理访问）。
 const DEFAULT_PRODUCT_IMAGE = '/images/default-product.svg'

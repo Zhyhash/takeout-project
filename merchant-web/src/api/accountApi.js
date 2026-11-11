@@ -1,5 +1,5 @@
-import { createRoleHttp } from './http.js'
-import { registrationPayload, registrationErrors } from '../accounts/registration.js'
+import {createRoleHttp} from './http.js'
+import {registrationErrors, registrationPayload} from '../accounts/registration.js'
 
 export { registrationErrors, registrationPayload }
 

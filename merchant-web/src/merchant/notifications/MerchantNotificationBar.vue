@@ -5,9 +5,10 @@
   </aside>
 </template>
 <script setup>
-import { computed, onBeforeUnmount, watch } from 'vue'
-import { getSession } from '../../auth.js'
-import { notificationState as state, refreshNotifications, startMerchantNotifications } from './state.js'
+import {computed, onBeforeUnmount, watch} from 'vue'
+import {getSession} from '../../auth.js'
+import {notificationState as state, refreshNotifications, startMerchantNotifications} from './state.js'
+
 let stop
 watch(() => getSession('merchant')?.token, () => { stop?.(); stop = startMerchantNotifications() }, { immediate: true })
 onBeforeUnmount(() => stop?.())

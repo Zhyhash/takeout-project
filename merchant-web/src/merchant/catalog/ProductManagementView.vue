@@ -157,18 +157,29 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { getSession } from '../../auth.js'
+import {computed, onBeforeUnmount, onMounted, reactive, ref} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {getSession} from '../../auth.js'
 import {
-  createMerchantProduct, deleteMerchantProduct, getMerchantProductForEdit,
-  listMerchantCategories, listMerchantProducts, restoreMerchantProduct,
-  setMerchantProductShelf, updateMerchantProduct, uploadMerchantProductImage,
+  createMerchantProduct,
+  deleteMerchantProduct,
+  getMerchantProductForEdit,
+  listMerchantCategories,
+  listMerchantProducts,
+  restoreMerchantProduct,
+  setMerchantProductShelf,
+  updateMerchantProduct,
+  uploadMerchantProductImage,
 } from '../../api/catalogApi.js'
-import { knownDeletedProducts } from './catalogSessionState.js'
+import {knownDeletedProducts} from './catalogSessionState.js'
 import {
-  buildCreateProductPayload, buildUpdateProductPayload, createEditProductDraft,
-  createEmptyProductDraft, samePrice, validateProductDraft, validateProductImage,
+  buildCreateProductPayload,
+  buildUpdateProductPayload,
+  createEditProductDraft,
+  createEmptyProductDraft,
+  samePrice,
+  validateProductDraft,
+  validateProductImage,
 } from './productDraft.js'
 
 const defaultImage = '/images/default-product.svg'

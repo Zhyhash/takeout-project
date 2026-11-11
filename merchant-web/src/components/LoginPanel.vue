@@ -100,9 +100,9 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
-import { merchantLogin } from '../api/merchantApi.js'
-import { setSession } from '../auth.js'
+import {reactive, ref} from 'vue'
+import {merchantLogin} from '../api/merchantApi.js'
+import {setSession} from '../auth.js'
 
 const formRef = ref(null)
 const submitting = ref(false)

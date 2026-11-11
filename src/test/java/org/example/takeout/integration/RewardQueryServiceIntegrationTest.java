@@ -1,8 +1,8 @@
 package org.example.takeout.integration;
 
+import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.Common.Utils.Context.MerchantContextHolder;
 import org.example.takeout.Common.Utils.Context.RiderContextHolder;
-import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.Rider.Config.RiderLocationCleanupScheduler;
 import org.example.takeout.Settlement.Service.RewardQueryService;
 import org.example.takeout.Settlement.VO.RewardSummaryVO;

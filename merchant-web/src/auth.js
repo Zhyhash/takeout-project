@@ -1,4 +1,4 @@
-import { computed, reactive } from 'vue'
+import {computed, reactive} from 'vue'
 
 export const ROLES = ['customer', 'merchant', 'rider']
 const storageKey = (role) => `takeout.${role}.web.session`

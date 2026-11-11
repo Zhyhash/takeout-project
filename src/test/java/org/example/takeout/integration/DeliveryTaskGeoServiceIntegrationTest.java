@@ -14,7 +14,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 使用真实 Redis 验证可接取配送任务 GEO 的写入、更新、删除与附近查询。

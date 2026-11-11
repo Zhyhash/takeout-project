@@ -90,6 +90,17 @@ public interface OrderMapper extends BaseMapper<Order> {
                                   @Param("newStatus") Integer newStatus,
                                   @Param("expiredBefore") LocalDateTime expiredBefore);
 
+    @Update("""
+    UPDATE orders
+    SET status = #{refunding},
+        merchant_seen = 1
+    WHERE id = #{orderId}
+      AND merchant_id = #{merchantId}
+      AND status = #{paid}
+    """)
+    int updateOrderStatusToRefunding(@Param("orderId") Long orderId,@Param("refunding")Integer refunding,
+                                     @Param("merchantId")Long merchantId,@Param("paid") Integer paid);
+
     /** Only used by the existing non-Stripe local simulation. */
     @Update("""
         UPDATE orders SET status = 2, pay_time = CURRENT_TIMESTAMP
@@ -211,4 +222,14 @@ public interface OrderMapper extends BaseMapper<Order> {
             @Param("merchantId") Long merchantId,
             @Param("paidStatus") Integer paidStatus,
             @Param("unseen") Boolean unseen);
+
+    @Update("""
+        UPDATE orders
+        SET status = #{refunded}
+        WHERE id = #{orderId}
+        AND status =#{refunding}
+    """)
+    int updateOrderStatusToRefunded(@Param("orderId") Long orderId,
+                                    @Param("refunding") Integer refunding,
+                                    @Param("refunded") Integer refunded);
 }

@@ -38,11 +38,11 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
-import { clearBrowseHistory, getBrowseHistory } from '../api/customerApi.js'
-import { getSession } from '../auth.js'
+import {onBeforeUnmount, onMounted, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {useRouter} from 'vue-router'
+import {clearBrowseHistory, getBrowseHistory} from '../api/customerApi.js'
+import {getSession} from '../auth.js'
 
 const router = useRouter()
 const defaultImage = '/images/default-product.svg'

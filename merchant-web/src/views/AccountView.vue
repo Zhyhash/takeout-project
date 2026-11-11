@@ -32,12 +32,12 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
-import { readLocalAccount } from '../api/accountApi.js'
-import { getSession, logoutRole } from '../auth.js'
-import { roleHome } from '../router.js'
+import {computed, onBeforeUnmount, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {useRouter} from 'vue-router'
+import {readLocalAccount} from '../api/accountApi.js'
+import {getSession, logoutRole} from '../auth.js'
+import {roleHome} from '../router.js'
 
 const props = defineProps({ role: { type: String, required: true } })
 const router = useRouter()

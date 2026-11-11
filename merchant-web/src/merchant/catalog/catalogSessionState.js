@@ -1,5 +1,5 @@
-import { reactive } from 'vue'
-import { registerSessionCleanup } from '../../auth.js'
+import {reactive} from 'vue'
+import {registerSessionCleanup} from '../../auth.js'
 
 // The API cannot query logically deleted products. Keep only IDs deleted during
 // this live browser session so the UI never advertises a persistent recycle bin.

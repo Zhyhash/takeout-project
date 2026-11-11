@@ -32,10 +32,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { listOrders } from '../api/customerApi.js'
-import { getSession } from '../auth.js'
+import {computed, onMounted, onUnmounted, ref, watch} from 'vue'
+import {useRoute, useRouter} from 'vue-router'
+import {listOrders} from '../api/customerApi.js'
+import {getSession} from '../auth.js'
 
 const route = useRoute()
 const router = useRouter()

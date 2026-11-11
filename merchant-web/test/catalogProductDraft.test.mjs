@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildCreateProductPayload,
-  buildUpdateProductPayload,
-  validateProductDraft,
+    buildCreateProductPayload,
+    buildUpdateProductPayload,
+    validateProductDraft,
 } from '../src/merchant/catalog/productDraft.js'
 
 const existing = {

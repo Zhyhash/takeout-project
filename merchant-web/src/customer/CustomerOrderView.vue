@@ -46,12 +46,12 @@
 </template>
 
 <script setup>
-import { computed, onUnmounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
-import { cancelOrder, confirmOrder, getOrder, payOrder } from '../api/customerApi.js'
-import { clearCheckoutIntent, readCheckoutIntent } from './checkoutIntent.js'
-import { getSession } from '../auth.js'
+import {computed, onUnmounted, ref, watch} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {useRoute, useRouter} from 'vue-router'
+import {cancelOrder, confirmOrder, getOrder, payOrder} from '../api/customerApi.js'
+import {clearCheckoutIntent, readCheckoutIntent} from './checkoutIntent.js'
+import {getSession} from '../auth.js'
 
 const defaultImage = '/images/default-product.svg'
 const route = useRoute()

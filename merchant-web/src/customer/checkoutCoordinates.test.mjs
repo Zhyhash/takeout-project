@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { deliveryCoordinateError, normalizeDeliveryCoordinates } from './checkoutCoordinates.js'
-import { beginCheckoutAttempt, readCheckoutIntent, writeCheckoutIntent } from './checkoutIntent.js'
+import {test} from 'node:test'
+import {deliveryCoordinateError, normalizeDeliveryCoordinates} from './checkoutCoordinates.js'
+import {beginCheckoutAttempt, readCheckoutIntent, writeCheckoutIntent} from './checkoutIntent.js'
 
 test('coordinates reject missing and non-decimal input without coercing blanks to zero', () => {
   for (const value of ['', '  ', null, undefined]) assert.match(deliveryCoordinateError(value, 'longitude'), /请填写/)
