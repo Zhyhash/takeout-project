@@ -9,6 +9,7 @@ import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderItemService;
+import org.example.takeout.Payment.Domain.PaymentPolicy;
 import org.example.takeout.Payment.Domain.ReconciliationState;
 import org.example.takeout.Payment.Domain.RefundSyncResult;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
@@ -17,15 +18,18 @@ import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
 import org.example.takeout.Payment.VO.RefundPreparation;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Objects;
 import java.util.Set;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeRefundTransactionService {
     private static final Set<String> REFUND_STATUSES =
             Set.of("pending", "succeeded", "failed", "canceled");
@@ -38,10 +42,24 @@ public class StripeRefundTransactionService {
 
     @Transactional
     public RefundPreparation prepareRefund(Long orderId, Long merchantId) {
+        return prepareRefund(orderId, merchantId, false);
+    }
+
+    /**
+     * 商家超时未接单的系统取消入口。
+     * <p>与商家拒单共用同一段「抢占 REFUNDING + 建退款记录」逻辑，只有两点不同：
+     * 没有商家身份可校验，抢占条件换成支付时间已超时。</p>
+     */
+    @Transactional
+    public RefundPreparation prepareTimeoutRefund(Long orderId) {
+        return prepareRefund(orderId, null, true);
+    }
+
+    private RefundPreparation prepareRefund(Long orderId, Long merchantId, boolean timeoutCancellation) {
         Order order = orderMapper.selectOrderForUpdate(orderId);
-        if (order == null || !Objects.equals(order.getMerchantId(), merchantId)) {
+        if (order == null || (merchantId != null && !Objects.equals(order.getMerchantId(), merchantId))) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
-                    "订单不存在或者不属于商家，无法取消");
+                    merchantId == null ? "订单不存在，无法超时取消" : "订单不存在或者不属于商家，无法取消");
         }
         if (Objects.equals(order.getStatus(), OrderStatusEnum.REFUNDING.getCode())
                 || Objects.equals(order.getStatus(), OrderStatusEnum.REFUNDED.getCode())) {
@@ -74,9 +92,12 @@ public class StripeRefundTransactionService {
             );
         }
 
-        int update = orderMapper.updateOrderStatusToRefunding(orderId,
-                OrderStatusEnum.REFUNDING.getCode(), merchantId,
-                OrderStatusEnum.PAID.getCode());
+        // 两条入口各用一条条件更新抢占订单，条件互不影响：拒单没有时间限制，超时取消必须已超时
+        int update = timeoutCancellation
+                ? orderMapper.updateOrderStatusToRefundingOnTimeout(orderId,
+                        OrderStatusEnum.REFUNDING.getCode(), OrderStatusEnum.PAID.getCode())
+                : orderMapper.updateOrderStatusToRefunding(orderId,
+                        OrderStatusEnum.REFUNDING.getCode(), merchantId, OrderStatusEnum.PAID.getCode());
         if (update == 0) {
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "订单状态更新失败，请稍后重试");
@@ -101,7 +122,7 @@ public class StripeRefundTransactionService {
      * 该订单的 PaymentIntent，防止把别的退款对象关联到本订单。</p>
      */
     @Transactional(rollbackFor = Exception.class)
-    public void syncRefundStatus(Long orderId,
+    public RefundSyncResult syncRefundStatus(Long orderId,
             StripeRefundSnapshot snapshot){
         if (orderId == null || snapshot == null) {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR,
@@ -152,14 +173,13 @@ public class StripeRefundTransactionService {
         }
         //状态同步
         RefundSyncResult refundSyncResult = syncStatus(orderStripeRefund, snapshot);
+
         if (refundSyncResult == RefundSyncResult.CONFLICT) {
-            if (orderStripeRefundMapper.updateReconciliationState(
-                    orderId, ReconciliationState.REVIEW.code()) != 1) {
-                throw new IllegalStateException("退款复核状态更新失败");
-            }
-            log.error("Stripe 退款状态冲突，保留本地终态并转人工复核: orderId={}, previous={}, incoming={}",
+            log.warn("Stripe 退款状态冲突: orderId={}, previous={}, incoming={}",
                     orderId, orderStripeRefund.getStripeStatus(), snapshot.status());
         }
+
+        return refundSyncResult;
 
     }
 
@@ -168,6 +188,7 @@ public class StripeRefundTransactionService {
      * <p>状态相同不代表无事可做：首次同步时本地还没有 {@code refundId}，如果远端同样处于
      * {@code pending}，只比状态就会提前返回，退款对象永远绑不上。因此幂等短路的条件是
      * "状态一致 <b>且</b> 已绑定"，未绑定的一律继续走下面的写入路径完成绑定。</p>
+     * <p>已绑定的终态回查一致时，结束仍在进行的本地对账重试。</p>
      * <p>{@code succeeded} 会同时把订单从 {@code REFUNDING} 推到 {@code REFUNDED}，并让调用方归还库存；
      * {@code failed}/{@code canceled} 表示钱没退出去，订单不能假装已退款，只把对账状态转人工。</p>
      */
@@ -185,8 +206,21 @@ public class StripeRefundTransactionService {
         // 首次同步：退款单号尚未落库
         boolean needsBind = refund.getRefundId() == null;
 
-        // 状态一致且已绑定，幂等返回
+        // 回查确认已绑定的本地终态后，结束对账重试。
         if (Objects.equals(oldStatus, newStatus) && !needsBind) {
+            if (isTerminal(oldStatus)
+                    && ReconciliationState.isPending(
+                    refund.getReconciliationState())) {
+
+                if (orderStripeRefundMapper.updateReconciliationState(
+                        refund.getOrderId(),
+                        ReconciliationState.RECONCILED.code()) != 1) {
+                    throw new IllegalStateException("退款对账状态更新失败");
+                }
+
+                return RefundSyncResult.UPDATED;
+            }
+
             return RefundSyncResult.UNCHANGED;
         }
 
@@ -209,7 +243,7 @@ public class StripeRefundTransactionService {
             int refundAffected =
                     orderStripeRefundMapper.updateStatus(
                             refund.getOrderId(), snapshot.refundId(), newStatus,
-                            ReconciliationState.COMPLETE.code());
+                            ReconciliationState.RECONCILED.code());
 
             int orderAffected =
                     orderMapper.updateOrderStatusToRefunded(
@@ -227,7 +261,7 @@ public class StripeRefundTransactionService {
         // pending 继续等；failed/canceled 是"钱没退成"的终态，需要人工决定重试还是回滚。
         // 首次同步落到这里时，这一步同时完成 refundId 绑定。
         ReconciliationState nextState = isTerminal(newStatus)
-                ? ReconciliationState.REVIEW
+                ? ReconciliationState.RECONCILED
                 : ReconciliationState.PENDING;
 
         int affected = orderStripeRefundMapper.updateStatus(
@@ -237,8 +271,8 @@ public class StripeRefundTransactionService {
             throw new IllegalStateException("退款记录更新失败");
         }
 
-        if (nextState.isReview()) {
-            log.error("Stripe 退款未成功，订单仍停留在退款中，需人工处理: orderId={}, status={}",
+        if (isTerminal(newStatus)) {
+            log.warn("Stripe 退款未成功: orderId={}, status={}",
                     refund.getOrderId(), newStatus);
         }
 
@@ -252,4 +286,51 @@ public class StripeRefundTransactionService {
                 || "canceled".equals(status);
     }
 
+    @Transactional
+    public void scheduleConflictRetry(Long orderId) {
+        OrderStripeRefund refund =
+                orderStripeRefundMapper.selectByOrderIdForUpdate(orderId);
+
+        if (refund == null) {
+            throw new IllegalStateException("退款记录不存在");
+        }
+
+        // 调度以加锁后的状态为准，旧快照或恢复异常可能晚于另一条同步完成。
+        if (!ReconciliationState.isPending(refund.getReconciliationState())) {
+            return;
+        }
+
+        // 以恢复查询使用的数据库时钟为准，同一退避窗口内只安排一次。
+        LocalDateTime now = orderStripePaymentMapper.selectDatabaseTime();
+        if (refund.getNextRetryAt() != null && refund.getNextRetryAt().isAfter(now)) {
+            return;
+        }
+
+        int retryCount = refund.getRetryCount() == null ? 0 : refund.getRetryCount();
+        if (retryCount < PaymentPolicy.MAX_RECOVERY_ATTEMPTS) {
+            retryCount++;
+        }
+
+        boolean needsReview = retryCount >= PaymentPolicy.MAX_RECOVERY_ATTEMPTS
+                || (isTerminal(refund.getStripeStatus()) && StringUtils.isBlank(refund.getRefundId()));
+
+        ReconciliationState nextState;
+        LocalDateTime nextRetryAt;
+
+        if (needsReview) {
+            nextState = ReconciliationState.REVIEW;
+            nextRetryAt = null;
+        } else {
+            nextState = ReconciliationState.PENDING;
+            nextRetryAt = now.plusSeconds(
+                    PaymentPolicy.retryDelaySeconds(retryCount));
+        }
+
+        if (orderStripeRefundMapper.updateRetrySchedule(orderId, nextState.code(), retryCount, nextRetryAt) != 1) {
+            throw new IllegalStateException("退款对账重试调度失败");
+        }
+        if (needsReview) {
+            log.warn("Stripe 退款对账转人工复核: orderId={}, retryCount={}", orderId, retryCount);
+        }
+    }
 }

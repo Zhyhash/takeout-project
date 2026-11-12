@@ -6,6 +6,8 @@ import org.example.takeout.Payment.Domain.ReconciliationState;
 import org.example.takeout.Payment.Entity.OrderStripeRefund;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
 import org.example.takeout.Payment.Service.StripeRefundService;
+import org.example.takeout.Payment.Service.StripeRefundTransactionService;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -13,22 +15,22 @@ import java.util.List;
 
 @Slf4j
 @Component
+@ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeRefundRecoveryTask {
     private final OrderStripeRefundMapper orderStripeRefundMapper;
     private final StripeRefundService stripeRefundService;
+    private final StripeRefundTransactionService stripeRefundTransactionService;
 
-    public StripeRefundRecoveryTask(OrderStripeRefundMapper orderStripeRefundMapper, StripeRefundService stripeRefundService) {
+    public StripeRefundRecoveryTask(OrderStripeRefundMapper orderStripeRefundMapper, StripeRefundService stripeRefundService, StripeRefundTransactionService stripeRefundTransactionService) {
         this.orderStripeRefundMapper = orderStripeRefundMapper;
         this.stripeRefundService = stripeRefundService;
+        this.stripeRefundTransactionService = stripeRefundTransactionService;
     }
 
     @Scheduled(fixedDelay = 60_000)
     public void recoverPendingRefunds() {
         // 1. 查询 reconciliation_state = PENDING 的退款记录
-        List<OrderStripeRefund> orderStripeRefunds = orderStripeRefundMapper.selectList(Wrappers.<OrderStripeRefund>lambdaQuery().
-                eq(OrderStripeRefund::getReconciliationState, ReconciliationState.PENDING.code()).
-                orderByAsc(OrderStripeRefund::getCreateTime).
-                last("LIMIT 1000"));
+        List<OrderStripeRefund> orderStripeRefunds = orderStripeRefundMapper.selectPendingRetryList(ReconciliationState.PENDING.code());
         if (orderStripeRefunds.isEmpty()) {
             return;
         }
@@ -37,22 +39,9 @@ public class StripeRefundRecoveryTask {
             try {
                 stripeRefundService.recoverRefund(orderStripeRefund);
             } catch (Exception e) {
-                int affected = orderStripeRefundMapper.update(
-                        null,
-                        Wrappers.<OrderStripeRefund>lambdaUpdate()
-                                .eq(OrderStripeRefund::getOrderId,
-                                        orderStripeRefund.getOrderId())
-                                .eq(OrderStripeRefund::getReconciliationState,
-                                        ReconciliationState.PENDING.code())
-                                .set(OrderStripeRefund::getReconciliationState,
-                                        ReconciliationState.REVIEW.code())
-                );
-                if (affected == 0) {
-                    log.warn("退款状态已变化，跳过标记 REVIEW，orderId={}",
-                            orderStripeRefund.getOrderId());
-                }
-                // 3. 单条失败记录日志，不影响其他记录
                 log.error("stripe自动恢复失败，orderID={}",orderStripeRefund.getOrderId(),e);
+                stripeRefundTransactionService.scheduleConflictRetry(orderStripeRefund.getOrderId());
+
             }
         }
 

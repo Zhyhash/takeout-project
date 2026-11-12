@@ -7,6 +7,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.example.takeout.Payment.Entity.OrderStripeRefund;
 
+import java.time.LocalDateTime;
+import java.util.List;
+
 @Mapper
 public interface OrderStripeRefundMapper extends BaseMapper<OrderStripeRefund> {
     @Select("""
@@ -32,18 +35,41 @@ public interface OrderStripeRefundMapper extends BaseMapper<OrderStripeRefund> {
                      @Param("newStatus") String newStatus,
                      @Param("reconciliationState") String reconciliationState);
 
-    /** 只改本地对账状态，不动远端退款状态；用于冲突转人工这类"不改事实、只改处理方式"的场景。 */
+    /** 结束冲突回查并清除下次重试时间。 */
     @Update("""
     UPDATE order_stripe_refunds
-    SET reconciliation_state = #{reconciliationState}
+    SET reconciliation_state = #{reconciliationState},
+        next_retry_at = NULL
     WHERE order_id = #{orderId}
     """)
     int updateReconciliationState(@Param("orderId") Long orderId,
                                   @Param("reconciliationState") String reconciliationState);
 
+    @Update("""
+    UPDATE order_stripe_refunds
+    SET reconciliation_state = #{reconciliationState},
+        retry_count = #{retryCount},
+        next_retry_at = #{nextRetryAt,jdbcType=TIMESTAMP}
+    WHERE order_id = #{orderId}
+    """)
+    int updateRetrySchedule(@Param("orderId") Long orderId,
+                            @Param("reconciliationState") String reconciliationState,
+                            @Param("retryCount") int retryCount,
+                            @Param("nextRetryAt") LocalDateTime nextRetryAt);
+
     @Select("""
     SELECT * FROM order_stripe_refunds
     WHERE order_id=#{orderId}
 """)
-    OrderStripeRefund selectPaymentByOrderId(@Param("orderId") Long orderId);
+    OrderStripeRefund selectRefundmentByOrderId(@Param("orderId") Long orderId);
+
+    @Select("""
+    SELECT *
+    FROM order_stripe_refunds
+    WHERE reconciliation_state = #{reconciliationState}
+      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+    ORDER BY next_retry_at, create_time
+    LIMIT 1000;
+    """)
+    List<OrderStripeRefund> selectPendingRetryList(@Param("reconciliationState") String reconciliationState);
 }

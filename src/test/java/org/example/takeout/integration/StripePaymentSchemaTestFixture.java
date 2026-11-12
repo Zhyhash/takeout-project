@@ -13,6 +13,10 @@ final class StripePaymentSchemaTestFixture {
         jdbc.execute((ConnectionCallback<Void>) connection -> {
             ScriptUtils.executeSqlScript(connection,
                     new ClassPathResource("db/migration/V20261030_1__stripe_test_payments.sql"));
+            ScriptUtils.executeSqlScript(connection,
+                    new ClassPathResource("db/migration/V20261108__stripe_order_refunds.sql"));
+            ScriptUtils.executeSqlScript(connection,
+                    new ClassPathResource("db/migration/V20261109__stripe_refund_recovery.sql"));
             return null;
         });
     }

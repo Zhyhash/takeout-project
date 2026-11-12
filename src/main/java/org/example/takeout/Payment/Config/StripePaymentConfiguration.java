@@ -3,6 +3,8 @@ package org.example.takeout.Payment.Config;
 import com.stripe.StripeClient;
 import org.example.takeout.Payment.Gateway.StripePaymentGateway;
 import org.example.takeout.Payment.Gateway.StripePaymentGatewayImpl;
+import org.example.takeout.Payment.Gateway.StripeRefundGateway;
+import org.example.takeout.Payment.Gateway.StripeRefundGatewayImpl;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -36,17 +38,27 @@ public class StripePaymentConfiguration {
 
     @Bean
     @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
-    public StripePaymentGateway stripePaymentGateway(StripePaymentProperties properties) {
+    public StripeClient stripeClient(StripePaymentProperties properties) {
         validateStripeTestCredentials(properties);
 
-        StripeClient client = StripeClient.builder()
+        return StripeClient.builder()
                 .setApiKey(properties.getSecretKey())
                 .setConnectTimeout(5_000)
                 .setReadTimeout(10_000)
                 .setMaxNetworkRetries(1)
                 .build();
+    }
 
+    @Bean
+    @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
+    public StripePaymentGateway stripePaymentGateway(StripeClient client, StripePaymentProperties properties) {
         return new StripePaymentGatewayImpl(client, properties.getWebhookSecret());
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
+    public StripeRefundGateway stripeRefundGateway(StripeClient client) {
+        return new StripeRefundGatewayImpl(client);
     }
 
     static void validateStripeTestCredentials(StripePaymentProperties properties) {

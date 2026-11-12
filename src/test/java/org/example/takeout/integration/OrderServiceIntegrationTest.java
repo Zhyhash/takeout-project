@@ -74,6 +74,7 @@ import static org.mockito.Mockito.*;
         "spring.datasource.username=root",
         "spring.datasource.password=root",
         "spring.sql.init.mode=never",
+        "payment.stripe.enabled=false",
         "jwt.secret=test-secret-key-at-least-32-characters-long!!",
         "jwt.expire-days=7"
 })
@@ -187,33 +188,29 @@ class OrderServiceIntegrationTest {
 
     }
 
-    //NOTE：测试商家拒单取消已支付订单、记录取消来源并恢复库存，重复拒单不重复退库存
+    //NOTE：Stripe 退款关闭时，商家拒单不修改订单、库存或退款记录
     @Test
-    void rejectOrderByMerchant_shouldCancelPaidOrderAndRestoreStock() {
+    void rejectOrderByMerchant_shouldLeavePaidOrderAndInventoryUntouchedWhenStripeDisabled() {
         insertMerchant();
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
         Order order = insertOrder(OrderStatusEnum.PAID.getCode());
         OrderItem item = TestDataFactory.createOrderItem(order.getId(), product, 3);
         orderItemMapper.insert(item);
-        int stockBeforeRejection = productMapper.selectById(product.getId()).getStock();
+        int stockBeforeRejection = currentStock(product);
+        int refundsBeforeRejection = refundCountForOrder(order.getId());
 
-        orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID);
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID));
 
-        Order rejected = orderMapper.selectById(order.getId());
-        assertEquals(OrderStatusEnum.CANCELLED.getCode(), rejected.getStatus());
-        assertEquals(OrderCancelSourceEnum.MERCHANT.getCode(), rejected.getCancelSource());
-        assertEquals(stockBeforeRejection + item.getQuantity(),
-                productMapper.selectById(product.getId()).getStock());
-
-        assertDoesNotThrow(() -> orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID));
-
-        assertEquals(stockBeforeRejection + item.getQuantity(),
-                productMapper.selectById(product.getId()).getStock());
+        assertEquals("Stripe 退款未启用，无法拒单", failure.getMessage());
+        assertEquals(OrderStatusEnum.PAID.getCode(), orderMapper.selectById(order.getId()).getStatus());
+        assertEquals(stockBeforeRejection, currentStock(product));
+        assertEquals(refundsBeforeRejection, refundCountForOrder(order.getId()));
     }
 
-    //NOTE：商家拒单与用户取消共用版本判断，重设库存后不覆盖新基准
+    //NOTE：Stripe 退款关闭时，拒单不会覆盖商家重设后的库存
     @Test
-    void rejectOrderByMerchant_shouldSkipRestoreAfterMerchantStockReset() {
+    void rejectOrderByMerchant_shouldNotChangeResetStockWhenStripeDisabled() {
         insertMerchant();
         Product product = insertProduct(TEST_PRODUCT_ID_CUP, "水杯", 10);
         Order order = insertOrder(OrderStatusEnum.PAID.getCode());
@@ -222,25 +219,28 @@ class OrderServiceIntegrationTest {
         orderItemMapper.insert(item);
         resetStock(product, 100);
 
-        orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID);
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderCommandService.rejectOrderByMerchant(order.getId(), TEST_MERCHANT_ID));
 
-        Order rejected = orderMapper.selectById(order.getId());
-        assertEquals(OrderStatusEnum.CANCELLED.getCode(), rejected.getStatus());
+        assertEquals("Stripe 退款未启用，无法拒单", failure.getMessage());
+        assertEquals(OrderStatusEnum.PAID.getCode(), orderMapper.selectById(order.getId()).getStatus());
         assertEquals(100, currentStock(product));
         assertEquals(1, currentStockVersion(product));
+        assertEquals(0, refundCountForOrder(order.getId()));
     }
 
-    //NOTE：测试其他商家不能拒单
+    //NOTE：Stripe 退款关闭时，拒单入口先明确报告功能未启用
     @Test
-    void rejectOrderByMerchant_shouldRejectOrderOwnedByAnotherMerchant() {
+    void rejectOrderByMerchant_shouldReportStripeDisabledBeforeOwnershipValidation() {
         insertMerchant();
         Order order = insertOrder(OrderStatusEnum.PAID.getCode());
 
         BusinessException failure = assertThrows(BusinessException.class,
                 () -> orderCommandService.rejectOrderByMerchant(order.getId(), TEST_OTHER_MERCHANT_ID));
 
-        assertEquals("订单不存在或无权操作该订单", failure.getMessage());
+        assertEquals("Stripe 退款未启用，无法拒单", failure.getMessage());
         assertEquals(OrderStatusEnum.PAID.getCode(), orderMapper.selectById(order.getId()).getStatus());
+        assertEquals(0, refundCountForOrder(order.getId()));
     }
 
     //NOTE：测试并发取消同一订单时均成功且库存只恢复一次
@@ -1468,6 +1468,14 @@ class OrderServiceIntegrationTest {
                 requestId
         );
         return count == null ? 0L : count;
+    }
+
+    private int refundCountForOrder(Long orderId) {
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_stripe_refunds WHERE order_id = ?",
+                Integer.class,
+                orderId);
+        return count == null ? 0 : count;
     }
 
     private void stopExecutor(ExecutorService executor, Future<Integer> insert) throws InterruptedException {

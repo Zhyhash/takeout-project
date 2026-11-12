@@ -6,7 +6,6 @@ import com.stripe.model.Refund;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.RefundCreateParams;
 
-
 public final class StripeRefundGatewayImpl implements  StripeRefundGateway {
     private final StripeClient stripeClient;
 

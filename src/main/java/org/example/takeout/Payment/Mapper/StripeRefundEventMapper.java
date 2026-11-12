@@ -1,7 +1,7 @@
 package org.example.takeout.Payment.Mapper;
 
-import org.mapstruct.Mapper;
+import org.apache.ibatis.annotations.Mapper;
 
 @Mapper
-public class StripeRefundEventMapper{
+public interface StripeRefundEventMapper{
 }

@@ -2,6 +2,7 @@ package org.example.takeout.Payment.Service;
 
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.Payment.Domain.ReconciliationState;
+import org.example.takeout.Payment.Domain.RefundSyncResult;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
 import org.example.takeout.Payment.Entity.OrderStripeRefund;
 import org.example.takeout.Payment.Gateway.StripeRefundGateway;
@@ -9,11 +10,13 @@ import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
 import org.example.takeout.Payment.VO.RefundPreparation;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
+@ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeRefundService {
     private final StripeRefundTransactionService refundTransactionService;
     private final StripeRefundGateway refundGateway;
@@ -27,14 +30,31 @@ public class StripeRefundService {
                 prepareRefund(orderId, merchantId);
 
     }
+    //TODO：评估将 order_stripe_refunds 拆分为退款业务主表与 Refund Attempt 从表，支持多次退款、保留历史记录，并分离业务重试与对账重试。
+
+    /** 商家超时未接单的系统取消入口，与商家拒单共用后续退款执行逻辑。 */
+    @Transactional
+    public RefundPreparation prepareTimeoutRefund(Long orderId) {
+        return refundTransactionService.prepareTimeoutRefund(orderId);
+    }
+
     public void refundRejectedOrder(Long orderId) {
         OrderStripeRefund refund =
-               orderStripeRefundMapper.selectPaymentByOrderId(orderId);
+               orderStripeRefundMapper.selectRefundmentByOrderId(orderId);
 
-        // 已完成退款，直接返回
-        if ("succeeded".equals(refund.getStripeStatus())
-                && ReconciliationState.COMPLETE.code()
-                .equals(refund.getReconciliationState())) {
+        if (refund == null) {
+            throw new IllegalStateException("退款记录不存在");
+        }
+
+        // 人工复核状态禁止自动执行
+        if (ReconciliationState.REVIEW.matches(
+                refund.getReconciliationState())) {
+            return;
+        }
+        // 已完成对账的终态不再由此入口重复处理
+        if (ReconciliationState.RECONCILED.matches(
+                refund.getReconciliationState())
+                && isTerminal(refund.getStripeStatus())) {
             return;
         }
 
@@ -53,7 +73,10 @@ public class StripeRefundService {
             );
         }
 
-        refundTransactionService.syncRefundStatus(orderId, snapshot);
+        RefundSyncResult refundSyncResult = refundTransactionService.syncRefundStatus(orderId, snapshot);
+        if (refundSyncResult == RefundSyncResult.CONFLICT) {
+            refundTransactionService.scheduleConflictRetry(orderId);
+        }
     }
 
     public void recoverRefund(OrderStripeRefund orderStripeRefund){
@@ -66,18 +89,26 @@ public class StripeRefundService {
         StripeRefundSnapshot snapshot;
         //恢复任务绑定
         if (refundId != null) {
-            refundGateway.retrieveRefund(refundId);
+            snapshot = refundGateway.retrieveRefund(refundId);
         }else {
             OrderStripePayment orderStripePayment = orderStripePaymentMapper.selectPaymentByOrderId(orderStripeRefund.getOrderId());
             String paymentIntentId = orderStripePayment.getPaymentIntentId();
             snapshot = refundGateway.createRefund(paymentIntentId,
-                    orderStripePayment.getAmountMinor(),
+                    orderStripeRefund.getAmountMinor(),
                     orderStripeRefund.getIdempotencyKey());
-            refundTransactionService.syncRefundStatus(
-                    orderStripeRefund.getOrderId(),
-                    snapshot
-            );
-        }
 
+        }
+        RefundSyncResult refundSyncResult = refundTransactionService.syncRefundStatus(
+                orderStripeRefund.getOrderId(),
+                snapshot
+        );
+        if (refundSyncResult == RefundSyncResult.CONFLICT) {
+            refundTransactionService.scheduleConflictRetry(orderStripeRefund.getOrderId());
+        }
+    }
+    private boolean isTerminal(String status) {
+        return "succeeded".equals(status)
+                || "failed".equals(status)
+                || "canceled".equals(status);
     }
 }

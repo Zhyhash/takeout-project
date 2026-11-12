@@ -257,6 +257,7 @@ CREATE TABLE IF NOT EXISTS `cache_invalidation_task` (
   COMMENT = '缓存失效任务表';
 
 -- Test-only Stripe references. Order status remains in orders; no payment secrets are persisted.
+-- Start at V20261030.1 so Flyway can apply the recovery schema changes in order.
 CREATE TABLE IF NOT EXISTS `order_stripe_payments` (
     `order_id` bigint NOT NULL,
     `payment_intent_id` varchar(255) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
@@ -264,17 +265,11 @@ CREATE TABLE IF NOT EXISTS `order_stripe_payments` (
     `currency` char(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'cny',
     `stripe_status` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
     `idempotency_key` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    `reconciliation_state` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'PENDING',
-    `retry_count` int NOT NULL DEFAULT 0,
-    `next_retry_at` datetime NULL DEFAULT CURRENT_TIMESTAMP,
     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`order_id`),
     UNIQUE KEY `uk_order_stripe_payment_intent` (`payment_intent_id`),
     UNIQUE KEY `uk_order_stripe_idempotency` (`idempotency_key`),
-    KEY `idx_stripe_recovery_due` (`reconciliation_state`, `next_retry_at`, `order_id`),
-    CONSTRAINT `chk_stripe_reconciliation_state` CHECK (`reconciliation_state` IN ('PENDING', 'COMPLETE', 'REVIEW')),
-    CONSTRAINT `chk_stripe_retry_count` CHECK (`retry_count` >= 0),
     CONSTRAINT `chk_order_stripe_cny` CHECK (`currency` = 'cny'),
     CONSTRAINT `chk_order_stripe_amount` CHECK (`amount_minor` > 0 AND `amount_minor` <= 99999999),
     CONSTRAINT `fk_order_stripe_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`)
@@ -299,6 +294,8 @@ CREATE TABLE IF NOT EXISTS `order_stripe_refunds` (
     `idempotency_key` varchar(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     `stripe_status` varchar(32) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
     `reconciliation_state` varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `retry_count` int NOT NULL DEFAULT 0,
+    `next_retry_at` datetime NULL DEFAULT NULL,
     `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`order_id`),

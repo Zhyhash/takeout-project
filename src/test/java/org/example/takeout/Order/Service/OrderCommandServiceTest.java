@@ -1,16 +1,24 @@
 package org.example.takeout.Order.Service;
 
 import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Entity.OrderItem;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Record.MarkReadyResult;
+import org.example.takeout.Payment.Entity.OrderStripeRefund;
+import org.example.takeout.Payment.Service.StripeRefundService;
+import org.example.takeout.Payment.VO.RefundPreparation;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 
@@ -26,8 +34,25 @@ class OrderCommandServiceTest {
     @Mock
     private OrderItemService orderItemService;
 
-    @InjectMocks
+    @Mock
+    private ObjectProvider<StripeRefundService> stripeRefundServiceProvider;
+
+    @Mock
+    private StripeRefundService stripeRefundService;
+
+    @Mock
+    private TaskExecutor taskExecutor;
+
     private OrderCommandService orderCommandService;
+
+    @BeforeEach
+    void setUp() {
+        orderCommandService = new OrderCommandService(
+                orderMapper,
+                orderItemService,
+                stripeRefundServiceProvider,
+                taskExecutor);
+    }
 
     @Test
     void acceptOrderChangesPaidOrderToPreparing() {
@@ -65,51 +90,165 @@ class OrderCommandServiceTest {
     }
 
     @Test
-    void legacySimulatedOrderCanStillBeRejectedAndRestoreInventory() {
+    void enabledStripeRejectionRestoresInventoryForNewRefund() {
+        enableStripePayments();
         OrderItem item = new OrderItem();
-        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 2));
-        when(orderMapper.updateOrderStatusToCancelledByMerchant(501L, 101L, 2, 4, 2)).thenReturn(1);
+        when(stripeRefundService.prepareRefund(501L, 101L))
+                .thenReturn(new RefundPreparation(new OrderStripeRefund(), true));
         when(orderItemService.findOrderItemsByOrderId(501L)).thenReturn(List.of(item));
-        orderCommandService.rejectOrderByMerchant(501L, 101L);
-        verify(orderItemService).increaseStocksOrderedByProductId(List.of(item));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            orderCommandService.rejectOrderByMerchant(501L, 101L);
+            verify(orderItemService).increaseStocksOrderedByProductId(List.of(item));
+            verify(stripeRefundService).prepareRefund(501L, 101L);
+            verifyNoInteractions(taskExecutor);
+
+            List<org.springframework.transaction.support.TransactionSynchronization> synchronizations =
+                    TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+            synchronizations.get(0).afterCommit();
+
+            org.mockito.ArgumentCaptor<Runnable> refundTask =
+                    org.mockito.ArgumentCaptor.forClass(Runnable.class);
+            verify(taskExecutor).execute(refundTask.capture());
+            refundTask.getValue().run();
+            verify(stripeRefundService).refundRejectedOrder(501L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test
-    void stripePaymentCannotReportFakeRefundEvenWhenStripeFeatureIsDisabled() {
-        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 2));
-        when(orderMapper.countStripePaymentsForOrder(501L)).thenReturn(1);
-        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-        verify(orderMapper, never()).updateOrderStatusToCancelledByMerchant(anyLong(), anyLong(), anyInt(), anyInt(), anyInt());
-        verifyNoInteractions(orderItemService);
+    void stripeDisabledRejectFailsBeforeReadingOrMutatingOrderState() {
+        BusinessException failure = assertThrows(
+                BusinessException.class,
+                () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
+
+        assertEquals("Stripe 退款未启用，无法拒单", failure.getMessage());
+        verifyNoInteractions(orderMapper, orderItemService, stripeRefundServiceProvider,
+                stripeRefundService, taskExecutor);
     }
 
     @Test
     void repeatedRejectIsIdempotentForSameMerchant() {
-        Order canceled = order(101L, 4);
-        canceled.setCancelSource(2);
-        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(canceled);
+        enableStripePayments();
+        when(stripeRefundService.prepareRefund(501L, 101L))
+                .thenReturn(new RefundPreparation(new OrderStripeRefund(), false));
+
         assertDoesNotThrow(() -> orderCommandService.rejectOrderByMerchant(501L, 101L));
+
+        verify(stripeRefundService).prepareRefund(501L, 101L);
         verifyNoInteractions(orderItemService);
     }
 
     @Test
-    void rejectOrderRejectsAnotherMerchantAndPayingOrPreparingOrders() {
-        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(202L, 2));
-        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 1));
-        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
-        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 5));
-        assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
+    void enabledRejectPropagatesRefundPreparationFailureWithoutRestoringInventory() {
+        enableStripePayments();
+        when(stripeRefundService.prepareRefund(501L, 101L))
+                .thenThrow(new BusinessException(
+                        ResultCodeEnum.BUSINESS_ERROR,
+                        "订单状态不允许退款"));
+
+        BusinessException failure = assertThrows(
+                BusinessException.class,
+                () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
+
+        assertEquals("订单状态不允许退款", failure.getMessage());
+        verify(stripeRefundService).prepareRefund(501L, 101L);
         verifyNoInteractions(orderItemService);
     }
 
     @Test
     void rejectOrderRejectsOrderWithoutDetails() {
-        when(orderMapper.selectOrderForUpdate(501L)).thenReturn(order(101L, 2));
-        when(orderMapper.updateOrderStatusToCancelledByMerchant(501L, 101L, 2, 4, 2)).thenReturn(1);
+        enableStripePayments();
+        when(stripeRefundService.prepareRefund(501L, 101L))
+                .thenReturn(new RefundPreparation(new OrderStripeRefund(), true));
         when(orderItemService.findOrderItemsByOrderId(501L)).thenReturn(List.of());
         assertThrows(BusinessException.class, () -> orderCommandService.rejectOrderByMerchant(501L, 101L));
         verify(orderItemService, never()).increaseStocksOrderedByProductId(any());
+    }
+
+    // ------------------------------------------------------------------
+    // 商家超时未接单自动取消（与拒单共用退款链路）
+    // ------------------------------------------------------------------
+
+    @Test
+    void acceptOrderIsRejectedWhenTheTenMinuteWindowHasPassed() {
+        mockAcceptUpdateMiss();
+        when(orderMapper.selectById(501L)).thenReturn(order(101L, OrderStatusEnum.PAID.getCode()));
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderCommandService.acceptOrderByMerchant(501L, 101L));
+
+        assertEquals("订单已超过商家接单时限，将被系统自动取消并退款", failure.getMessage());
+    }
+
+    @Test
+    void timeoutCancellationRestoresInventoryAndSubmitsRefundAfterCommit() {
+        enableStripePayments();
+        OrderItem item = new OrderItem();
+        when(stripeRefundService.prepareTimeoutRefund(501L))
+                .thenReturn(new RefundPreparation(new OrderStripeRefund(), true));
+        when(orderItemService.findOrderItemsByOrderId(501L)).thenReturn(List.of(item));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertTrue(orderCommandService.cancelOrderByMerchantTimeout(501L));
+
+            verify(stripeRefundService).prepareTimeoutRefund(501L);
+            verify(orderItemService).increaseStocksOrderedByProductId(List.of(item));
+            // Stripe 调用必须等到事务提交之后，不能在持锁事务里发起
+            verifyNoInteractions(taskExecutor);
+
+            java.util.List<org.springframework.transaction.support.TransactionSynchronization> synchronizations =
+                    TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+            synchronizations.get(0).afterCommit();
+
+            org.mockito.ArgumentCaptor<Runnable> refundTask =
+                    org.mockito.ArgumentCaptor.forClass(Runnable.class);
+            verify(taskExecutor).execute(refundTask.capture());
+            refundTask.getValue().run();
+            verify(stripeRefundService).refundRejectedOrder(501L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void repeatedTimeoutCancellationSkipsInventoryAndRefund() {
+        enableStripePayments();
+        when(stripeRefundService.prepareTimeoutRefund(501L))
+                .thenReturn(new RefundPreparation(new OrderStripeRefund(), false));
+
+        assertFalse(orderCommandService.cancelOrderByMerchantTimeout(501L));
+
+        verify(stripeRefundService).prepareTimeoutRefund(501L);
+        verify(stripeRefundService, never()).refundRejectedOrder(anyLong());
+        verifyNoInteractions(orderItemService, taskExecutor);
+    }
+
+    @Test
+    void timeoutCancellationFailsWhenStripeIsDisabled() {
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> orderCommandService.cancelOrderByMerchantTimeout(501L));
+
+        assertEquals("Stripe 退款未启用，无法执行超时取消", failure.getMessage());
+        verifyNoInteractions(stripeRefundServiceProvider, stripeRefundService, orderItemService, taskExecutor);
+    }
+
+    @Test
+    void timeoutCancellationStopsWhenTheOrderIsNoLongerPayable() {
+        enableStripePayments();
+        when(stripeRefundService.prepareTimeoutRefund(501L))
+                .thenThrow(new BusinessException(
+                        ResultCodeEnum.BUSINESS_ERROR, "当前订单状态不允许商家拒单退款"));
+
+        assertThrows(BusinessException.class,
+                () -> orderCommandService.cancelOrderByMerchantTimeout(501L));
+
+        verifyNoInteractions(orderItemService, taskExecutor);
     }
 
     @Test
@@ -228,5 +367,10 @@ class OrderCommandServiceTest {
         order.setMerchantId(merchantId);
         order.setStatus(status);
         return order;
+    }
+
+    private void enableStripePayments() {
+        ReflectionTestUtils.setField(orderCommandService, "stripePaymentsEnabled", true);
+        when(stripeRefundServiceProvider.getObject()).thenReturn(stripeRefundService);
     }
 }

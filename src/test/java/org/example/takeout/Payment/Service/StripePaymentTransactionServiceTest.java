@@ -16,9 +16,11 @@ import org.example.takeout.Order.Service.OrderService;
 import org.example.takeout.Payment.Config.StripePaymentProperties;
 import org.example.takeout.Payment.Config.StripePaymentRecoveryTask;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
+import org.example.takeout.Payment.Gateway.StripeRefundGateway;
 import org.example.takeout.Payment.Gateway.StripePaymentEvent;
 import org.example.takeout.Payment.Gateway.StripePaymentGateway;
 import org.example.takeout.Payment.Gateway.StripePaymentSnapshot;
+import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.StripePaymentEventMapper;
 import org.example.takeout.Payment.VO.StripePaymentView;
@@ -29,10 +31,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -71,11 +75,13 @@ class StripePaymentTransactionServiceTest {
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private OrderCommandService orderCommands;
     @Autowired private StripePaymentRecoveryTask recoveryTask;
+    @Autowired private StripeRefundGateway refundGateway;
 
     @BeforeEach
     void setUp() {
-        reset(merchantSseService, gateway);
+        reset(merchantSseService, gateway, refundGateway);
         UserContextHolder.setUserId(USER_ID);
+        jdbc.execute("DROP TABLE IF EXISTS order_stripe_refunds");
         jdbc.execute("DROP TABLE IF EXISTS stripe_payment_events");
         jdbc.execute("DROP TABLE IF EXISTS order_stripe_payments");
         jdbc.execute("DROP TABLE IF EXISTS orders");
@@ -128,6 +134,21 @@ class StripePaymentTransactionServiceTest {
                     payment_intent_id VARCHAR(255) NOT NULL,
                     event_type VARCHAR(100) NOT NULL,
                     create_time TIMESTAMP NOT NULL
+                )
+                """);
+        jdbc.execute("""
+                CREATE TABLE order_stripe_refunds (
+                    order_id BIGINT PRIMARY KEY,
+                    refund_id VARCHAR(255) UNIQUE,
+                    amount_minor BIGINT NOT NULL,
+                    currency VARCHAR(10) NOT NULL,
+                    idempotency_key VARCHAR(255) NOT NULL UNIQUE,
+                    stripe_status VARCHAR(32),
+                    reconciliation_state VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                    retry_count INT NOT NULL DEFAULT 0,
+                    next_retry_at TIMESTAMP,
+                    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """);
         jdbc.execute("DROP TABLE IF EXISTS order_item");
@@ -627,6 +648,29 @@ class StripePaymentTransactionServiceTest {
     }
 
     @Test
+    void webhookReceiptFailureDoesNotDowngradeCompletedPaymentOrAcknowledgeEvent() {
+        transactions.syncPaymentStatusFromSnapshot(snapshot("succeeded", 12_345L));
+        assertEquals("COMPLETE", payment().getReconciliationState());
+        when(gateway.verifySignatureAndParsePaymentEvent("signed", "signature"))
+                .thenReturn(successEvent("evt_receipt_retry"));
+        jdbc.execute("ALTER TABLE stripe_payment_events ADD CONSTRAINT reject_receipt "
+                + "CHECK (event_id <> 'evt_receipt_retry')");
+
+        assertThrows(RuntimeException.class,
+                () -> payments.verifyAndProcessWebhookEvent("signed", "signature"));
+
+        assertEquals("COMPLETE", payment().getReconciliationState());
+        assertEquals("succeeded", payment().getStripeStatus());
+        assertEquals(OrderStatusEnum.PAID.getCode(), status());
+        assertEquals(0, paymentEventMapper.countEventsByEventId("evt_receipt_retry"));
+
+        jdbc.execute("ALTER TABLE stripe_payment_events DROP CONSTRAINT reject_receipt");
+        payments.verifyAndProcessWebhookEvent("signed", "signature");
+        assertEquals("COMPLETE", payment().getReconciliationState());
+        assertEquals(1, paymentEventMapper.countEventsByEventId("evt_receipt_retry"));
+    }
+
+    @Test
     void cancellationInventoryFailureRollsBackOrderPaymentAndReceipt() {
         jdbc.execute("ALTER TABLE product ADD CONSTRAINT reject_stock_return CHECK (stock < 10)");
         StripePaymentEvent canceled = new StripePaymentEvent("evt_stock_retry", "payment_intent.canceled", false, snapshot("canceled", 0L));
@@ -642,12 +686,15 @@ class StripePaymentTransactionServiceTest {
     }
 
     @Test
-    void merchantRefundPlaceholderCannotCancelAStripePaidOrderOrRestoreStock() {
-        transactions.syncPaymentStatusFromSnapshot(snapshot("succeeded", 12_345L));
+    void merchantCannotRejectPaidOrderWithoutSuccessfulStripePayment() {
+        jdbc.update("UPDATE orders SET status = ? WHERE id = ?", OrderStatusEnum.PAID.getCode(), ORDER_ID);
+
         assertThrows(BusinessException.class, () -> orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID));
-        assertEquals(2, status());
-        assertEquals("succeeded", payment().getStripeStatus());
+        assertEquals(OrderStatusEnum.PAID.getCode(), status());
+        assertEquals("requires_payment_method", payment().getStripeStatus());
         assertEquals(7, stock());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM order_stripe_refunds", Integer.class));
+        verifyNoInteractions(refundGateway);
     }
 
     @Test
@@ -674,6 +721,41 @@ class StripePaymentTransactionServiceTest {
         recoveryTask.recoverPendingPayments();
         assertEquals("REVIEW", payment().getReconciliationState());
         assertEquals(1, status());
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void pendingPaymentAtRetryLimitWaitsForItsActiveAttemptHoldToExpire() {
+        jdbc.update("UPDATE order_stripe_payments SET retry_count = 96, next_retry_at = ? WHERE order_id = ?",
+                LocalDateTime.now().plusMinutes(1), ORDER_ID);
+
+        assertNull(transactions.claimPaymentAttempt(ORDER_ID));
+        assertEquals("PENDING", payment().getReconciliationState());
+        assertEquals(96, payment().getRetryCount());
+        assertTrue(payment().getNextRetryAt().isAfter(LocalDateTime.now()));
+
+        makeRecoveryDue();
+        assertNull(transactions.claimPaymentAttempt(ORDER_ID));
+        assertEquals("REVIEW", payment().getReconciliationState());
+        assertEquals(96, payment().getRetryCount());
+        assertNull(payment().getNextRetryAt());
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void manualSyncDoesNotDowngradeCompletedPaymentAtRetryLimit() {
+        jdbc.update("UPDATE order_stripe_payments SET retry_count = 96 WHERE order_id = ?", ORDER_ID);
+        transactions.syncPaymentStatusFromSnapshot(snapshot("succeeded", 12_345L));
+
+        assertEquals("COMPLETE", payment().getReconciliationState());
+        assertEquals(96, payment().getRetryCount());
+        assertEquals(OrderStatusEnum.PAID.getCode(), status());
+
+        payments.syncOrderPaymentStatusFromStripe(ORDER_ID);
+
+        assertEquals("COMPLETE", payment().getReconciliationState());
+        assertEquals(96, payment().getRetryCount());
+        assertEquals(OrderStatusEnum.PAID.getCode(), status());
         verifyNoInteractions(gateway);
     }
 
@@ -841,7 +923,8 @@ class StripePaymentTransactionServiceTest {
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement
     @Import(MybatisPlusConfig.class)
-    @MapperScan(basePackageClasses = {OrderStripePaymentMapper.class, StripePaymentEventMapper.class, OrderMapper.class, ProductMapper.class},
+    @MapperScan(basePackageClasses = {OrderStripePaymentMapper.class, StripePaymentEventMapper.class,
+            OrderMapper.class, ProductMapper.class},
             annotationClass = Mapper.class)
     static class TestConfig {
         @Bean
@@ -878,8 +961,10 @@ class StripePaymentTransactionServiceTest {
         }
 
         @Bean
-        OrderCommandService orderCommands(OrderMapper mapper, OrderItemService items) {
-            return new OrderCommandService(mapper, items);
+        OrderCommandService orderCommands(OrderMapper mapper, OrderItemService items,
+                                          ObjectProvider<StripeRefundService> refundServiceProvider) {
+            TaskExecutor taskExecutor = Runnable::run;
+            return new OrderCommandService(mapper, items, refundServiceProvider, taskExecutor);
         }
 
         @Bean
@@ -907,6 +992,24 @@ class StripePaymentTransactionServiceTest {
         StripePaymentService stripePaymentService(StripePaymentTransactionService transactions,
                                                   StripePaymentGateway gateway, StripePaymentProperties properties) {
             return new StripePaymentService(transactions, gateway, properties);
+        }
+
+        @Bean
+        StripeRefundGateway stripeRefundGateway() {
+            return mock(StripeRefundGateway.class);
+        }
+
+        @Bean
+        StripeRefundTransactionService refundTransactionService(OrderStripeRefundMapper refundMapper,
+                OrderMapper orderMapper, OrderStripePaymentMapper paymentMapper, OrderItemService orderItemService) {
+            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper, orderItemService);
+        }
+
+        @Bean
+        StripeRefundService stripeRefundService(StripeRefundTransactionService transactions,
+                StripeRefundGateway gateway, OrderStripePaymentMapper paymentMapper,
+                OrderStripeRefundMapper refundMapper) {
+            return new StripeRefundService(transactions, gateway, paymentMapper, refundMapper);
         }
     }
 }

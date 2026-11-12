@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.example.takeout.Order.Entity.Order;
+import org.springframework.security.core.parameters.P;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -101,11 +102,39 @@ public interface OrderMapper extends BaseMapper<Order> {
     int updateOrderStatusToRefunding(@Param("orderId") Long orderId,@Param("refunding")Integer refunding,
                                      @Param("merchantId")Long merchantId,@Param("paid") Integer paid);
 
+    /**
+     * 商家超时未接单的系统取消：抢占条件与商家拒单相互独立，多一个支付时间下限。
+     * <p>接单走 {@link #updateOrderStatusToPreparing}，两边都以 {@code status = PAID} 作为
+     * 唯一的抢占条件，由 InnoDB 行锁串行化，因此只有一方能把订单从 PAID 抢走。</p>
+     */
+    @Update("""
+    UPDATE orders
+    SET status = #{refunding},
+        merchant_seen = 1
+    WHERE id = #{orderId}
+      AND status = #{paid}
+      AND pay_time <= NOW() - INTERVAL 10 MINUTE
+    """)
+    int updateOrderStatusToRefundingOnTimeout(@Param("orderId") Long orderId,
+                                              @Param("refunding") Integer refunding,
+                                              @Param("paid") Integer paid);
+
+    /** 定时扫描只负责发现候选订单，真正能否取消由上面的条件更新决定。 */
+    @Select("""
+    SELECT id FROM orders
+    WHERE status = #{status}
+      AND pay_time <= NOW() - INTERVAL 10 MINUTE
+    ORDER BY pay_time ASC, id ASC
+    LIMIT #{limit}
+    """)
+    List<Long> selectUnacceptedPaidOrderIds(@Param("status") Integer status,
+                                            @Param("limit") Integer limit);
+
     /** Only used by the existing non-Stripe local simulation. */
     @Update("""
         UPDATE orders SET status = 2, pay_time = CURRENT_TIMESTAMP
         WHERE id = #{orderId} AND user_id = #{userId} AND status = 0
-          AND create_time > #{expiredBefore}
+          AND create_time > #{expiredBefore};
         """)
     int completeSimulatedPayment(@Param("orderId") Long orderId, @Param("userId") Long userId,
                                  @Param("expiredBefore") LocalDateTime expiredBefore);
@@ -151,11 +180,12 @@ public interface OrderMapper extends BaseMapper<Order> {
         WHERE id = #{orderId}
         AND merchant_id = #{merchantId}
         AND status =#{oldStatus}
+        AND pay_time > NOW() - INTERVAL 10 MINUTE;
     """)
     int updateOrderStatusToPreparing(@Param("orderId") Long orderId,
-                                    @Param("merchantId") Long merchantId,
-                                    @Param("oldStatus") Integer oldStatus,
-                                    @Param("newStatus") Integer newStatus);
+                                     @Param("merchantId") Long merchantId,
+                                     @Param("oldStatus") Integer oldStatus,
+                                     @Param("newStatus") Integer newStatus);
 
     @Update("""
         UPDATE orders

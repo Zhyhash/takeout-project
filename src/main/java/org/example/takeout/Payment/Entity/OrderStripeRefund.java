@@ -33,6 +33,12 @@ public class OrderStripeRefund {
     /** 本地退款对账协调状态，与 Stripe 退款状态独立。 */
     private String reconciliationState;
 
+    /** 已记录的退款状态冲突次数。 */
+    private Integer retryCount;
+
+    /** 下次允许恢复的数据库时间，空值表示无需等待。 */
+    private LocalDateTime nextRetryAt;
+
     /** 退款记录创建时间。 */
     private LocalDateTime createTime;
 

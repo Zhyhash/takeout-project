@@ -11,6 +11,7 @@ import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Record.MarkReadyResult;
 import org.example.takeout.Payment.Service.StripeRefundService;
 import org.example.takeout.Payment.VO.RefundPreparation;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.task.TaskExecutor;
@@ -31,17 +32,19 @@ import java.util.List;
 public class OrderCommandService {
     private final OrderMapper orderMapper;
     private final OrderItemService orderItemService;
-    private final StripeRefundService stripeRefundService;
+    private final ObjectProvider<StripeRefundService> stripeRefundServiceProvider;
     @Qualifier("applicationTaskExecutor")
     private final TaskExecutor taskExecutor;
     
     @Value("${payment.stripe.enabled:false}")
     private boolean stripePaymentsEnabled;
 
-    public OrderCommandService(OrderMapper orderMapper, OrderItemService orderItemService, StripeRefundService stripeRefundService, @Qualifier("applicationTaskExecutor") TaskExecutor taskExecutor) {
+    public OrderCommandService(OrderMapper orderMapper, OrderItemService orderItemService,
+                               ObjectProvider<StripeRefundService> stripeRefundServiceProvider,
+                               @Qualifier("applicationTaskExecutor") TaskExecutor taskExecutor) {
         this.orderMapper = orderMapper;
         this.orderItemService = orderItemService;
-        this.stripeRefundService = stripeRefundService;
+        this.stripeRefundServiceProvider = stripeRefundServiceProvider;
         this.taskExecutor = taskExecutor;
     }
 
@@ -64,41 +67,77 @@ public class OrderCommandService {
             if (OrderStatusEnum.PREPARING.getCode().equals(order.getStatus())) {
                 return;
             }
+            // 状态仍是 PAID 却更新不到，只可能是接单 SQL 里的 10 分钟时限拦下了这次操作
+            if (OrderStatusEnum.PAID.getCode().equals(order.getStatus())) {
+                throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                        "订单已超过商家接单时限，将被系统自动取消并退款");
+            }
             throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
                     "订单未处于已支付状态，当前状态码：" + order.getStatus());
         }
     }
 
-    /**
-     * 真实支付尚未实现退款，拒绝有 Stripe 支付记录或启用 Stripe 时的已付订单取消。
-     * 未启用 Stripe 的既有本地模拟订单保留拒单及库存归还行为，不宣称发生退款。
-     */
+
     @Transactional(rollbackFor = Exception.class)
     public void rejectOrderByMerchant(@NonNull Long orderId, Long merchantId) {
+        if (!stripePaymentsEnabled) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "Stripe 退款未启用，无法拒单");
+        }
+
+        StripeRefundService stripeRefundService = stripeRefundServiceProvider.getObject();
         RefundPreparation refundPreparation =
                 stripeRefundService.prepareRefund(orderId, merchantId);
-        if (refundPreparation.newlyCreated()) {
-            restoreOrderStock(orderId);
+        settlePreparedRefund(stripeRefundService, orderId, refundPreparation);
+    }
 
-            TransactionSynchronizationManager.registerSynchronization(
-                    new TransactionSynchronization() {
-                        @Override
-                        public void afterCommit() {
-                            try {
-                                taskExecutor.execute(() -> {
-                                    try {
-                                        stripeRefundService.refundRejectedOrder(orderId);
-                                    } catch (Exception e) {
-                                        log.error("Stripe 退款执行失败，orderId={}", orderId, e);
-                                    }
-                                });
-                            } catch (TaskRejectedException e) {
-                                log.error("退款任务提交失败，orderId={}", orderId, e);
-                            }
+    /**
+     * 商家超时未接单的系统取消入口。
+     * <p>与商家拒单共用同一段「归还库存 + 事务提交后再请求 Stripe」的执行逻辑，
+     * 差别只在触发条件（支付时间已超时）和没有商家身份可校验。</p>
+     *
+     * @return 本次是否真正把订单推进到退款流程；重复执行返回 false，不会再次退款
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean cancelOrderByMerchantTimeout(@NonNull Long orderId) {
+        if (!stripePaymentsEnabled) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,
+                    "Stripe 退款未启用，无法执行超时取消");
+        }
+
+        StripeRefundService stripeRefundService = stripeRefundServiceProvider.getObject();
+        RefundPreparation refundPreparation =
+                stripeRefundService.prepareTimeoutRefund(orderId);
+        return settlePreparedRefund(stripeRefundService, orderId, refundPreparation);
+    }
+
+    /** 退款准备成功后：归还库存并把 Stripe 调用挂到提交之后，两轮退款入口共用。 */
+    private boolean settlePreparedRefund(StripeRefundService stripeRefundService,
+                                         Long orderId,
+                                         RefundPreparation refundPreparation) {
+        if (!refundPreparation.newlyCreated()) {
+            return false;
+        }
+        restoreOrderStock(orderId);
+
+        TransactionSynchronizationManager.registerSynchronization(
+                new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        try {
+                            taskExecutor.execute(() -> {
+                                try {
+                                    stripeRefundService.refundRejectedOrder(orderId);
+                                } catch (Exception e) {
+                                    log.error("Stripe 退款执行失败，orderId={}", orderId, e);
+                                }
+                            });
+                        } catch (TaskRejectedException e) {
+                            log.error("退款任务提交失败，orderId={}", orderId, e);
                         }
                     }
-            );
-        }
+                }
+        );
+        return true;
     }
 
     private void restoreOrderStock(Long orderId) {

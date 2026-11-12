@@ -90,4 +90,5 @@ public class FulfillmentService {
         Long merchantId = MerchantContextHolder.getMerchantId();
         orderCommandService.rejectOrderByMerchant(orderId,merchantId);
     }
+
 }

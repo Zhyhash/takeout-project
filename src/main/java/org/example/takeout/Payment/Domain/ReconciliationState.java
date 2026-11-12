@@ -9,8 +9,8 @@ package org.example.takeout.Payment.Domain;
 public enum ReconciliationState {
     /** 仍需后台恢复任务继续推进，{@code next_retry_at} 决定何时到期。 */
     PENDING,
-    /** 已取得终态，不需要再恢复。 */
-    COMPLETE,
+    /** 已取得一致，不需要再额外恢复，并不代表完成退款。 */
+    RECONCILED,
     /** 需要人工核实，恢复任务不再自动处理。 */
     REVIEW;
 
@@ -34,7 +34,7 @@ public enum ReconciliationState {
     }
 
     /** 是否为可继续自动恢复的状态；未知值与 REVIEW 一样不再自动推进。 */
-    public static boolean isRecoverable(String raw) {
+    public static boolean isPending(String raw) {
         return PENDING.matches(raw);
     }
 }

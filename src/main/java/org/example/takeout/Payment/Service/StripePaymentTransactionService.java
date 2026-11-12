@@ -108,7 +108,7 @@ public class StripePaymentTransactionService {
         return payment;
     }
 
-    /** Journal after the failed result transaction has rolled back; never record the event as processed. */
+    /** 处理事务回滚后，记录失败并推迟仍待对账的支付。 */
     @Transactional(rollbackFor = Exception.class)
     public void recordWebhookFailure(StripePaymentSnapshot snapshot) {
         OrderStripePayment found = orderPaymentMapper.selectPaymentByPaymentIntentId(snapshot.id());
@@ -116,13 +116,16 @@ public class StripePaymentTransactionService {
         orderMapper.selectOrderForUpdate(found.getOrderId());
         OrderStripePayment current = orderPaymentMapper.selectPaymentByOrderIdForUpdate(found.getOrderId());
         if (current == null || !Objects.equals(snapshot.id(), current.getPaymentIntentId())) return;
-        boolean pending = ReconciliationState.isRecoverable(current.getReconciliationState());
-        ReconciliationState nextState = pending ? ReconciliationState.PENDING : ReconciliationState.REVIEW;
-        orderPaymentMapper.updateReconciliation(current.getOrderId(), nextState.code(),
-                pending ? orderPaymentMapper.selectDatabaseTime()
-                        .plusSeconds(PaymentPolicy.retryDelaySeconds(current.getRetryCount())) : null);
-        log.error("Stripe webhook result requires reconciliation: orderId={}, state={}", current.getOrderId(),
-                nextState);
+        log.error("Stripe webhook processing failed: orderId={}, reconciliationState={}",
+                current.getOrderId(), current.getReconciliationState());
+        if (!ReconciliationState.isPending(current.getReconciliationState())) return;
+
+        LocalDateTime nextRetryAt = orderPaymentMapper.selectDatabaseTime()
+                .plusSeconds(PaymentPolicy.retryDelaySeconds(current.getRetryCount()));
+        if (current.getNextRetryAt() == null || current.getNextRetryAt().isBefore(nextRetryAt)) {
+            orderPaymentMapper.updateReconciliation(current.getOrderId(), ReconciliationState.PENDING.code(),
+                    nextRetryAt);
+        }
     }
 
     private OrderStripePayment applySnapshot(
@@ -181,7 +184,7 @@ public class StripePaymentTransactionService {
             orderPaymentMapper.updateReconciliation(
                     orderId,
                     (terminal
-                            ? ReconciliationState.COMPLETE
+                            ? ReconciliationState.RECONCILED
                             : ReconciliationState.PENDING).code(),
                     terminal
                             ? null
@@ -213,8 +216,7 @@ public class StripePaymentTransactionService {
     /**
      * 记录一次终态冲突：不改写支付状态，也不联动订单状态，只把本地协调状态转为人工复核。
      * <p>事件回执照常记录，表示"已收到并已交人工处理"。这是有意为之——本地终态不会因为
-     * Stripe 重投而改变，若返回非 2xx 让 Stripe 连续重投三天，只会把失败日志刷满、
-     * 并在 recordWebhookFailure 里反复改写协调状态，却始终得不到不同结果。</p>
+     * Stripe 重投而改变，反复投递同一事件也无法解决这次冲突。</p>
      */
     private OrderStripePayment flagTerminalConflict(Long orderId, StripePaymentSnapshot snapshot,
                                                     String eventId, String eventType,
@@ -244,11 +246,18 @@ public class StripePaymentTransactionService {
      */
     @Transactional(rollbackFor = Exception.class)
     public OrderStripePayment claimPaymentAttempt(Long orderId) {
+        // 在同一行锁内判断状态与预算，避免覆盖并发同步提交的终态。
+        OrderStripePayment payment = orderPaymentMapper.selectPaymentByOrderIdForUpdate(orderId);
+        if (payment == null || !ReconciliationState.isPending(payment.getReconciliationState())) {
+            return null;
+        }
+
         // 与库内到期时间使用同一个时钟，避免 JVM 与数据库精度差异导致首次尝试被跳过。
         LocalDateTime now = orderPaymentMapper.selectDatabaseTime();
-        OrderStripePayment payment = orderPaymentMapper.selectPaymentByOrderId(orderId);
-        if (payment == null)
+        LocalDateTime scheduledRetryAt = payment.getNextRetryAt();
+        if (scheduledRetryAt == null || scheduledRetryAt.isAfter(now)) {
             return null;
+        }
         int retryCount = payment.getRetryCount() == null ? 0 : payment.getRetryCount();
 
         // 先做风控裁决再占位，避免"刚抢到就必须放弃"的无谓写入。
@@ -288,7 +297,7 @@ public class StripePaymentTransactionService {
     public boolean canCreatePaymentIntent(OrderStripePayment attempt) {
         OrderStripePayment current = orderPaymentMapper.selectPaymentByOrderId(attempt.getOrderId());
         if (current == null
-                || !ReconciliationState.isRecoverable(current.getReconciliationState())
+                || !ReconciliationState.isPending(current.getReconciliationState())
                 || current.getPaymentIntentId() != null) {
             return false;
         }
