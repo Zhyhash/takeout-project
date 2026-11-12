@@ -1001,8 +1001,8 @@ class StripePaymentTransactionServiceTest {
 
         @Bean
         StripeRefundTransactionService refundTransactionService(OrderStripeRefundMapper refundMapper,
-                OrderMapper orderMapper, OrderStripePaymentMapper paymentMapper, OrderItemService orderItemService) {
-            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper, orderItemService);
+                OrderMapper orderMapper, OrderStripePaymentMapper paymentMapper) {
+            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper);
         }
 
         @Bean

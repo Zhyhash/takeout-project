@@ -72,4 +72,14 @@ public interface OrderStripeRefundMapper extends BaseMapper<OrderStripeRefund> {
     LIMIT 1000;
     """)
     List<OrderStripeRefund> selectPendingRetryList(@Param("reconciliationState") String reconciliationState);
+
+    @Update("""
+    UPDATE order_stripe_refunds
+    SET reconciliation_state = 'REVIEW',
+        update_time = NOW()
+    WHERE order_id = #{orderId}
+      AND reconciliation_state = 'PENDING'
+      AND refund_id IS NULL
+    """)
+    int markReconciliationReview(Long orderId);
 }

@@ -1,6 +1,8 @@
 package org.example.takeout.Payment.Service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.example.takeout.Payment.Domain.PaymentPolicy;
 import org.example.takeout.Payment.Domain.ReconciliationState;
 import org.example.takeout.Payment.Domain.RefundSyncResult;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
@@ -14,7 +16,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+
 @Service
+@Slf4j
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeRefundService {
@@ -66,6 +71,10 @@ public class StripeRefundService {
             OrderStripePayment payment =
                     orderStripePaymentMapper.selectPaymentByOrderId(orderId);
 
+            LocalDateTime createTime = refund.getCreateTime();
+            if (stopIfIdempotencyWindowExpired(refund, createTime))
+                return;
+
             snapshot = refundGateway.createRefund(
                     payment.getPaymentIntentId(),
                     refund.getAmountMinor(),
@@ -93,6 +102,11 @@ public class StripeRefundService {
         }else {
             OrderStripePayment orderStripePayment = orderStripePaymentMapper.selectPaymentByOrderId(orderStripeRefund.getOrderId());
             String paymentIntentId = orderStripePayment.getPaymentIntentId();
+
+            LocalDateTime createTime = orderStripeRefund.getCreateTime();
+            if (stopIfIdempotencyWindowExpired(orderStripeRefund, createTime))
+                return;
+
             snapshot = refundGateway.createRefund(paymentIntentId,
                     orderStripeRefund.getAmountMinor(),
                     orderStripeRefund.getIdempotencyKey());
@@ -106,6 +120,23 @@ public class StripeRefundService {
             refundTransactionService.scheduleConflictRetry(orderStripeRefund.getOrderId());
         }
     }
+
+    private boolean stopIfIdempotencyWindowExpired(OrderStripeRefund orderStripeRefund, LocalDateTime createTime) {
+        LocalDateTime now = orderStripePaymentMapper.selectDatabaseTime();
+        if (now.isBefore(createTime.plus(PaymentPolicy.IDEMPOTENCY_TTL))) {
+            return false;
+        }
+
+        refundTransactionService.markReconciliationReview(orderStripeRefund.getOrderId());
+        log.warn(
+                "退款恢复停止：幂等安全窗口已过期，orderId={}, refundId={}, createTime={}",
+                orderStripeRefund.getOrderId(),
+                orderStripeRefund.getRefundId(),
+                createTime
+        );
+        return true;
+    }
+
     private boolean isTerminal(String status) {
         return "succeeded".equals(status)
                 || "failed".equals(status)

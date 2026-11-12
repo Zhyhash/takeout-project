@@ -8,7 +8,6 @@ import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Order.Entity.Order;
 import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
-import org.example.takeout.Order.Service.OrderItemService;
 import org.example.takeout.Payment.Domain.PaymentPolicy;
 import org.example.takeout.Payment.Domain.ReconciliationState;
 import org.example.takeout.Payment.Domain.RefundSyncResult;
@@ -38,7 +37,6 @@ public class StripeRefundTransactionService {
 
     private final OrderMapper orderMapper;
     private final OrderStripePaymentMapper orderStripePaymentMapper;
-    private final OrderItemService orderItemService;
 
     @Transactional
     public RefundPreparation prepareRefund(Long orderId, Long merchantId) {
@@ -284,6 +282,12 @@ public class StripeRefundTransactionService {
         return "succeeded".equals(status)
                 || "failed".equals(status)
                 || "canceled".equals(status);
+    }
+
+    @Transactional
+    public void markReconciliationReview(Long orderId) {
+        // 退款已绑定或对账状态已变化时，条件更新影响 0 行属于正常结果。
+        orderStripeRefundMapper.markReconciliationReview(orderId);
     }
 
     @Transactional

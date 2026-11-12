@@ -52,6 +52,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -276,6 +277,57 @@ class StripeRefundFlowTest {
         assertNull(completed.getNextRetryAt());
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
+    }
+
+    @Test
+    void expiredUnboundRefundMovesToReviewWithoutCallingStripe() {
+        refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
+        jdbc.update("UPDATE order_stripe_refunds SET create_time = ? WHERE order_id = ?",
+                LocalDateTime.now().minusDays(2), ORDER_ID);
+
+        refundRecoveryTask.recoverPendingRefunds();
+
+        OrderStripeRefund reviewed = refundRecord();
+        assertEquals(ReconciliationState.REVIEW.code(), reviewed.getReconciliationState());
+        assertNull(reviewed.getRefundId());
+        verifyNoInteractions(refundGateway);
+    }
+
+    @Test
+    void expiredStaleSnapshotDoesNotMoveBoundPendingRefundToReview() {
+        refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
+        jdbc.update("UPDATE order_stripe_refunds SET create_time = ? WHERE order_id = ?",
+                LocalDateTime.now().minusDays(2), ORDER_ID);
+        OrderStripeRefund scanned = refundRecord();
+        assertNull(scanned.getRefundId());
+        refundTransactions.syncRefundStatus(ORDER_ID, snapshot("pending"));
+
+        stripeRefundService.recoverRefund(scanned);
+
+        OrderStripeRefund current = refundRecord();
+        assertEquals(ReconciliationState.PENDING.code(), current.getReconciliationState());
+        assertEquals(REFUND_ID, current.getRefundId());
+        assertEquals("pending", current.getStripeStatus());
+        verifyNoInteractions(refundGateway);
+    }
+
+    @Test
+    void expiredStaleSnapshotDoesNotMoveCompletedRefundToReview() {
+        refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
+        jdbc.update("UPDATE order_stripe_refunds SET create_time = ? WHERE order_id = ?",
+                LocalDateTime.now().minusDays(2), ORDER_ID);
+        OrderStripeRefund scanned = refundRecord();
+        assertNull(scanned.getRefundId());
+        refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded"));
+
+        stripeRefundService.recoverRefund(scanned);
+
+        OrderStripeRefund current = refundRecord();
+        assertEquals(ReconciliationState.RECONCILED.code(), current.getReconciliationState());
+        assertEquals(REFUND_ID, current.getRefundId());
+        assertEquals("succeeded", current.getStripeStatus());
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+        verifyNoInteractions(refundGateway);
     }
 
     @Test
@@ -598,9 +650,8 @@ class StripeRefundFlowTest {
         @Bean
         StripeRefundTransactionService refundTransactionService(OrderStripeRefundMapper refundMapper,
                                                                 OrderMapper orderMapper,
-                                                                OrderStripePaymentMapper paymentMapper,
-                                                                OrderItemService orderItemService) {
-            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper, orderItemService);
+                                                                OrderStripePaymentMapper paymentMapper) {
+            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper);
         }
 
         @Bean

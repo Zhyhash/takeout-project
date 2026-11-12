@@ -40,7 +40,12 @@ public class StripeRefundRecoveryTask {
                 stripeRefundService.recoverRefund(orderStripeRefund);
             } catch (Exception e) {
                 log.error("stripe自动恢复失败，orderID={}",orderStripeRefund.getOrderId(),e);
-                stripeRefundTransactionService.scheduleConflictRetry(orderStripeRefund.getOrderId());
+                try {
+                    stripeRefundTransactionService.scheduleConflictRetry(orderStripeRefund.getOrderId());
+                } catch (Exception schedulingException) {
+                    log.error("退款重试调度数据库异常，等待下一轮扫描，orderId={}",
+                            orderStripeRefund.getOrderId(), schedulingException);
+                }
 
             }
         }
