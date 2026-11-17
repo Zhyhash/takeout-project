@@ -4,7 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.example.takeout.Common.Exception.BusinessException;
 import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Payment.Gateway.StripeGatewayException;
-import org.example.takeout.Payment.Service.StripePaymentService;
+import org.example.takeout.Payment.Service.StripeWebhookService;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -16,13 +16,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeWebhookController {
-    private final StripePaymentService paymentService;
+    private final StripeWebhookService webhookService;
 
     @PostMapping(value = "/webhooks/stripe", consumes = "application/json")
     public ResponseEntity<String> receiveStripeWebhookEvent(@RequestBody String rawBody,
             @RequestHeader(value = "Stripe-Signature", required = false) String signature) {
         try {
-            paymentService.verifyAndProcessWebhookEvent(rawBody, signature);
+            webhookService.processWebhookEvent(rawBody, signature);
 
             return ResponseEntity.ok("received");
         } catch (StripeGatewayException invalid) {

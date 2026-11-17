@@ -45,11 +45,11 @@ pause
 goto menu
 
 :listen
-echo Keep this window open during the payment test.
+echo Keep this window open during payment and refund tests.
 echo Copy the signing secret displayed by Stripe CLI into IDEA only.
 echo Do not send that secret to chat or save this terminal output to a log.
 echo Close this window to stop forwarding.
-call stripe listen --live=false --events payment_intent.succeeded,payment_intent.payment_failed,payment_intent.canceled --forward-to http://127.0.0.1:8080/webhooks/stripe
+call stripe listen --live=false --events payment_intent.succeeded,payment_intent.payment_failed,payment_intent.canceled,refund.created,refund.updated,refund.failed --forward-to http://127.0.0.1:8080/webhooks/stripe
 pause
 goto menu
 

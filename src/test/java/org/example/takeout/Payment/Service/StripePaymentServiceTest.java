@@ -6,7 +6,7 @@ import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Payment.Config.StripePaymentProperties;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
 import org.example.takeout.Payment.Gateway.StripeGatewayException;
-import org.example.takeout.Payment.Gateway.StripePaymentEvent;
+import org.example.takeout.Payment.Gateway.StripeWebhookEvent;
 import org.example.takeout.Payment.Gateway.StripePaymentGateway;
 import org.example.takeout.Payment.Gateway.StripePaymentSnapshot;
 import org.example.takeout.Payment.VO.StripePaymentView;
@@ -140,17 +140,6 @@ class StripePaymentServiceTest {
 
         assertEquals(OrderStatusEnum.CANCELLED.getCode(), result.orderStatus());
         assertNull(result.clientSecret());
-    }
-
-    @Test
-    void webhookRequiresVerifiedTestEventAndIgnoresUnrelatedEventTypes() {
-        when(gateway.verifySignatureAndParsePaymentEvent("signed-raw-body", "signature"))
-                .thenReturn(new StripePaymentEvent("evt_test_unrelated", "charge.succeeded", false, null));
-
-        service.verifyAndProcessWebhookEvent("signed-raw-body", "signature");
-
-        verify(gateway).verifySignatureAndParsePaymentEvent("signed-raw-body", "signature");
-        verifyNoInteractions(transactions);
     }
 
     @Test

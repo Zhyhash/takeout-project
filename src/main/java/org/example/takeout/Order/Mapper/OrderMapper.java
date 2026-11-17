@@ -262,4 +262,16 @@ public interface OrderMapper extends BaseMapper<Order> {
     int updateOrderStatusToRefunded(@Param("orderId") Long orderId,
                                     @Param("refunding") Integer refunding,
                                     @Param("refunded") Integer refunded);
+
+    @Update("""
+    UPDATE orders
+    SET status = #{refunding}
+    WHERE id = #{orderId}
+      AND status = #{refunded}
+    """)
+    int updateOrderStatusToRefundingIfRefunded(
+            @Param("orderId") Long orderId,
+            @Param("refunded") Integer refunded,
+            @Param("refunding") Integer refunding
+    );
 }

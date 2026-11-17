@@ -13,7 +13,7 @@ import org.example.takeout.Payment.Domain.PaymentPolicy;
 import org.example.takeout.Payment.Domain.ReconciliationState;
 import org.example.takeout.Payment.Domain.StripeStatus;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
-import org.example.takeout.Payment.Gateway.StripePaymentEvent;
+import org.example.takeout.Payment.Gateway.StripeWebhookEvent;
 import org.example.takeout.Payment.Gateway.StripePaymentSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.StripePaymentEventMapper;
@@ -85,7 +85,7 @@ public class StripePaymentTransactionService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public OrderStripePayment recordWebhookPaymentEvent(StripePaymentEvent event) {
+    public OrderStripePayment recordWebhookPaymentEvent(StripeWebhookEvent event) {
         StripePaymentSnapshot snapshot = event.payment();
         OrderStripePayment payment = orderPaymentMapper.selectPaymentByPaymentIntentId(snapshot.id());
         if (payment == null) {

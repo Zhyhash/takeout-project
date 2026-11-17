@@ -16,7 +16,7 @@
 
 订单由 [本地测试数据脚本](../deploy/stripe-demo-user-order.sql) 准备，创建时状态为 WAIT_PAY、支付时间为空；同一事务写入一条商品明细并将商品 `1` 的库存从 `100` 扣至 `99`，明细库存版本为 `2`。付款后核验库存仍为 `99`，没有重复扣减。由于顾客前端尚无收货经纬度输入，本次没有通过完整下单接口，也没有验证配送地址和距离计费；订单中的地址为测试占位信息，配送费使用 `5.00` 元测试值。
 
-本次确认了 PaymentIntent 创建、该沙盒的这笔 CNY 卡付款、Webhook 签名验证及成功事务落库。主动查询按钮、真实重复事件投递、拒付、3DS、数据库失败后的真实重投，以及 30 分钟临界竞争均未在本次人工联调中操作；相应的离线测试不能替代这些实际场景。没有实现或验证 Stripe 退款、自动对账或补偿。
+本次确认了 PaymentIntent 创建、该沙盒的这笔 CNY 卡付款、Webhook 签名验证及成功事务落库。主动查询按钮、真实重复事件投递、拒付、3DS、数据库失败后的真实重投，以及 30 分钟临界竞争均未在本次人工联调中操作；相应的离线测试不能替代这些实际场景。该次 2026-10-30 实际验收没有操作或验证 Stripe 退款、自动对账或补偿。
 
 ## 环境变量
 
@@ -63,10 +63,10 @@ $env:STRIPE_WEBHOOK_SECRET = [System.Net.NetworkCredential]::new('', $webhook).P
 3. 菜单选 **4**，保持窗口打开。等效命令是：
 
    ```powershell
-   stripe listen --live=false --events payment_intent.succeeded,payment_intent.payment_failed,payment_intent.canceled --forward-to http://127.0.0.1:8080/webhooks/stripe
+   stripe listen --live=false --events payment_intent.succeeded,payment_intent.payment_failed,payment_intent.canceled,refund.created,refund.updated,refund.failed --forward-to http://127.0.0.1:8080/webhooks/stripe
    ```
 
-   CLI 会在你的本地窗口显示当前 listener 的 `whsec_`。只把它复制到 IDEA 的 `STRIPE_WEBHOOK_SECRET`，不要发送到聊天，也不要把终端输出重定向到日志。CLI 可以先于后端启动，以便先取得签名密钥。
+   CLI 会在你的本地窗口显示当前 listener 的 `whsec_`。只把它复制到 IDEA 的 `STRIPE_WEBHOOK_SECRET`，不要发送到聊天，也不要把终端输出重定向到日志。该 listener 转发后端当前支持的三种 PaymentIntent 事件和三种 Refund 事件。CLI 可以先于后端启动，以便先取得签名密钥。
 4. 在 IDEA 配齐三个 Stripe 变量及 `STRIPE_ENABLED=true`，启动既有 MySQL/Redis，再重新运行 Spring Boot。CLI 授权和 IDEA 中的 `rk_test_` / `pk_test_` 必须来自同一个 takeout 沙盒。等待应用及 Flyway 启动完成，先确认没有缺表或配置错误。
 5. 准备本项目中同一用户的 JWT 和一笔**新建且未超过 30 分钟的待支付订单**。已有顾客页面可通过 `/#/customer/login` 登录、下单并从订单详情取得订单 ID；用户 JWT 在本机浏览器开发者工具 Network 的登录响应中复制，或从 `sessionStorage` 的 `takeout.customer.web.session` 中读取。也可以用既有接口调试工具完成登录与下单。JWT 只粘贴到本机测试页，不发给聊天。
 
@@ -76,9 +76,11 @@ $env:STRIPE_WEBHOOK_SECRET = [System.Net.NetworkCredential]::new('', $webhook).P
 7. 付款完成后只点击 **“读取本地状态”**；这调用 GET，不会主动查询 Stripe 或推进订单。观察 CLI 出现该 PaymentIntent 的 `payment_intent.succeeded` 事件及转发 HTTP 200。若仍待支付，先检查 listener、签名密钥和后端错误，保留现场；首次 Webhook 验收前不要点“Stripe主动查询（备用）”，也不要再次点创建支付。页面的备用按钮会调用可信的后端主动查询，可在另一次实验中验证，不能用它掩盖未接通的 Webhook。
 8. 在 IDEA 的 MySQL 数据库控制台打开 [支付验收 SQL](../deploy/stripe-payment-verification.sql)，把开头的 `@stripe_order_id` 改为本次数字订单 ID 后执行。该脚本只修改会话变量并查询，不更新业务数据。先不要让商家接单，确认 `order_status=2`（PAID）、`pay_time` 非空、`stripe_status=succeeded`、`currency=cny`、`amount_matches=1`、`succeeded_webhook_events>=1`。保存这些不含密钥的结果，才可记录这笔真实沙盒链路验收通过。
 
+退款链路单独验收时，使用一笔已进入 PAID 的测试订单，通过商家拒单触发全额退款，观察 CLI 转发的 `refund.created`、`refund.updated` 或 `refund.failed` 事件。后端会按退款 ID 回查 Stripe 当前状态，因此事件到达顺序不代表最终状态顺序。核对 `order_stripe_refunds.stripe_status`、`reconciliation_state`、`stripe_refund_events` 和订单状态。若 Stripe 将已成功的异步退款更新为 failed，预期退款记录进入 REVIEW，订单回到 REFUNDING；这一状态变化未包含在 2026-10-30 的实际支付验收中。
+
 拒付和 3DS 可以分别使用 `4000 0000 0000 0002`、`4000 0025 0000 3155` 在新测试订单中验证。CLI 的独立触发事件不关联你的本地订单，不能代替上述订单付款验收。
 
-如果通过公网 HTTPS 测试，在该沙盒的 Workbench 创建事件目标，选择本账户及 **Snapshot** 事件格式，订阅上述三个 PaymentIntent 事件，地址设为 `https://你的测试地址/webhooks/stripe`。API 版本与 stripe-java 34 对齐（`2026-09-30.endive`）。CLI listener 和控制台端点的 `whsec_` 不同，使用当前通知来源对应的签名密钥。
+如果通过公网 HTTPS 测试，在该沙盒的 Workbench 创建事件目标，选择本账户及 **Snapshot** 事件格式，订阅 `payment_intent.succeeded`、`payment_intent.payment_failed`、`payment_intent.canceled`、`refund.created`、`refund.updated`、`refund.failed` 六类事件，地址设为 `https://你的测试地址/webhooks/stripe`。API 版本与 stripe-java 34 对齐（`2026-09-30.endive`）。CLI listener 和控制台端点的 `whsec_` 不同，使用当前通知来源对应的签名密钥。
 
 新增接口：`POST /order/{id}/payment` 创建或复用支付请求，`GET /order/{id}/payment` 只读取本地记录，`POST /order/{id}/payment/sync` 主动查询 Stripe 并处理可信结果。它们都要求用户 JWT 并检查订单归属。`POST /webhooks/stripe` 仅依赖 Stripe 签名验证，不要求用户 JWT。只有创建接口会在订单仍可支付时返回 `clientSecret`，响应禁止缓存。
 
@@ -94,7 +96,7 @@ $env:STRIPE_WEBHOOK_SECRET = [System.Net.NetworkCredential]::new('', $webhook).P
 
 订单支付期限仍为创建后 30 分钟。进入 `PAYING` 后，原超时取消任务和用户取消都不能直接取消；恢复任务先查 Stripe，对未完成 PaymentIntent 请求取消，只有可信 `canceled` 且未收款时才事务取消订单并按原库存版本规则归还库存。取消被 Stripe 明确拒绝（最常见是用户恰好在同一刻完成支付）时，改用 `retrieve` 拉取真实状态并按它收场；`processing`、网络超时或其它未知结果继续保留库存。迟到 `succeeded` 仍按 `PAYING → PAID` 确认，不能因本地期限已到丢弃成功结果。
 
-真实退款尚未实现：启用 Stripe 时商家拒单已付订单会被明确拒绝，即使功能关闭，带 Stripe 支付记录的订单也不能走本地拒单模拟。只有未启用 Stripe 且无 Stripe 支付记录的既有本地模拟订单保留原拒单退库行为。Webhook 去重、支付状态和订单结果在同一事务提交，订单确认失败返回非 2xx，事件不会被成功去重。商家 SSE 仅在首次订单确认提交后触发。
+Stripe 全额退款已接入商家拒单和商家接单超时取消。部分退款、退款失败后的自动重试、人工处理界面和完整账单对账尚未实现。退款失败原因会落库并由巡检任务汇总告警；若 Stripe 将已记录为 succeeded 的退款更新为 failed，Webhook 会按当前 Stripe 快照回写，退款记录进入 REVIEW，订单退回 REFUNDING。Stripe 关闭时，商家拒单入口明确拒绝操作，不会回退到本地模拟退款。支付和退款 Webhook 回执均与对应业务状态在同一事务提交；支付确认失败会返回非 2xx，事件不会被成功去重。商家 SSE 仅在首次订单确认提交后触发。
 
 新增迁移 `V20261105__stripe_payment_recovery.sql` 建立恢复字段，`V20261106_1__drop_stripe_recovery_lease_columns.sql` 随后移除租约、幂等过期时间与诊断列。恢复参数、人工处理边界见 [支付重构交付报告](stripe-payment-refactor-report.md)。新迁移也保护旧版 `WAIT_PAY` 支付记录；发现没有支付记录的孤立 `PAYING` 会在修改结构前阻断迁移，需要先核实历史记录。
 
@@ -123,9 +125,11 @@ mvn -o '-Dtest=Stripe*Test,OrderPaymentNotificationTransactionTest,OrderTimeoutT
 
 1. **创建或复用支付请求**：从 `StripePaymentService.createOrReuseOrderPaymentIntent` 进入；`getOrCreateOrderPaymentRecord` 在短事务中校验订单并保存稳定幂等键。事务结束后，服务按需调用 `createPaymentIntent` 或 `retrievePaymentIntent`，再用 `bindPaymentIntentToOrder` 或 `syncPaymentStatusFromSnapshot` 保存结果。
 2. **主动查询与本地只读**：`syncOrderPaymentStatusFromStripe` 在事务外查询 Stripe，再由 `syncPaymentStatusFromSnapshot` 在短事务内更新状态并在成功时确认订单。`getLocalOrderPaymentStatus` 只读取本地状态，不请求 Stripe。
-3. **Webhook**：`verifyAndProcessWebhookEvent` 验签并筛选受支持的测试事件；`recordWebhookPaymentEvent` 在短事务内去重、保存支付状态，并在成功时确认订单。主动查询和 Webhook 都复用 `updatePaymentStatusAndConfirmOrderIfSucceeded`。
+3. **Webhook**：`StripeWebhookController` 只做异常到 HTTP 状态码的映射，编排在 `StripeWebhookService.processWebhookEvent`：`StripeWebhookGateway` 验签并解析事件 → `validateWebhookEnvironment` 拒绝真实环境 → `dispatchEvent` 按类型分发。支付事件交给 `StripePaymentService.processWebhookPaymentEvent`，退款事件交给 `StripeRefundService.processWebhookRefundEvent`。分发层不开启事务，远端 retrieve 与本地短事务各自成段。
+4. **Webhook 去重**：支付回执写 `stripe_payment_events`，退款回执写 `stripe_refund_events`（`V20261116__stripe_refund_events.sql`）。两类回执都与业务状态写入处于**同一个本地事务**，且在状态写入之后才插入——事务回滚时回执一并消失，Stripe 重投仍会被处理。
+5. **退款失败的可观测性**：`order_stripe_refunds.failure_reason` 保存 Stripe 的 `refund.failure_reason`（`V20261117__stripe_refund_failure_reason.sql`），只有 `failed` 时有值。`StripeRefundFailureScanTask` 每 10 分钟只读巡检 `stripe_status = 'failed'` 的记录并汇总告警（按原因分组 + 订单号），**不推进状态、不消耗 `retry_count`**。是否自动重试留给后续按 `failure_reason` 判断：卡过期这类原因重试无意义，只有可恢复原因才值得重开一笔。
 
-`OrderStripePaymentMapper` 只操作 `order_stripe_payments`，`StripePaymentEventMapper` 只操作 `stripe_payment_events`。Stripe 网络请求在数据库事务外；查询或 Webhook 结果由本地短事务统一保存，支付成功时也在该事务内确认订单。
+`OrderStripePaymentMapper` 只操作 `order_stripe_payments`，`StripePaymentEventMapper` 只操作 `stripe_payment_events`；`OrderStripeRefundMapper` 只操作 `order_stripe_refunds`，`StripeRefundEventMapper` 只操作 `stripe_refund_events`。Stripe 网络请求在数据库事务外；支付和退款状态及对应 Webhook 回执在本地短事务内提交。
 
 2026-11-03 重构验证：109 项通过，0 失败、0 跳过。
 

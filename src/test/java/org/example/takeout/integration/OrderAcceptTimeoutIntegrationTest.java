@@ -17,6 +17,7 @@ import org.example.takeout.Payment.Gateway.StripeRefundGateway;
 import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
+import org.example.takeout.Payment.Mapper.StripeRefundEventMapper;
 import org.example.takeout.Payment.Service.StripeRefundService;
 import org.example.takeout.Payment.Service.StripeRefundTransactionService;
 import org.example.takeout.Product.Mapper.ProductMapper;
@@ -358,7 +359,7 @@ class OrderAcceptTimeoutIntegrationTest {
     }
 
     private static StripeRefundSnapshot snapshot(String status) {
-        return new StripeRefundSnapshot(REFUND_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, status);
+        return new StripeRefundSnapshot(REFUND_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, status, null);
     }
 
     private void recreateSchema() {
@@ -420,6 +421,7 @@ class OrderAcceptTimeoutIntegrationTest {
                     currency VARCHAR(10) NOT NULL,
                     idempotency_key VARCHAR(255) NOT NULL,
                     stripe_status VARCHAR(32) NULL,
+                    failure_reason VARCHAR(64) NULL,
                     reconciliation_state VARCHAR(32) NOT NULL DEFAULT 'PENDING',
                     retry_count INT NOT NULL DEFAULT 0,
                     next_retry_at DATETIME NULL,
@@ -534,8 +536,9 @@ class OrderAcceptTimeoutIntegrationTest {
         @Bean
         StripeRefundTransactionService refundTransactionService(OrderStripeRefundMapper refundMapper,
                                                                 OrderMapper orderMapper,
-                                                                OrderStripePaymentMapper paymentMapper) {
-            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper);
+                                                                OrderStripePaymentMapper paymentMapper,
+                                                                StripeRefundEventMapper refundEventMapper) {
+            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper, refundEventMapper);
         }
 
         @Bean

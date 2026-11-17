@@ -30,6 +30,13 @@ public class OrderStripeRefund {
     /** 本地保存的 Stripe 原生退款状态。 */
     private String stripeStatus;
 
+    /**
+     * Stripe 返回的退款失败原因（{@code refund.failure_reason}），仅失败时有值。
+     * <p>与状态下分开存：状态说明"钱没退成"，原因说明"为什么没退成"，
+     * 后续自动重试要先按原因判断是否值得重试（例如卡已过期的失败重试也没用）。</p>
+     */
+    private String failureReason;
+
     /** 本地退款对账协调状态，与 Stripe 退款状态独立。 */
     private String reconciliationState;
 

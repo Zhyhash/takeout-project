@@ -293,6 +293,7 @@ CREATE TABLE IF NOT EXISTS `order_stripe_refunds` (
     `currency` varchar(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     `idempotency_key` varchar(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     `stripe_status` varchar(32) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+    `failure_reason` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
     `reconciliation_state` varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     `retry_count` int NOT NULL DEFAULT 0,
     `next_retry_at` datetime NULL DEFAULT NULL,
@@ -300,5 +301,15 @@ CREATE TABLE IF NOT EXISTS `order_stripe_refunds` (
     `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`order_id`),
     UNIQUE KEY `uk_order_stripe_refund_id` (`refund_id`),
-    UNIQUE KEY `uk_order_stripe_refund_idempotency` (`idempotency_key`)
+    UNIQUE KEY `uk_order_stripe_refund_idempotency` (`idempotency_key`),
+    KEY `idx_order_stripe_refunds_status` (`stripe_status`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS `stripe_refund_events` (
+    `event_id` varchar(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `refund_id` varchar(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `event_type` varchar(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`event_id`),
+    KEY `idx_stripe_refund_events_refund` (`refund_id`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;

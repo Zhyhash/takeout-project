@@ -2,6 +2,8 @@ package org.example.takeout.Payment.Service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.takeout.Common.Exception.BusinessException;
+import org.example.takeout.Common.Result.ResultCodeEnum;
 import org.example.takeout.Payment.Domain.PaymentPolicy;
 import org.example.takeout.Payment.Domain.ReconciliationState;
 import org.example.takeout.Payment.Domain.RefundSyncResult;
@@ -9,14 +11,18 @@ import org.example.takeout.Payment.Entity.OrderStripePayment;
 import org.example.takeout.Payment.Entity.OrderStripeRefund;
 import org.example.takeout.Payment.Gateway.StripeRefundGateway;
 import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
+import org.example.takeout.Payment.Gateway.StripeWebhookEvent;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
 import org.example.takeout.Payment.VO.RefundPreparation;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Objects;
 
 @Service
 @Slf4j
@@ -118,6 +124,74 @@ public class StripeRefundService {
         );
         if (refundSyncResult == RefundSyncResult.CONFLICT) {
             refundTransactionService.scheduleConflictRetry(orderStripeRefund.getOrderId());
+        }
+    }
+
+    /**
+     * 处理一条已验签的退款 Webhook 事件。
+     * <p>边界刻意保持三段：本地去重与归属判断只有读操作，远端 {@code retrieveRefund} 是唯一一次
+     * HTTP 调用且发生在事务之外，状态写入与事件回执最后由同一个短事务完成。
+     * 因此任何一步失败都不会留下"已处理"的回执，Stripe 重投仍能被正常处理。</p>
+     */
+    @Transactional(propagation = Propagation.NEVER)
+    public void processWebhookRefundEvent(StripeWebhookEvent event) {
+        StripeRefundSnapshot eventRefund = event.refund();
+        if (refundTransactionService.isRefundEventProcessed(event.id())) {
+            log.info("退款事件已处理，忽略重复投递: eventId={}, refundId={}",
+                    event.id(), eventRefund.refundId());
+            return;
+        }
+
+        OrderStripeRefund local = refundTransactionService.findRefundForEvent(
+                eventRefund.refundId(), eventRefund.paymentIntentId());
+        if (local == null) {
+            // 不是本地发起的退款（例如后台手工退款）：既不写回执，也不改本地状态。
+            log.warn("退款事件无法归属到本地退款记录，忽略: eventId={}, refundId={}, paymentIntentId={}",
+                    event.id(), eventRefund.refundId(), eventRefund.paymentIntentId());
+            return;
+        }
+        if (local.getRefundId() != null && !local.getRefundId().equals(eventRefund.refundId())) {
+            log.warn("退款事件指向另一笔退款对象，忽略: eventId={}, eventRefundId={}, localRefundId={}",
+                    event.id(), eventRefund.refundId(), local.getRefundId());
+            return;
+        }
+
+        // 事件载荷停留在投递时刻，回查一次拿当前真相；网络调用不进事务。
+        StripeRefundSnapshot snapshot = refundGateway.retrieveRefund(eventRefund.refundId());
+
+        requireRefundBelongsToOrder(local, snapshot);
+
+        final RefundSyncResult result;
+        try {
+            result = refundTransactionService.syncWebhookRefundStatus(
+                    local.getOrderId(), snapshot, event.id(), event.type());
+        } catch (DuplicateKeyException concurrentDelivery) {
+            // 并发投递：另一条线程已处理并提交同一事件，本次不再重复写状态。
+            log.info("退款事件已被并发投递处理: eventId={}, refundId={}",
+                    event.id(), eventRefund.refundId());
+            return;
+        }
+
+        if (result == RefundSyncResult.CONFLICT) {
+            log.warn("退款事件与本地终态冲突，保留本地结论并转人工: orderId={}, eventId={}",
+                    local.getOrderId(), event.id());
+        }
+    }
+
+    /**
+     * 事件里的退款对象必须与本地退款记录、本地支付单对得上，否则不能拿来改本地状态。
+     * <p>这里是进事务前的预检（读操作不加锁），事务内还会用行锁再校验一次金额与币种。</p>
+     */
+    private void requireRefundBelongsToOrder(OrderStripeRefund local, StripeRefundSnapshot snapshot) {
+        OrderStripePayment payment = orderStripePaymentMapper.selectPaymentByOrderId(local.getOrderId());
+        if (payment == null
+                || payment.getPaymentIntentId() == null
+                || !Objects.equals(payment.getPaymentIntentId(), snapshot.paymentIntentId())) {
+            throw new BusinessException(ResultCodeEnum.PAYMENT_ERROR, "退款关联的支付对象不匹配");
+        }
+        if (!Objects.equals(local.getAmountMinor(), snapshot.amountMinor())
+                || !Objects.equals(local.getCurrency(), snapshot.currency())) {
+            throw new BusinessException(ResultCodeEnum.PAYMENT_ERROR, "退款金额或币种与本地记录不一致");
         }
     }
 

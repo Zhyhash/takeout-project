@@ -7,6 +7,7 @@ import org.example.takeout.Payment.Controller.StripePaymentExceptionHandler;
 import org.example.takeout.Payment.Controller.StripeWebhookController;
 import org.example.takeout.Payment.Gateway.StripeGatewayException;
 import org.example.takeout.Payment.Service.StripePaymentService;
+import org.example.takeout.Payment.Service.StripeWebhookService;
 import org.example.takeout.Payment.VO.StripePaymentView;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,11 +23,12 @@ import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standal
 
 class StripePaymentControllerTest {
     private final StripePaymentService payments = org.mockito.Mockito.mock(StripePaymentService.class);
+    private final StripeWebhookService webhooks = org.mockito.Mockito.mock(StripeWebhookService.class);
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = standaloneSetup(new StripePaymentController(payments), new StripeWebhookController(payments))
+        mockMvc = standaloneSetup(new StripePaymentController(payments), new StripeWebhookController(webhooks))
                 .setControllerAdvice(new StripePaymentExceptionHandler())
                 .build();
     }
@@ -84,14 +86,14 @@ class StripePaymentControllerTest {
     @Test
     void webhookWithoutSignatureIsRejectedAsBadRequest() throws Exception {
         doThrow(new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK))
-                .when(payments).verifyAndProcessWebhookEvent(anyString(), isNull());
+                .when(webhooks).processWebhookEvent(anyString(), isNull());
 
         mockMvc.perform(post("/webhooks/stripe")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isBadRequest());
 
-        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", null);
+        verify(webhooks).processWebhookEvent("{\"id\":\"evt_test\"}", null);
         verifyNoMoreInteractions(payments);
     }
 
@@ -105,14 +107,14 @@ class StripePaymentControllerTest {
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
                         .string("received"));
 
-        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "valid");
+        verify(webhooks).processWebhookEvent("{\"id\":\"evt_test\"}", "valid");
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void webhookWithInvalidSignatureIsRejectedAsBadRequest() throws Exception {
         doThrow(new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK))
-                .when(payments).verifyAndProcessWebhookEvent(anyString(), eq("invalid"));
+                .when(webhooks).processWebhookEvent(anyString(), eq("invalid"));
 
         mockMvc.perform(post("/webhooks/stripe")
                         .header("Stripe-Signature", "invalid")
@@ -120,14 +122,14 @@ class StripePaymentControllerTest {
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isBadRequest());
 
-        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "invalid");
+        verify(webhooks).processWebhookEvent("{\"id\":\"evt_test\"}", "invalid");
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void webhookBusinessProcessingFailureIsRetryableServiceUnavailable() throws Exception {
         doThrow(new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "database unavailable"))
-                .when(payments).verifyAndProcessWebhookEvent(anyString(), eq("valid"));
+                .when(webhooks).processWebhookEvent(anyString(), eq("valid"));
 
         mockMvc.perform(post("/webhooks/stripe")
                         .header("Stripe-Signature", "valid")
@@ -135,14 +137,14 @@ class StripePaymentControllerTest {
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isServiceUnavailable());
 
-        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "valid");
+        verify(webhooks).processWebhookEvent("{\"id\":\"evt_test\"}", "valid");
         verifyNoMoreInteractions(payments);
     }
 
     @Test
     void webhookUnhandledRuntimeFailureIsRetryableServiceUnavailable() throws Exception {
         doThrow(new IllegalStateException("processing failed"))
-                .when(payments).verifyAndProcessWebhookEvent(anyString(), eq("valid"));
+                .when(webhooks).processWebhookEvent(anyString(), eq("valid"));
 
         mockMvc.perform(post("/webhooks/stripe")
                         .header("Stripe-Signature", "valid")
@@ -150,7 +152,7 @@ class StripePaymentControllerTest {
                         .content("{\"id\":\"evt_test\"}"))
                 .andExpect(status().isServiceUnavailable());
 
-        verify(payments).verifyAndProcessWebhookEvent("{\"id\":\"evt_test\"}", "valid");
+        verify(webhooks).processWebhookEvent("{\"id\":\"evt_test\"}", "valid");
         verifyNoMoreInteractions(payments);
     }
 

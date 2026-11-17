@@ -14,7 +14,7 @@ import org.example.takeout.Payment.Domain.ReconciliationState;
 import org.example.takeout.Payment.Domain.StripeStatus;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
 import org.example.takeout.Payment.Gateway.StripeGatewayException;
-import org.example.takeout.Payment.Gateway.StripePaymentEvent;
+import org.example.takeout.Payment.Gateway.StripeWebhookEvent;
 import org.example.takeout.Payment.Gateway.StripePaymentGateway;
 import org.example.takeout.Payment.Gateway.StripePaymentSnapshot;
 import org.example.takeout.Payment.VO.StripePaymentView;
@@ -25,7 +25,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.Set;
 
 /** 编排订单支付：在数据库事务之外调用 Stripe，再交给本地短事务保存关联或支付结果。 */
 @Slf4j
@@ -34,9 +33,6 @@ import java.util.Set;
 @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 @Transactional(propagation = Propagation.NEVER)
 public class StripePaymentService {
-    private static final Set<String> SUPPORTED_PAYMENT_EVENT_TYPES = Set.of("payment_intent.succeeded",
-            "payment_intent.payment_failed", "payment_intent.canceled");
-
     private final StripePaymentTransactionService paymentTransactions;
     private final StripePaymentGateway paymentGateway;
     private final StripePaymentProperties paymentProperties;
@@ -159,30 +155,23 @@ public class StripePaymentService {
     }
 
     /**
-     * 验证 Webhook 签名，并处理受支持的测试环境支付事件。
-     * <p>拒绝真实环境事件；忽略不支持的事件类型或不含支付对象的事件。
-     * 有效支付事件交由本地短事务完成去重、状态保存及订单支付确认。</p>
+     * 处理一条已验签、已确认环境的支付事件。
+     * <p>本地状态写入与事件回执由同一个短事务完成；失败时回执一并回滚，
+     * 让 Stripe 重投后仍能被处理。这里不承担验签与环境裁决，那属于 Webhook 编排层。</p>
      *
-     * @param rawBody 未经改写的 Webhook 原始请求体，用于签名验证
-     * @param signature 请求头 Stripe-Signature 的值
-     * @throws BusinessException 收到真实环境事件或支付结果与本地订单不符
+     * @param event 已验签的支付事件，{@code payment()} 必须非空
+     * @throws BusinessException 支付结果与本地订单不符
      */
-    public void verifyAndProcessWebhookEvent(String rawBody, String signature) {
-        StripePaymentEvent event = paymentGateway.verifySignatureAndParsePaymentEvent(rawBody, signature);
-        if (event.livemode()) throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "拒绝真实环境支付事件");
-
-        if (event.type() != null && SUPPORTED_PAYMENT_EVENT_TYPES.contains(event.type())
-                && event.payment() != null) {
+    public void processWebhookPaymentEvent(StripeWebhookEvent event) {
+        try {
+            paymentTransactions.recordWebhookPaymentEvent(event);
+        } catch (RuntimeException failure) {
             try {
-                paymentTransactions.recordWebhookPaymentEvent(event);
-            } catch (RuntimeException failure) {
-                try {
-                    paymentTransactions.recordWebhookFailure(event.payment());
-                } catch (RuntimeException persistenceFailure) {
-                    failure.addSuppressed(persistenceFailure);
-                }
-                throw failure;
+                paymentTransactions.recordWebhookFailure(event.payment());
+            } catch (RuntimeException persistenceFailure) {
+                failure.addSuppressed(persistenceFailure);
             }
+            throw failure;
         }
     }
 

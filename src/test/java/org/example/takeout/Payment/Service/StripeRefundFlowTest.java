@@ -14,8 +14,10 @@ import org.example.takeout.Payment.Domain.RefundSyncResult;
 import org.example.takeout.Payment.Entity.OrderStripeRefund;
 import org.example.takeout.Payment.Gateway.StripeRefundGateway;
 import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
+import org.example.takeout.Payment.Gateway.StripeWebhookEvent;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
+import org.example.takeout.Payment.Mapper.StripeRefundEventMapper;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.Service.ProductCommandService;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,6 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -255,7 +258,7 @@ class StripeRefundFlowTest {
     }
 
     @Test
-    void stalePendingRecoveryCannotReopenCompletedRefundOnTerminalConflict() {
+    void stalePendingSnapshotCannotReopenCompletedRefund() {
         when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
                 .thenReturn(snapshot("pending"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
@@ -265,11 +268,10 @@ class StripeRefundFlowTest {
         assertEquals(RefundSyncResult.REFUNDED,
                 refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded")));
         when(refundGateway.retrieveRefund(REFUND_ID))
-                .thenReturn(snapshot("failed"));
+                .thenReturn(snapshot("pending"));
         stripeRefundService.recoverRefund(scanned);
 
-        // 旧扫描拿到的 Stripe 快照与刚确认的终态冲突，但锁内记录已是 COMPLETE。
-        refundTransactions.scheduleConflictRetry(ORDER_ID);
+        // 旧的 pending 快照不能覆盖已经回写的成功结果，也不能重新安排重试。
         OrderStripeRefund completed = refundRecord();
         assertEquals("succeeded", completed.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), completed.getReconciliationState());
@@ -357,6 +359,7 @@ class StripeRefundFlowTest {
         OrderStripeRefund reconciled = refundRecord();
         assertEquals("succeeded", reconciled.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), reconciled.getReconciliationState());
+        assertNull(reconciled.getNextRetryAt());
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         assertEquals(STOCK_AFTER_REFUND, stock());
         refundRecoveryTask.recoverPendingRefunds();
@@ -477,6 +480,155 @@ class StripeRefundFlowTest {
     }
 
     // ------------------------------------------------------------------
+    // 第四轮：退款 Webhook 事件
+    // ------------------------------------------------------------------
+
+    /** 退款成功的 Webhook 把本地 pending 推到 REFUNDED，并写下事件回执。 */
+    @Test
+    void refundWebhookEventAdvancesPendingRefundAndRecordsReceipt() {
+        pendingRefund();
+        when(refundGateway.retrieveRefund(REFUND_ID)).thenReturn(snapshot("succeeded"));
+
+        stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_succeeded", "refund.updated"));
+
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+        OrderStripeRefund refund = refundRecord();
+        assertEquals("succeeded", refund.getStripeStatus());
+        assertEquals(ReconciliationState.RECONCILED.code(), refund.getReconciliationState());
+        assertEquals(1, refundEventCount("evt_refund_succeeded"));
+        // 事件只推进状态，不会再下一笔退款
+        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
+    }
+
+    /** 同一事件重复投递：第二次直接短路，不再回查远端，也不再写第二份回执。 */
+    @Test
+    void repeatedRefundWebhookEventIsIgnoredAfterTheFirstReceipt() {
+        pendingRefund();
+        when(refundGateway.retrieveRefund(REFUND_ID)).thenReturn(snapshot("succeeded"));
+
+        stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_dup", "refund.updated"));
+        stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_dup", "refund.updated"));
+
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+        assertEquals(1, refundEventCount("evt_refund_dup"));
+        verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
+    }
+
+    /**
+     * 状态写入失败时事务整体回滚，事件回执必须一起消失。
+     * <p>否则 Stripe 重投会被自己的去重逻辑挡掉，这笔退款永远停在 pending。</p>
+     */
+    @Test
+    void failedRefundWebhookDoesNotLeaveReceiptSoTheRetryIsStillProcessed() {
+        pendingRefund();
+        when(refundGateway.retrieveRefund(REFUND_ID)).thenReturn(snapshot("succeeded"));
+        jdbc.execute("""
+                ALTER TABLE order_stripe_refunds
+                ADD CONSTRAINT reject_webhook_terminal_status
+                CHECK (stripe_status IS NULL OR stripe_status <> 'succeeded')
+                """);
+
+        assertThrows(RuntimeException.class, () ->
+                stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_retry", "refund.updated")));
+
+        assertEquals(0, refundEventCount("evt_refund_retry"));
+        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+
+        jdbc.execute("ALTER TABLE order_stripe_refunds DROP CONSTRAINT reject_webhook_terminal_status");
+        stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_retry", "refund.updated"));
+
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+        assertEquals(1, refundEventCount("evt_refund_retry"));
+    }
+
+    /** 指向另一笔退款对象的事件不属于本订单：既不改本地状态，也不留回执。 */
+    @Test
+    void refundWebhookForAnotherRefundObjectIsIgnoredWithoutReceipt() {
+        pendingRefund();
+
+        stripeRefundService.processWebhookRefundEvent(new StripeWebhookEvent("evt_refund_foreign",
+                "refund.updated", false, null,
+                new StripeRefundSnapshot("re_other_701", PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, "succeeded", null)));
+
+        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+        assertEquals("pending", refundRecord().getStripeStatus());
+        assertEquals(0, refundEventCount("evt_refund_foreign"));
+        verify(refundGateway, never()).retrieveRefund(anyString());
+    }
+
+    /**
+     * 退款失败的 Webhook 必须把本地状态同步成 failed（钱没退出去），
+     * 而不是只记一条回执了事。订单停在 REFUNDING，等人工决定重试还是回滚。
+     */
+    @Test
+    void refundFailedWebhookSyncsLocalRefundToFailed() {
+        pendingRefund();
+        when(refundGateway.retrieveRefund(REFUND_ID))
+                .thenReturn(snapshot("failed", "expired_or_canceled_card"));
+
+        stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_failed", "refund.failed"));
+
+        OrderStripeRefund after = refundRecord();
+        assertEquals("failed", after.getStripeStatus());
+        // 失败原因要落库：后续按原因判断是否值得自动重试
+        assertEquals("expired_or_canceled_card", after.getFailureReason());
+        assertEquals(REFUND_ID, after.getRefundId());
+        // 钱没退成，订单不能被推进到 REFUNDED
+        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+        assertEquals(1, refundEventCount("evt_refund_failed"));
+
+        // 失败巡检查询能看到这条记录，且它只读，不改状态
+        List<OrderStripeRefund> failed = refundMapper.selectFailedList(10);
+        assertEquals(1, failed.size());
+        assertEquals(ORDER_ID, failed.get(0).getOrderId());
+        assertEquals("expired_or_canceled_card", failed.get(0).getFailureReason());
+        assertEquals("failed", refundRecord().getStripeStatus());
+    }
+
+    @Test
+    void refundFailedWebhookReopensRefundedOrderWithoutReturningStockAgain() {
+        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+                .thenReturn(snapshot("succeeded"));
+        orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+        assertEquals(STOCK_AFTER_REFUND, stock());
+
+        String failureReason = "expired_or_canceled_card";
+        StripeRefundSnapshot failedSnapshot = snapshot("failed", failureReason);
+        when(refundGateway.retrieveRefund(REFUND_ID)).thenReturn(failedSnapshot);
+        StripeWebhookEvent failedEvent = new StripeWebhookEvent(
+                "evt_refund_failed_after_success", "refund.failed", false, null, failedSnapshot);
+
+        stripeRefundService.processWebhookRefundEvent(failedEvent);
+        stripeRefundService.processWebhookRefundEvent(failedEvent);
+
+        OrderStripeRefund refund = refundRecord();
+        assertEquals(REFUND_ID, refund.getRefundId());
+        assertEquals("failed", refund.getStripeStatus());
+        assertEquals(failureReason, refund.getFailureReason());
+        assertEquals(ReconciliationState.REVIEW.code(), refund.getReconciliationState());
+        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+        assertEquals(STOCK_AFTER_REFUND, stock());
+        assertEquals(1, refundEventCount(failedEvent.id()));
+        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
+    }
+
+    /** 准备一条已绑定退款单号、仍在等待远端的本地退款记录。 */
+    private void pendingRefund() {
+        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+                .thenReturn(snapshot("pending"));
+        orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
+
+        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+        OrderStripeRefund pending = refundRecord();
+        assertEquals(REFUND_ID, pending.getRefundId());
+        assertEquals("pending", pending.getStripeStatus());
+        assertEquals(ReconciliationState.PENDING.code(), pending.getReconciliationState());
+    }
+
+    // ------------------------------------------------------------------
     // 数据准备与断言辅助
     // ------------------------------------------------------------------
 
@@ -515,6 +667,7 @@ class StripeRefundFlowTest {
 
     private void recreateSchema() {
         // 依赖顺序：先删引用方，再删被引用方
+        jdbc.execute("DROP TABLE IF EXISTS stripe_refund_events");
         jdbc.execute("DROP TABLE IF EXISTS order_stripe_refunds");
         jdbc.execute("DROP TABLE IF EXISTS order_stripe_payments");
         jdbc.execute("DROP TABLE IF EXISTS order_item");
@@ -572,11 +725,20 @@ class StripeRefundFlowTest {
                     currency VARCHAR(10) NOT NULL,
                     idempotency_key VARCHAR(255) NOT NULL UNIQUE,
                     stripe_status VARCHAR(32),
+                    failure_reason VARCHAR(64) NULL,
                     reconciliation_state VARCHAR(32) NOT NULL DEFAULT 'PENDING',
                     retry_count INT NOT NULL DEFAULT 0,
                     next_retry_at TIMESTAMP NULL,
                     create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbc.execute("""
+                CREATE TABLE stripe_refund_events (
+                    event_id VARCHAR(255) PRIMARY KEY,
+                    refund_id VARCHAR(255) NOT NULL,
+                    event_type VARCHAR(100) NOT NULL,
+                    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """);
         jdbc.execute("CREATE TABLE product (id BIGINT PRIMARY KEY, stock INT, stock_version INT, "
@@ -602,8 +764,21 @@ class StripeRefundFlowTest {
         return refundMapper.selectRefundmentByOrderId(ORDER_ID);
     }
 
+    private int refundEventCount(String eventId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM stripe_refund_events WHERE event_id = ?",
+                Integer.class, eventId);
+    }
+
+    private static StripeWebhookEvent refundEvent(String eventId, String type) {
+        return new StripeWebhookEvent(eventId, type, false, null, snapshot("succeeded"));
+    }
+
     private static StripeRefundSnapshot snapshot(String status) {
-        return new StripeRefundSnapshot(REFUND_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, status);
+        return snapshot(status, null);
+    }
+
+    private static StripeRefundSnapshot snapshot(String status, String failureReason) {
+        return new StripeRefundSnapshot(REFUND_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, status, failureReason);
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -650,8 +825,9 @@ class StripeRefundFlowTest {
         @Bean
         StripeRefundTransactionService refundTransactionService(OrderStripeRefundMapper refundMapper,
                                                                 OrderMapper orderMapper,
-                                                                OrderStripePaymentMapper paymentMapper) {
-            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper);
+                                                                OrderStripePaymentMapper paymentMapper,
+                                                                StripeRefundEventMapper refundEventMapper) {
+            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper, refundEventMapper);
         }
 
         @Bean

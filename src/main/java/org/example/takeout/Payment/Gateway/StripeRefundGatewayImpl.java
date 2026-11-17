@@ -73,7 +73,8 @@ public final class StripeRefundGatewayImpl implements  StripeRefundGateway {
                 refund.getPaymentIntent(),
                 refund.getAmount(),
                 refund.getCurrency(),
-                refund.getStatus()
+                refund.getStatus(),
+                refund.getFailureReason()
         );
     }
 }

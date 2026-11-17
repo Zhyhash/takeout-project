@@ -16,9 +16,11 @@ import org.example.takeout.Payment.Entity.OrderStripeRefund;
 import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
+import org.example.takeout.Payment.Mapper.StripeRefundEventMapper;
 import org.example.takeout.Payment.VO.RefundPreparation;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -30,6 +32,8 @@ import java.util.Set;
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeRefundTransactionService {
+    // TODO: 支持 Stripe Refund requires_action 状态，
+    // 明确客户行动、取消退款及本地对账状态的处理规则。
     private static final Set<String> REFUND_STATUSES =
             Set.of("pending", "succeeded", "failed", "canceled");
 
@@ -37,6 +41,7 @@ public class StripeRefundTransactionService {
 
     private final OrderMapper orderMapper;
     private final OrderStripePaymentMapper orderStripePaymentMapper;
+    private final StripeRefundEventMapper refundEventMapper;
 
     @Transactional
     public RefundPreparation prepareRefund(Long orderId, Long merchantId) {
@@ -121,6 +126,58 @@ public class StripeRefundTransactionService {
      */
     @Transactional(rollbackFor = Exception.class)
     public RefundSyncResult syncRefundStatus(Long orderId,
+            StripeRefundSnapshot snapshot){
+        return applyRefundSnapshot(orderId, snapshot);
+    }
+
+    /**
+     * Webhook 专用的同步：退款状态写入与事件回执必须同生共死。
+     * <p>回执在同一个事务的最后才写，事务回滚时回执一并消失，Stripe 重投仍能被正常处理；
+     * 反过来，只要事务提交，就说明业务状态已经落库，此时才允许把事件标记为已处理。</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public RefundSyncResult syncWebhookRefundStatus(Long orderId, StripeRefundSnapshot snapshot,
+                                                    String eventId, String eventType) {
+        if (StringUtils.isBlank(eventId)) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "退款事件缺少事件 ID");
+        }
+        // 事务内再查一次：并发投递时事件 ID 的唯一主键是最后一道防线。
+        if (refundEventMapper.countEventsByEventId(eventId) != 0) {
+            return RefundSyncResult.UNCHANGED;
+        }
+
+        RefundSyncResult result = applyRefundSnapshot(orderId, snapshot);
+
+        refundEventMapper.insertRefundEvent(eventId, snapshot.refundId(), eventType);
+        return result;
+    }
+
+    /** 事件去重的第一道快速判断，避免为重复投递再做一次远端回查。 */
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    public boolean isRefundEventProcessed(String eventId) {
+        return !StringUtils.isBlank(eventId) && refundEventMapper.countEventsByEventId(eventId) != 0;
+    }
+
+    /**
+     * 为一条退款事件找到它对应的本地退款记录。
+     * <p>优先用退款单号反查；本地还没绑定单号（远端创建结果未知）时用 PaymentIntent 反查，
+     * 让这类事件也能把 {@code refundId} 补上。都找不到说明不属于本地订单，交由调用方忽略。</p>
+     */
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    public OrderStripeRefund findRefundForEvent(String refundId, String paymentIntentId) {
+        if (!StringUtils.isBlank(refundId)) {
+            OrderStripeRefund refund = orderStripeRefundMapper.selectByRefundId(refundId);
+            if (refund != null) {
+                return refund;
+            }
+        }
+        if (StringUtils.isBlank(paymentIntentId)) {
+            return null;
+        }
+        return orderStripeRefundMapper.selectByPaymentIntentId(paymentIntentId);
+    }
+
+    private RefundSyncResult applyRefundSnapshot(Long orderId,
             StripeRefundSnapshot snapshot){
         if (orderId == null || snapshot == null) {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR,
@@ -222,7 +279,30 @@ public class StripeRefundTransactionService {
             return RefundSyncResult.UNCHANGED;
         }
 
-        // 终态不允许覆盖；本地已是终态却还缺 refundId 属于异常数据，同样只能转人工
+        if ("succeeded".equals(oldStatus) && "failed".equals(newStatus)) {
+
+            log.warn("Stripe 退款状态变化: orderId={}, refundId={}, localStatus={}, remoteStatus={}",
+                    refund.getOrderId(), snapshot.refundId(), oldStatus, newStatus);
+
+            int refundAffected = orderStripeRefundMapper.updateStatusToFailed(
+                    refund.getOrderId(),
+                    snapshot.refundId(),
+                    snapshot.failureReason()
+            );
+
+            int orderAffected = orderMapper.updateOrderStatusToRefundingIfRefunded(
+                    refund.getOrderId(),
+                    OrderStatusEnum.REFUNDED.getCode(),
+                    OrderStatusEnum.REFUNDING.getCode()
+            );
+
+            if (refundAffected != 1 || orderAffected != 1) {
+                throw new IllegalStateException("退款失败状态回写异常");
+            }
+
+            return RefundSyncResult.UPDATED;
+        }
+        // 除了success->failed之外，终态不允许覆盖；本地已是终态却还缺 refundId 属于异常数据，同样只能转人工
         if (isTerminal(oldStatus)) {
             return RefundSyncResult.CONFLICT;
         }
@@ -241,7 +321,7 @@ public class StripeRefundTransactionService {
             int refundAffected =
                     orderStripeRefundMapper.updateStatus(
                             refund.getOrderId(), snapshot.refundId(), newStatus,
-                            ReconciliationState.RECONCILED.code());
+                            ReconciliationState.RECONCILED.code(), null);
 
             int orderAffected =
                     orderMapper.updateOrderStatusToRefunded(
@@ -263,15 +343,16 @@ public class StripeRefundTransactionService {
                 : ReconciliationState.PENDING;
 
         int affected = orderStripeRefundMapper.updateStatus(
-                refund.getOrderId(), snapshot.refundId(), newStatus, nextState.code());
+                refund.getOrderId(), snapshot.refundId(), newStatus, nextState.code(),
+                snapshot.failureReason());
 
         if (affected != 1) {
             throw new IllegalStateException("退款记录更新失败");
         }
 
         if (isTerminal(newStatus)) {
-            log.warn("Stripe 退款未成功: orderId={}, status={}",
-                    refund.getOrderId(), newStatus);
+            log.warn("Stripe 退款未成功: orderId={}, status={}, failureReason={}",
+                    refund.getOrderId(), newStatus, snapshot.failureReason());
         }
 
         // pending / failed / canceled
