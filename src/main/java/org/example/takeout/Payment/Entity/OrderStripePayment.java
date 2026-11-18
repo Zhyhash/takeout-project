@@ -31,7 +31,7 @@ public class OrderStripePayment {
     /** 本地支付关联或状态的最近更新时间，由写入支付信息的 SQL 维护。 */
     private LocalDateTime updateTime;
 
-    /** Local coordination state, independent of the Stripe status: PENDING, COMPLETE, REVIEW. */
+    /** 本地支付对账状态为 PENDING、RECONCILED 或 REVIEW，历史支付记录可能保留 COMPLETE。 */
     private String reconciliationState;
 
     /** 已进行的恢复尝试次数，用于计算退避间隔并设置有上限，避免无限重试。 */

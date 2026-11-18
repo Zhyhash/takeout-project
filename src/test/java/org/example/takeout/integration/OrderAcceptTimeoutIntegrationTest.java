@@ -11,13 +11,14 @@ import org.example.takeout.Order.Service.OrderCommandService;
 import org.example.takeout.Order.Service.OrderItemService;
 import org.example.takeout.Payment.Config.StripeRefundRecoveryTask;
 import org.example.takeout.Payment.Domain.ReconciliationState;
-import org.example.takeout.Payment.Entity.OrderStripeRefund;
+import org.example.takeout.Payment.Entity.OrderStripeRefundAttempt;
+import org.example.takeout.Payment.Mapper.OrderStripeRefundAttemptMapper;
 import org.example.takeout.Payment.Gateway.StripeGatewayException;
 import org.example.takeout.Payment.Gateway.StripeRefundGateway;
 import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
-import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
-import org.example.takeout.Payment.Mapper.StripeRefundEventMapper;
+import org.example.takeout.Payment.Config.StripeRefundRetryPolicy;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.example.takeout.Payment.Service.StripeRefundService;
 import org.example.takeout.Payment.Service.StripeRefundTransactionService;
 import org.example.takeout.Product.Mapper.ProductMapper;
@@ -94,7 +95,6 @@ class OrderAcceptTimeoutIntegrationTest {
     private static final String REFUND_ID = "re_accept_timeout_811";
     private static final long AMOUNT_MINOR = 12_345L;
     private static final String CURRENCY = "cny";
-    private static final String IDEMPOTENCY_KEY = "order_refund_" + ORDER_ID;
 
     private static final int STOCK_AFTER_ORDER = 7;
     private static final int ITEM_QUANTITY = 3;
@@ -109,7 +109,7 @@ class OrderAcceptTimeoutIntegrationTest {
     @Autowired private OrderAcceptTimeoutTask acceptTimeoutTask;
     @Autowired private StripeRefundRecoveryTask refundRecoveryTask;
     @Autowired private StripeRefundGateway refundGateway;
-    @Autowired private OrderStripeRefundMapper refundMapper;
+    @Autowired private OrderStripeRefundAttemptMapper attemptMapper;
     @Autowired private OrderMapper orderMapper;
     @Autowired private JdbcTemplate jdbc;
 
@@ -154,13 +154,13 @@ class OrderAcceptTimeoutIntegrationTest {
     @Test
     void merchantRejectIsNotBoundByTheTenMinuteWindow() {
         givenPaidOrder(OrderStatusEnum.PAID.getCode(), WITHIN_WINDOW_MINUTES);
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
 
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
-        assertEquals(REFUND_ID, refundRecord().getRefundId());
+        assertEquals(REFUND_ID, latestAttempt().getRefundId());
         assertEquals(STOCK_AFTER_REFUND, stock());
     }
 
@@ -171,20 +171,20 @@ class OrderAcceptTimeoutIntegrationTest {
     @Test
     void timeoutTaskCancelsUnacceptedOrderAndRefundsOnce() {
         givenPaidOrder(OrderStatusEnum.PAID.getCode(), BEYOND_WINDOW_MINUTES);
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
 
         acceptTimeoutTask.cancelUnacceptedOrders();
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
-        OrderStripeRefund refund = refundRecord();
+        OrderStripeRefundAttempt refund = latestAttempt();
         assertNotNull(refund);
         assertEquals(REFUND_ID, refund.getRefundId());
         assertEquals("succeeded", refund.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), refund.getReconciliationState());
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundRowCount());
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, latestAttempt().getIdempotencyKey());
     }
 
     @Test
@@ -202,7 +202,7 @@ class OrderAcceptTimeoutIntegrationTest {
     @Test
     void repeatedTimeoutTaskDoesNotRefundAgain() {
         givenPaidOrder(OrderStatusEnum.PAID.getCode(), BEYOND_WINDOW_MINUTES);
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
 
         acceptTimeoutTask.cancelUnacceptedOrders();
@@ -212,7 +212,7 @@ class OrderAcceptTimeoutIntegrationTest {
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundRowCount());
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, latestAttempt().getIdempotencyKey());
     }
 
     /**
@@ -227,7 +227,7 @@ class OrderAcceptTimeoutIntegrationTest {
                 recreateSchema();
                 reset(refundGateway);
                 givenPaidOrder(OrderStatusEnum.PAID.getCode(), BEYOND_WINDOW_MINUTES);
-                when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+                when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                         .thenReturn(snapshot("succeeded"));
 
                 CyclicBarrier startLine = new CyclicBarrier(2);
@@ -264,14 +264,14 @@ class OrderAcceptTimeoutIntegrationTest {
     void refundFailureKeepsOrderRefundingForExistingRecovery() {
         givenPaidOrder(OrderStatusEnum.PAID.getCode(), BEYOND_WINDOW_MINUTES);
         // 第一次调用结果未知（本地无法判断 Stripe 是否已退款），恢复任务重试时才拿到确定结果
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenThrow(new StripeGatewayException(StripeGatewayException.Kind.OUTCOME_UNKNOWN))
                 .thenReturn(snapshot("succeeded"));
 
         acceptTimeoutTask.cancelUnacceptedOrders();
 
         assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
-        OrderStripeRefund pending = refundRecord();
+        OrderStripeRefundAttempt pending = latestAttempt();
         assertNotNull(pending);
         assertNull(pending.getRefundId());
         assertEquals(ReconciliationState.PENDING.code(), pending.getReconciliationState());
@@ -281,13 +281,31 @@ class OrderAcceptTimeoutIntegrationTest {
         refundRecoveryTask.recoverPendingRefunds();
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
-        OrderStripeRefund refunded = refundRecord();
+        OrderStripeRefundAttempt refunded = latestAttempt();
         assertEquals(REFUND_ID, refunded.getRefundId());
         assertEquals("succeeded", refunded.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), refunded.getReconciliationState());
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundRowCount());
-        verify(refundGateway, times(2)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(2)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, latestAttempt().getIdempotencyKey());
+    }
+
+    @Test
+    void emptyFailureAllowlistSendsConfirmedFailureToReview() {
+        givenPaidOrder(OrderStatusEnum.PAID.getCode(), BEYOND_WINDOW_MINUTES);
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
+                .thenReturn(new StripeRefundSnapshot(REFUND_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR,
+                        CURRENCY, "failed", "insufficient_funds"));
+
+        acceptTimeoutTask.cancelUnacceptedOrders();
+        refundRecoveryTask.recoverPendingRefunds();
+
+        assertEquals("REVIEW", jdbc.queryForObject(
+                "SELECT status FROM order_stripe_refunds WHERE order_id = ?", String.class, ORDER_ID));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM order_stripe_refund_attempts WHERE order_id = ?", Integer.class, ORDER_ID));
+        assertEquals("insufficient_funds", latestAttempt().getFailureReason());
+        verify(refundGateway).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, latestAttempt().getIdempotencyKey());
     }
 
     // ------------------------------------------------------------------
@@ -322,7 +340,7 @@ class OrderAcceptTimeoutIntegrationTest {
                 INSERT INTO order_stripe_payments (
                     order_id, payment_intent_id, amount_minor, currency, stripe_status,
                     idempotency_key, create_time, update_time, reconciliation_state
-                ) VALUES (?, ?, ?, 'cny', 'succeeded', ?, NOW(), NOW(), 'COMPLETE')
+                ) VALUES (?, ?, ?, 'cny', 'succeeded', ?, NOW(), NOW(), 'RECONCILED')
                 """, ORDER_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR, "order_pay_" + ORDER_ID);
 
         jdbc.update("""
@@ -354,8 +372,8 @@ class OrderAcceptTimeoutIntegrationTest {
         return jdbc.queryForObject("SELECT COUNT(*) FROM order_stripe_refunds", Integer.class);
     }
 
-    private OrderStripeRefund refundRecord() {
-        return refundMapper.selectRefundmentByOrderId(ORDER_ID);
+    private OrderStripeRefundAttempt latestAttempt() {
+        return attemptMapper.selectLatestAttemptByOrderId(ORDER_ID);
     }
 
     private static StripeRefundSnapshot snapshot(String status) {
@@ -363,6 +381,7 @@ class OrderAcceptTimeoutIntegrationTest {
     }
 
     private void recreateSchema() {
+        jdbc.execute("DROP TABLE IF EXISTS order_stripe_refund_attempts");
         jdbc.execute("DROP TABLE IF EXISTS order_stripe_refunds");
         jdbc.execute("DROP TABLE IF EXISTS order_stripe_payments");
         jdbc.execute("DROP TABLE IF EXISTS order_item");
@@ -410,26 +429,36 @@ class OrderAcceptTimeoutIntegrationTest {
                     retry_count INT NOT NULL DEFAULT 0,
                     next_retry_at DATETIME NULL,
                     UNIQUE KEY uk_payment_intent (payment_intent_id),
-                    UNIQUE KEY uk_payment_idempotency (idempotency_key)
+                    UNIQUE KEY uk_payment_idempotency (idempotency_key),
+                    CONSTRAINT chk_stripe_payment_reconciliation_state
+                        CHECK (reconciliation_state IN ('PENDING', 'COMPLETE', 'REVIEW', 'RECONCILED'))
                 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
                 """);
         jdbc.execute("""
                 CREATE TABLE order_stripe_refunds (
                     order_id BIGINT PRIMARY KEY,
-                    refund_id VARCHAR(255) NULL,
+                    refund_id VARCHAR(255) UNIQUE,
                     amount_minor BIGINT NOT NULL,
                     currency VARCHAR(10) NOT NULL,
-                    idempotency_key VARCHAR(255) NOT NULL,
-                    stripe_status VARCHAR(32) NULL,
-                    failure_reason VARCHAR(64) NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+                    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbc.execute("""
+                CREATE TABLE order_stripe_refund_attempts (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    order_id BIGINT NOT NULL,
+                    refund_id VARCHAR(255) UNIQUE,
+                    idempotency_key VARCHAR(255) NOT NULL UNIQUE,
+                    stripe_status VARCHAR(32),
                     reconciliation_state VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                    failure_reason VARCHAR(64),
                     retry_count INT NOT NULL DEFAULT 0,
-                    next_retry_at DATETIME NULL,
-                    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    UNIQUE KEY uk_refund_id (refund_id),
-                    UNIQUE KEY uk_refund_idempotency (idempotency_key)
-                ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
+                    next_retry_at TIMESTAMP NULL,
+                    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
                 """);
         jdbc.execute("CREATE TABLE product (id BIGINT PRIMARY KEY, stock INT NULL, stock_version INT NULL, "
                 + "version INT NULL, status INT NULL, is_deleted INT NULL) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4");
@@ -495,8 +524,10 @@ class OrderAcceptTimeoutIntegrationTest {
 
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement
-    @Import(MybatisPlusConfig.class)
-    @MapperScan(basePackageClasses = {OrderStripePaymentMapper.class, OrderStripeRefundMapper.class,
+    @EnableConfigurationProperties(StripeRefundRetryPolicy.class)
+    @Import({MybatisPlusConfig.class, StripeRefundTransactionService.class, StripeRefundService.class,
+            StripeRefundRecoveryTask.class})
+    @MapperScan(basePackageClasses = {OrderStripePaymentMapper.class, OrderStripeRefundAttemptMapper.class,
             OrderMapper.class, OrderItemMapper.class, ProductMapper.class},
             annotationClass = Mapper.class)
     static class TestConfig {
@@ -531,29 +562,6 @@ class OrderAcceptTimeoutIntegrationTest {
                                           ObjectProvider<StripeRefundService> refundServiceProvider) {
             // 同步执行器：afterCommit 里的 Stripe 调用在当前线程跑完，断言无需等待
             return new OrderCommandService(orderMapper, orderItems, refundServiceProvider, Runnable::run);
-        }
-
-        @Bean
-        StripeRefundTransactionService refundTransactionService(OrderStripeRefundMapper refundMapper,
-                                                                OrderMapper orderMapper,
-                                                                OrderStripePaymentMapper paymentMapper,
-                                                                StripeRefundEventMapper refundEventMapper) {
-            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper, refundEventMapper);
-        }
-
-        @Bean
-        StripeRefundService stripeRefundService(StripeRefundTransactionService transactions,
-                                                StripeRefundGateway gateway,
-                                                OrderStripePaymentMapper paymentMapper,
-                                                OrderStripeRefundMapper refundMapper) {
-            return new StripeRefundService(transactions, gateway, paymentMapper, refundMapper);
-        }
-
-        @Bean
-        StripeRefundRecoveryTask refundRecoveryTask(OrderStripeRefundMapper refundMapper,
-                                                    StripeRefundService refundService,
-                                                    StripeRefundTransactionService refundTransactions) {
-            return new StripeRefundRecoveryTask(refundMapper, refundService, refundTransactions);
         }
 
         @Bean

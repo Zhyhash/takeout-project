@@ -11,6 +11,9 @@ import java.time.LocalDateTime;
  */
 public final class PaymentPolicy {
 
+    /** 此前缀标识创建时就携带 Attempt 元数据的新退款请求。 */
+    public static final String REFUND_ATTEMPT_KEY_PREFIX = "refund_attempt_";
+
     /** 订单创建后可支付的时间窗口；超时由 Stripe 侧取消并回滚订单。 */
     public static final Duration PAYMENT_WINDOW = Duration.ofMinutes(30);
 

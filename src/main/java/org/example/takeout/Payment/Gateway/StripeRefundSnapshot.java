@@ -11,6 +11,13 @@ public record StripeRefundSnapshot(
         Long amountMinor,
         String currency,
         String status,
-        String failureReason
+        String failureReason,
+        String attemptKey
 ) {
+    static final String ATTEMPT_METADATA_KEY = "refund_attempt_key";
+
+    public StripeRefundSnapshot(String refundId, String paymentIntentId, Long amountMinor, String currency,
+                                String status, String failureReason) {
+        this(refundId, paymentIntentId, amountMinor, currency, status, failureReason, null);
+    }
 }

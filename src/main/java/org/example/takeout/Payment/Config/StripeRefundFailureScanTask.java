@@ -2,8 +2,8 @@ package org.example.takeout.Payment.Config;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.example.takeout.Payment.Entity.OrderStripeRefund;
-import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
+import org.example.takeout.Payment.Entity.OrderStripeRefundAttempt;
+import org.example.takeout.Payment.Mapper.OrderStripeRefundAttemptMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -30,14 +30,14 @@ public class StripeRefundFailureScanTask {
     /** Stripe 未返回原因时的占位，便于在聚合结果里直接看出缺口。 */
     private static final String UNKNOWN_REASON = "unknown";
 
-    private final OrderStripeRefundMapper orderStripeRefundMapper;
+    private final OrderStripeRefundAttemptMapper attemptMapper;
 
     /** 上一次告警的快照：失败集合没变化时不再重复打 warn，避免同一笔失败每 10 分钟刷一条。 */
     private volatile String lastReportedSignature;
 
     @Scheduled(fixedDelay = 600_000, initialDelay = 120_000)
     public void scanFailedRefunds() {
-        List<OrderStripeRefund> failed = orderStripeRefundMapper.selectFailedList(MAX_SCAN);
+        List<OrderStripeRefundAttempt> failed = attemptMapper.selectFailedAttempts(MAX_SCAN);
         if (failed.isEmpty()) {
             lastReportedSignature = null;
             return;
@@ -47,7 +47,7 @@ public class StripeRefundFailureScanTask {
                 .collect(Collectors.groupingBy(
                         refund -> Objects.requireNonNullElse(refund.getFailureReason(), UNKNOWN_REASON),
                         Collectors.counting()));
-        List<Long> orderIds = failed.stream().map(OrderStripeRefund::getOrderId).toList();
+        List<Long> orderIds = failed.stream().map(OrderStripeRefundAttempt::getOrderId).toList();
         String signature = failed.size() + "|" + countByReason + "|" + orderIds;
 
         if (signature.equals(lastReportedSignature)) {

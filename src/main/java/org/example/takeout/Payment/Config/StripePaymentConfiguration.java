@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @Configuration
-@EnableConfigurationProperties(StripePaymentProperties.class)
+@EnableConfigurationProperties({StripePaymentProperties.class, StripeRefundRetryPolicy.class})
 public class StripePaymentConfiguration {
     // Defining the dedicated scheduler makes Boot back off its default scheduler, so retain that default explicitly.
     @Bean(name = "taskScheduler")

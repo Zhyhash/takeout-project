@@ -6,6 +6,7 @@ import org.example.takeout.Order.Service.OrderItemService;
 import org.example.takeout.Payment.Gateway.StripePaymentGateway;
 import org.example.takeout.Payment.Gateway.StripeRefundGateway;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
+import org.example.takeout.Payment.Mapper.OrderStripeRefundAttemptMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
 import org.example.takeout.Payment.Mapper.StripeRefundEventMapper;
 import org.example.takeout.Payment.Service.StripeRefundService;
@@ -154,6 +155,11 @@ class StripePaymentConfigurationTest {
         @Bean
         OrderStripeRefundMapper orderStripeRefundMapper() {
             return mock(OrderStripeRefundMapper.class);
+        }
+
+        @Bean
+        OrderStripeRefundAttemptMapper orderStripeRefundAttemptMapper() {
+            return mock(OrderStripeRefundAttemptMapper.class);
         }
 
         @Bean

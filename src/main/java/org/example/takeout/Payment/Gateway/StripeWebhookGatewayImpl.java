@@ -56,7 +56,9 @@ public final class StripeWebhookGatewayImpl implements StripeWebhookGateway {
             requireApiVersion(event);
             StripeObject stripeObject = deserializeEventObject(event);
             if (stripeObject instanceof Refund refundObject) {
-                refund = mapRefundToSnapshot(refundObject);
+                String creationKey = "refund.created".equals(event.getType()) && event.getRequest() != null
+                        ? event.getRequest().getIdempotencyKey() : null;
+                refund = mapRefundToSnapshot(refundObject, creationKey);
             } else {
                 throw new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK);
             }
@@ -110,7 +112,7 @@ public final class StripeWebhookGatewayImpl implements StripeWebhookGateway {
         );
     }
 
-    private StripeRefundSnapshot mapRefundToSnapshot(Refund refund) {
+    private StripeRefundSnapshot mapRefundToSnapshot(Refund refund, String creationKey) {
         // 退款事件的必填字段缺失说明载荷不可信，同一个事件 ID 不能据此落库。
         if (refund == null
                 || refund.getId() == null || refund.getId().isBlank()
@@ -120,13 +122,16 @@ public final class StripeWebhookGatewayImpl implements StripeWebhookGateway {
             throw new StripeGatewayException(StripeGatewayException.Kind.INVALID_WEBHOOK);
         }
 
+        // 迁移前的 Refund 没有 metadata，已验签的创建事件有时仍携带原始请求的幂等键。
+        String attemptKey = refund.getMetadata() == null ? null : refund.getMetadata().get(StripeRefundSnapshot.ATTEMPT_METADATA_KEY);
         return new StripeRefundSnapshot(
                 refund.getId(),
                 refund.getPaymentIntent(),
                 refund.getAmount(),
                 refund.getCurrency(),
                 refund.getStatus(),
-                refund.getFailureReason()
+                refund.getFailureReason(),
+                attemptKey != null ? attemptKey : creationKey
         );
     }
 }

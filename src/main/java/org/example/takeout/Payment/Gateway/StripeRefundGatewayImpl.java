@@ -5,6 +5,7 @@ import com.stripe.exception.StripeException;
 import com.stripe.model.Refund;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.RefundCreateParams;
+import org.example.takeout.Payment.Domain.PaymentPolicy;
 
 public final class StripeRefundGatewayImpl implements  StripeRefundGateway {
     private final StripeClient stripeClient;
@@ -22,10 +23,13 @@ public final class StripeRefundGatewayImpl implements  StripeRefundGateway {
             throw new IllegalArgumentException("amountMinor cannot be negative");
         if (idempotencyKey == null)
             throw new IllegalArgumentException("idempotencyKey cannot be null");
-        RefundCreateParams params = RefundCreateParams.builder()
+        RefundCreateParams.Builder params = RefundCreateParams.builder()
                 .setPaymentIntent(paymentIntentId)
-                .setAmount(amountMinor)
-                .build();
+                .setAmount(amountMinor);
+        // 迁移前创建的请求没有 metadata。重放这些幂等键时必须保持原请求参数。
+        if (idempotencyKey.startsWith(PaymentPolicy.REFUND_ATTEMPT_KEY_PREFIX)) {
+            params.putMetadata(StripeRefundSnapshot.ATTEMPT_METADATA_KEY, idempotencyKey);
+        }
 
         RequestOptions options = RequestOptions.builder()
                 .setIdempotencyKey(idempotencyKey)
@@ -34,7 +38,7 @@ public final class StripeRefundGatewayImpl implements  StripeRefundGateway {
         try {
             Refund refund = stripeClient.v1()
                     .refunds()
-                    .create(params, options);
+                    .create(params.build(), options);
             return buildRefundSnapshot(refund);
         } catch (StripeException e) {
             throw StripeGatewayException.fromStripeFailure(e);
@@ -74,7 +78,8 @@ public final class StripeRefundGatewayImpl implements  StripeRefundGateway {
                 refund.getAmount(),
                 refund.getCurrency(),
                 refund.getStatus(),
-                refund.getFailureReason()
+                refund.getFailureReason(),
+                refund.getMetadata() == null ? null : refund.getMetadata().get(StripeRefundSnapshot.ATTEMPT_METADATA_KEY)
         );
     }
 }

@@ -8,15 +8,20 @@ import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Order.Service.OrderCommandService;
 import org.example.takeout.Order.Service.OrderItemService;
 import org.example.takeout.Payment.Config.StripeRefundRecoveryTask;
+import org.example.takeout.Payment.Config.StripeRefundRetryPolicy;
 import org.example.takeout.Payment.Domain.PaymentPolicy;
 import org.example.takeout.Payment.Domain.ReconciliationState;
+import org.example.takeout.Payment.Domain.RefundStatus;
 import org.example.takeout.Payment.Domain.RefundSyncResult;
 import org.example.takeout.Payment.Entity.OrderStripeRefund;
+import org.example.takeout.Payment.Entity.OrderStripeRefundAttempt;
 import org.example.takeout.Payment.Gateway.StripeRefundGateway;
 import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
 import org.example.takeout.Payment.Gateway.StripeWebhookEvent;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
+import org.example.takeout.Payment.Mapper.OrderStripeRefundAttemptMapper;
+import org.example.takeout.Payment.VO.RefundExecution;
 import org.example.takeout.Payment.Mapper.StripeRefundEventMapper;
 import org.example.takeout.Product.Mapper.ProductMapper;
 import org.example.takeout.Product.Service.ProductCommandService;
@@ -24,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
@@ -41,10 +47,17 @@ import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -67,7 +80,7 @@ import static org.mockito.Mockito.when;
  *
  * <p>三轮分别验证：</p>
  * <ol>
- *   <li>正常退款：订单落 {@code REFUNDED}、退款记录 {@code succeeded/COMPLETE}、库存只归还一次；</li>
+ *   <li>正常退款：订单落 {@code REFUNDED}、退款记录 {@code succeeded/RECONCILED}、库存只归还一次；</li>
  *   <li>重复请求与恢复：重复拒单、重复同步同一份 succeeded 快照不会再次退款或归还库存；
  *       本地 {@code PENDING} 且已绑定 {@code refundId} 时靠 {@code retrieveRefund}
  *       推进，而不是再下一笔；</li>
@@ -78,7 +91,10 @@ import static org.mockito.Mockito.when;
  * <p>真实 Stripe 测试环境的核对见 {@code StripeRefundSandboxLiveTest}。</p>
  */
 @SpringJUnitConfig(StripeRefundFlowTest.TestConfig.class)
-@TestPropertySource(properties = "payment.stripe.enabled=true")
+@TestPropertySource(properties = {
+        "payment.stripe.enabled=true",
+        "payment.stripe.refund.auto-retry-failure-reasons=retryable_test_reason"
+})
 class StripeRefundFlowTest {
 
     private static final long ORDER_ID = 701L;
@@ -89,10 +105,10 @@ class StripeRefundFlowTest {
 
     private static final String PAYMENT_INTENT_ID = "pi_refund_flow_701";
     private static final String REFUND_ID = "re_refund_flow_701";
+    private static final String NEXT_REFUND_ID = "re_refund_flow_701_next";
     private static final long AMOUNT_MINOR = 12_345L;
     private static final String CURRENCY = "cny";
-    /** 与 {@code StripeRefundTransactionService#prepareRefund} 中的生成规则保持一致。 */
-    private static final String IDEMPOTENCY_KEY = "order_refund_" + ORDER_ID;
+    private static final String RETRYABLE_FAILURE_REASON = "retryable_test_reason";
 
     /** 下单扣减后的库存，拒单应该把它补回 {@link #ITEM_QUANTITY} 件。 */
     private static final int STOCK_AFTER_ORDER = 7;
@@ -105,6 +121,7 @@ class StripeRefundFlowTest {
     @Autowired private StripeRefundRecoveryTask refundRecoveryTask;
     @Autowired private StripeRefundGateway refundGateway;
     @Autowired private OrderStripeRefundMapper refundMapper;
+    @Autowired private OrderStripeRefundAttemptMapper refundAttemptMapper;
     @Autowired private JdbcTemplate jdbc;
 
     @BeforeEach
@@ -119,13 +136,13 @@ class StripeRefundFlowTest {
     // ------------------------------------------------------------------
 
     /**
-     * 商家拒单 → Stripe 退款成功 → 订单 REFUNDED、退款记录 succeeded/COMPLETE、库存只归还一次。
+     * 商家拒单 → Stripe 退款成功 → 订单 REFUNDED、退款记录 succeeded/RECONCILED、库存只归还一次。
      * <p>Stripe 后台是否真的存在退款对象，在假网关里等价于：创建时用的
      * {@code PaymentIntent + 金额 + 币种 + 幂等键} 正确，且落库的就是 Stripe 返回的退款单号。</p>
      */
     @Test
     void merchantRejectionRefundsOrderAndReturnsInventoryExactlyOnce() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
 
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
@@ -135,16 +152,19 @@ class StripeRefundFlowTest {
         assertEquals(1, refundRowCount());
 
         OrderStripeRefund refund = refundRecord();
+        OrderStripeRefundAttempt attempt = attemptRecord();
         assertNotNull(refund);
-        assertEquals(REFUND_ID, refund.getRefundId());
-        assertEquals("succeeded", refund.getStripeStatus());
-        assertEquals(ReconciliationState.RECONCILED.code(), refund.getReconciliationState());
+        assertEquals(RefundStatus.SUCCEEDED.code(), refund.getStatus());
         assertEquals(AMOUNT_MINOR, refund.getAmountMinor());
         assertEquals(CURRENCY, refund.getCurrency());
-        assertEquals(IDEMPOTENCY_KEY, refund.getIdempotencyKey());
+        assertEquals(REFUND_ID, attempt.getRefundId());
+        assertEquals("succeeded", attempt.getStripeStatus());
+        assertEquals(ReconciliationState.RECONCILED.code(), attempt.getReconciliationState());
+        assertTrue(attempt.getIdempotencyKey().startsWith("refund_attempt_"));
 
         // 整条链路只向 Stripe 发过一次「创建退款」，没有走回查兜底
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(attempt.getIdempotencyKey()));
         verify(refundGateway, never()).retrieveRefund(anyString());
     }
 
@@ -155,10 +175,10 @@ class StripeRefundFlowTest {
      */
     @Test
     void persistedRefundObjectCanBeRetrievedFromStripe() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
-        String refundId = refundRecord().getRefundId();
+        String refundId = attemptRecord().getRefundId();
         assertNotNull(refundId);
 
         when(refundGateway.retrieveRefund(refundId)).thenReturn(snapshot("succeeded"));
@@ -178,7 +198,7 @@ class StripeRefundFlowTest {
     /** 重复拒单：退款已完成时直接返回，不会二次退款，也不会二次归还库存。 */
     @Test
     void repeatedMerchantRejectionDoesNotRefundOrReturnInventoryTwice() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
         assertEquals(STOCK_AFTER_REFUND, stock());
@@ -189,8 +209,9 @@ class StripeRefundFlowTest {
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundRowCount());
-        assertEquals(REFUND_ID, refundRecord().getRefundId());
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        assertEquals(REFUND_ID, attemptRecord().getRefundId());
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(attemptRecord().getIdempotencyKey()));
         verify(refundGateway, never()).retrieveRefund(anyString());
     }
 
@@ -201,22 +222,26 @@ class StripeRefundFlowTest {
      */
     @Test
     void replayingTheSameSucceededSnapshotKeepsTheTerminalState() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
         int stockAfterRefund = stock();
 
-        assertDoesNotThrow(() -> refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded")));
-        assertDoesNotThrow(() -> refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded")));
-        assertDoesNotThrow(() -> refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded")));
+        assertDoesNotThrow(() -> refundTransactions.syncRefundStatus(
+                ORDER_ID, attemptRecord().getId(), snapshot("succeeded")));
+        assertDoesNotThrow(() -> refundTransactions.syncRefundStatus(
+                ORDER_ID, attemptRecord().getId(), snapshot("succeeded")));
+        assertDoesNotThrow(() -> refundTransactions.syncRefundStatus(
+                ORDER_ID, attemptRecord().getId(), snapshot("succeeded")));
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         assertEquals(stockAfterRefund, stock());
         assertEquals(1, refundRowCount());
-        OrderStripeRefund refund = refundRecord();
+        OrderStripeRefundAttempt refund = attemptRecord();
         assertEquals("succeeded", refund.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), refund.getReconciliationState());
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(refund.getIdempotencyKey()));
         verify(refundGateway, never()).retrieveRefund(anyString());
     }
 
@@ -228,11 +253,11 @@ class StripeRefundFlowTest {
      */
     @Test
     void pendingRefundWithBoundRefundIdIsAdvancedByRetrieval() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("pending"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
 
-        OrderStripeRefund pending = refundRecord();
+        OrderStripeRefundAttempt pending = attemptRecord();
         assertEquals(REFUND_ID, pending.getRefundId());
         assertEquals("pending", pending.getStripeStatus());
         assertEquals(ReconciliationState.PENDING.code(), pending.getReconciliationState());
@@ -244,100 +269,277 @@ class StripeRefundFlowTest {
         refundRecoveryTask.recoverPendingRefunds();
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
-        OrderStripeRefund refunded = refundRecord();
+        OrderStripeRefundAttempt refunded = attemptRecord();
         assertEquals("succeeded", refunded.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), refunded.getReconciliationState());
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundRowCount());
 
-        // 已到 COMPLETE 之后再执行一次恢复是空操作，不会产生新的远端调用
+        // 退款状态已对账一致后再次恢复是空操作，不会产生新的远端调用
         assertDoesNotThrow(() -> stripeRefundService.recoverRefund(refunded));
 
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(refunded.getIdempotencyKey()));
         verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
     }
 
     @Test
+    void retryAfterUnknownOutcomeReusesTheSameAttemptAndIdempotencyKey() {
+        refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
+        OrderStripeRefundAttempt originalAttempt = attemptRecord();
+        String originalKey = originalAttempt.getIdempotencyKey();
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(originalKey)))
+                .thenThrow(new IllegalStateException("simulated request timeout"))
+                .thenReturn(snapshot("pending"));
+
+        assertThrows(IllegalStateException.class, () -> stripeRefundService.refundRejectedOrder(ORDER_ID));
+        assertEquals(1, attemptCount());
+        assertEquals(originalAttempt.getId(), attemptRecord().getId());
+        assertNull(attemptRecord().getRefundId());
+        assertEquals(RefundStatus.PENDING.code(), refundRecord().getStatus());
+
+        stripeRefundService.refundRejectedOrder(ORDER_ID);
+
+        assertEquals(1, attemptCount());
+        assertEquals(originalAttempt.getId(), attemptRecord().getId());
+        assertEquals(originalKey, attemptRecord().getIdempotencyKey());
+        assertEquals(REFUND_ID, attemptRecord().getRefundId());
+        assertEquals("pending", attemptRecord().getStripeStatus());
+        verify(refundGateway, times(2)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(originalKey));
+    }
+
+    @Test
+    void retryableConfirmedFailureCreatesANewAttemptAndUsesANewIdempotencyKey() {
+        AtomicInteger requestCount = new AtomicInteger();
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
+                .thenAnswer(invocation -> {
+                    String idempotencyKey = invocation.getArgument(2);
+                    if (requestCount.incrementAndGet() == 1) {
+                        assertEquals(1, attemptCount());
+                        assertEquals(idempotencyKey, attemptRecord().getIdempotencyKey());
+                        return snapshot(REFUND_ID, "failed", RETRYABLE_FAILURE_REASON);
+                    }
+
+                    assertEquals(2, attemptCount());
+                    assertEquals(idempotencyKey, attemptRecord().getIdempotencyKey());
+                    return snapshot(NEXT_REFUND_ID, "succeeded", null);
+                });
+        orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
+
+        OrderStripeRefundAttempt failedAttempt = attemptRecord();
+        assertEquals("failed", failedAttempt.getStripeStatus());
+        assertEquals(RETRYABLE_FAILURE_REASON, failedAttempt.getFailureReason());
+        assertEquals(ReconciliationState.RECONCILED.code(), failedAttempt.getReconciliationState());
+        assertEquals(RefundStatus.PENDING.code(), refundRecord().getStatus());
+        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+
+        // A 已确认失败时，先前在途的 pending 结果不能挡住下一次业务尝试。
+        assertEquals(RefundSyncResult.CONFLICT, refundTransactions.syncRefundStatus(
+                ORDER_ID, failedAttempt.getId(), snapshot(REFUND_ID, "pending", null)));
+        refundRecoveryTask.recoverPendingRefunds();
+
+        OrderStripeRefundAttempt succeededAttempt = attemptRecord();
+        assertEquals(2, attemptCount());
+        assertNotNull(succeededAttempt.getId());
+        assertNotEquals(failedAttempt.getId(), succeededAttempt.getId());
+        assertNotEquals(failedAttempt.getIdempotencyKey(), succeededAttempt.getIdempotencyKey());
+        assertEquals(NEXT_REFUND_ID, succeededAttempt.getRefundId());
+        assertEquals("succeeded", succeededAttempt.getStripeStatus());
+        assertEquals("failed", refundAttemptMapper.selectById(failedAttempt.getId()).getStripeStatus());
+        assertTrue(refundAttemptMapper.selectFailedAttempts(10).isEmpty());
+        assertEquals(RefundStatus.SUCCEEDED.code(), refundRecord().getStatus());
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+
+        ArgumentCaptor<String> idempotencyKeys = ArgumentCaptor.forClass(String.class);
+        verify(refundGateway, times(2)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), idempotencyKeys.capture());
+        assertEquals(List.of(failedAttempt.getIdempotencyKey(), succeededAttempt.getIdempotencyKey()),
+                idempotencyKeys.getAllValues());
+    }
+
+    @Test
+    void concurrentRetryDecisionsFromTheSameFailedAttemptCreateOnlyOneNextAttempt() throws Exception {
+        refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
+        OrderStripeRefundAttempt failedAttempt = attemptRecord();
+        refundTransactions.syncRefundStatus(ORDER_ID, failedAttempt.getId(),
+                snapshot(REFUND_ID, "failed", RETRYABLE_FAILURE_REASON));
+
+        CountDownLatch decisionsReady = new CountDownLatch(2);
+        CountDownLatch startDecisions = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<RefundExecution> firstDecision = executor.submit(() -> {
+                decisionsReady.countDown();
+                if (!startDecisions.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("timed out waiting for the retry decision start");
+                }
+                return refundTransactions.prepareRefundExecution(ORDER_ID, failedAttempt.getId());
+            });
+            Future<RefundExecution> secondDecision = executor.submit(() -> {
+                decisionsReady.countDown();
+                if (!startDecisions.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("timed out waiting for the retry decision start");
+                }
+                return refundTransactions.prepareRefundExecution(ORDER_ID, failedAttempt.getId());
+            });
+
+            assertTrue(decisionsReady.await(10, TimeUnit.SECONDS));
+            startDecisions.countDown();
+            RefundExecution first = firstDecision.get(10, TimeUnit.SECONDS);
+            RefundExecution second = secondDecision.get(10, TimeUnit.SECONDS);
+
+            assertTrue((first == null) != (second == null));
+            RefundExecution createdAttempt = first == null ? second : first;
+            assertNotNull(createdAttempt);
+            assertNotEquals(failedAttempt.getId(), createdAttempt.attempt().getId());
+            assertNotEquals(failedAttempt.getIdempotencyKey(), createdAttempt.attempt().getIdempotencyKey());
+            assertEquals(2, attemptCount());
+            assertEquals(createdAttempt.attempt().getId(), attemptRecord().getId());
+            verifyNoInteractions(refundGateway);
+        } finally {
+            startDecisions.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void lateResponseFromOldAttemptCannotOverwriteTheNewRefundBusinessState() throws Exception {
+        refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
+        OrderStripeRefundAttempt originalAttempt = attemptRecord();
+        CountDownLatch originalRequestStarted = new CountDownLatch(1);
+        CountDownLatch releaseOriginalResponse = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(2);
+                    if (originalAttempt.getIdempotencyKey().equals(key)) {
+                        originalRequestStarted.countDown();
+                        if (!releaseOriginalResponse.await(10, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("timed out waiting to release the first response");
+                        }
+                        return snapshot(REFUND_ID, "failed", RETRYABLE_FAILURE_REASON);
+                    }
+                    return snapshot(NEXT_REFUND_ID, "succeeded", null);
+                });
+
+        Future<?> delayedAttempt = executor.submit(() -> stripeRefundService.refundRejectedOrder(ORDER_ID));
+        try {
+            assertTrue(originalRequestStarted.await(10, TimeUnit.SECONDS));
+
+            refundTransactions.syncRefundStatus(ORDER_ID, originalAttempt.getId(),
+                    snapshot(REFUND_ID, "failed", RETRYABLE_FAILURE_REASON));
+            stripeRefundService.refundRejectedOrder(ORDER_ID);
+
+            OrderStripeRefundAttempt currentAttempt = attemptRecord();
+            assertNotEquals(originalAttempt.getId(), currentAttempt.getId());
+            assertEquals("succeeded", currentAttempt.getStripeStatus());
+            assertEquals(RefundStatus.SUCCEEDED.code(), refundRecord().getStatus());
+            assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+
+            releaseOriginalResponse.countDown();
+            delayedAttempt.get(10, TimeUnit.SECONDS);
+
+            assertEquals(2, attemptCount());
+            assertEquals("failed", refundAttemptMapper.selectById(originalAttempt.getId()).getStripeStatus());
+            assertTrue(refundAttemptMapper.selectFailedAttempts(10).isEmpty());
+            assertEquals(currentAttempt.getId(), attemptRecord().getId());
+            assertEquals("succeeded", attemptRecord().getStripeStatus());
+            assertEquals(RefundStatus.SUCCEEDED.code(), refundRecord().getStatus());
+            assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+        } finally {
+            releaseOriginalResponse.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void stalePendingSnapshotCannotReopenCompletedRefund() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("pending"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
 
         // 恢复任务扫描到 PENDING 后，另一份快照先完成了退款。
-        OrderStripeRefund scanned = refundRecord();
+        OrderStripeRefundAttempt scanned = attemptRecord();
         assertEquals(RefundSyncResult.REFUNDED,
-                refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded")));
+                refundTransactions.syncRefundStatus(ORDER_ID, scanned.getId(), snapshot("succeeded")));
         when(refundGateway.retrieveRefund(REFUND_ID))
                 .thenReturn(snapshot("pending"));
         stripeRefundService.recoverRefund(scanned);
 
         // 旧的 pending 快照不能覆盖已经回写的成功结果，也不能重新安排重试。
-        OrderStripeRefund completed = refundRecord();
+        OrderStripeRefundAttempt completed = attemptRecord();
         assertEquals("succeeded", completed.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), completed.getReconciliationState());
         assertEquals(0, completed.getRetryCount());
         assertNull(completed.getNextRetryAt());
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
-        verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
+        verify(refundGateway, never()).retrieveRefund(REFUND_ID);
     }
 
     @Test
     void expiredUnboundRefundMovesToReviewWithoutCallingStripe() {
         refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
-        jdbc.update("UPDATE order_stripe_refunds SET create_time = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET create_time = ? WHERE order_id = ?",
                 LocalDateTime.now().minusDays(2), ORDER_ID);
 
         refundRecoveryTask.recoverPendingRefunds();
 
-        OrderStripeRefund reviewed = refundRecord();
+        OrderStripeRefundAttempt reviewed = attemptRecord();
         assertEquals(ReconciliationState.REVIEW.code(), reviewed.getReconciliationState());
         assertNull(reviewed.getRefundId());
+        assertEquals(RefundStatus.REVIEW.code(), refundRecord().getStatus());
         verifyNoInteractions(refundGateway);
     }
 
     @Test
     void expiredStaleSnapshotDoesNotMoveBoundPendingRefundToReview() {
         refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
-        jdbc.update("UPDATE order_stripe_refunds SET create_time = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET create_time = ? WHERE order_id = ?",
                 LocalDateTime.now().minusDays(2), ORDER_ID);
-        OrderStripeRefund scanned = refundRecord();
+        OrderStripeRefundAttempt scanned = attemptRecord();
         assertNull(scanned.getRefundId());
-        refundTransactions.syncRefundStatus(ORDER_ID, snapshot("pending"));
+        refundTransactions.syncRefundStatus(ORDER_ID, scanned.getId(), snapshot("pending"));
+        when(refundGateway.retrieveRefund(REFUND_ID)).thenReturn(snapshot("pending"));
 
         stripeRefundService.recoverRefund(scanned);
 
-        OrderStripeRefund current = refundRecord();
+        OrderStripeRefundAttempt current = attemptRecord();
         assertEquals(ReconciliationState.PENDING.code(), current.getReconciliationState());
         assertEquals(REFUND_ID, current.getRefundId());
         assertEquals("pending", current.getStripeStatus());
-        verifyNoInteractions(refundGateway);
+        assertEquals(RefundStatus.PENDING.code(), refundRecord().getStatus());
+        verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
+        verify(refundGateway, never()).createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString());
     }
 
     @Test
     void expiredStaleSnapshotDoesNotMoveCompletedRefundToReview() {
         refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
-        jdbc.update("UPDATE order_stripe_refunds SET create_time = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET create_time = ? WHERE order_id = ?",
                 LocalDateTime.now().minusDays(2), ORDER_ID);
-        OrderStripeRefund scanned = refundRecord();
+        OrderStripeRefundAttempt scanned = attemptRecord();
         assertNull(scanned.getRefundId());
-        refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded"));
+        refundTransactions.syncRefundStatus(ORDER_ID, scanned.getId(), snapshot("succeeded"));
 
         stripeRefundService.recoverRefund(scanned);
 
-        OrderStripeRefund current = refundRecord();
+        OrderStripeRefundAttempt current = attemptRecord();
         assertEquals(ReconciliationState.RECONCILED.code(), current.getReconciliationState());
         assertEquals(REFUND_ID, current.getRefundId());
         assertEquals("succeeded", current.getStripeStatus());
+        assertEquals(RefundStatus.SUCCEEDED.code(), refundRecord().getStatus());
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         verifyNoInteractions(refundGateway);
     }
 
     @Test
     void pendingRecoveryFailureSchedulesRetryAndMatchingSnapshotCompletesReconciliation() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("pending"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
-        jdbc.update("UPDATE order_stripe_refunds SET next_retry_at = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET next_retry_at = ? WHERE order_id = ?",
                 LocalDateTime.now().minusSeconds(1), ORDER_ID);
         when(refundGateway.retrieveRefund(REFUND_ID))
                 .thenThrow(new IllegalStateException("simulated temporary retrieve failure"))
@@ -345,43 +547,44 @@ class StripeRefundFlowTest {
 
         refundRecoveryTask.recoverPendingRefunds();
 
-        OrderStripeRefund scheduled = refundRecord();
+        OrderStripeRefundAttempt scheduled = attemptRecord();
         assertEquals("pending", scheduled.getStripeStatus());
         assertEquals(ReconciliationState.PENDING.code(), scheduled.getReconciliationState());
         assertEquals(1, scheduled.getRetryCount());
         assertTrue(scheduled.getNextRetryAt().isAfter(LocalDateTime.now()));
         verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
 
-        jdbc.update("UPDATE order_stripe_refunds SET next_retry_at = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET next_retry_at = ? WHERE order_id = ?",
                 LocalDateTime.now().minusSeconds(1), ORDER_ID);
         refundRecoveryTask.recoverPendingRefunds();
 
-        OrderStripeRefund reconciled = refundRecord();
+        OrderStripeRefundAttempt reconciled = attemptRecord();
         assertEquals("succeeded", reconciled.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), reconciled.getReconciliationState());
         assertNull(reconciled.getNextRetryAt());
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         assertEquals(STOCK_AFTER_REFUND, stock());
         refundRecoveryTask.recoverPendingRefunds();
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(reconciled.getIdempotencyKey()));
         verify(refundGateway, times(2)).retrieveRefund(REFUND_ID);
     }
 
     @Test
     void recoveryFailureAfterConcurrentCompletionKeepsCompleteAndDoesNotScheduleRetry() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("pending"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
-        jdbc.update("UPDATE order_stripe_refunds SET next_retry_at = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET next_retry_at = ? WHERE order_id = ?",
                 LocalDateTime.now().minusSeconds(1), ORDER_ID);
         when(refundGateway.retrieveRefund(REFUND_ID)).thenAnswer(invocation -> {
-            refundTransactions.syncRefundStatus(ORDER_ID, snapshot("succeeded"));
+            refundTransactions.syncRefundStatus(ORDER_ID, attemptRecord().getId(), snapshot("succeeded"));
             throw new IllegalStateException("simulated retrieve failure after concurrent completion");
         });
 
         refundRecoveryTask.recoverPendingRefunds();
 
-        OrderStripeRefund completed = refundRecord();
+        OrderStripeRefundAttempt completed = attemptRecord();
         assertEquals("succeeded", completed.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), completed.getReconciliationState());
         assertEquals(0, completed.getRetryCount());
@@ -393,19 +596,19 @@ class StripeRefundFlowTest {
 
     @Test
     void pendingRecoveryRetryLimitMovesToReviewAndExistingReviewRemainsManual() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("pending"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
-        jdbc.update("UPDATE order_stripe_refunds SET next_retry_at = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET next_retry_at = ? WHERE order_id = ?",
                 LocalDateTime.now().minusSeconds(1), ORDER_ID);
 
-        jdbc.update("UPDATE order_stripe_refunds SET retry_count = ? WHERE order_id = ?",
+        jdbc.update("UPDATE order_stripe_refund_attempts SET retry_count = ? WHERE order_id = ?",
                 PaymentPolicy.MAX_RECOVERY_ATTEMPTS - 1, ORDER_ID);
         when(refundGateway.retrieveRefund(REFUND_ID))
                 .thenThrow(new IllegalStateException("simulated final recovery failure"));
         refundRecoveryTask.recoverPendingRefunds();
 
-        OrderStripeRefund exhausted = refundRecord();
+        OrderStripeRefundAttempt exhausted = attemptRecord();
         assertEquals("pending", exhausted.getStripeStatus());
         assertEquals(REFUND_ID, exhausted.getRefundId());
         assertEquals(ReconciliationState.REVIEW.code(), exhausted.getReconciliationState());
@@ -414,9 +617,9 @@ class StripeRefundFlowTest {
         assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
         verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
 
-        refundTransactions.scheduleConflictRetry(ORDER_ID);
-        assertEquals(PaymentPolicy.MAX_RECOVERY_ATTEMPTS, refundRecord().getRetryCount());
-        assertEquals(ReconciliationState.REVIEW.code(), refundRecord().getReconciliationState());
+        refundTransactions.scheduleConflictRetry(ORDER_ID, exhausted.getId());
+        assertEquals(PaymentPolicy.MAX_RECOVERY_ATTEMPTS, attemptRecord().getRetryCount());
+        assertEquals(ReconciliationState.REVIEW.code(), attemptRecord().getReconciliationState());
         refundRecoveryTask.recoverPendingRefunds();
         verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
     }
@@ -436,10 +639,10 @@ class StripeRefundFlowTest {
      */
     @Test
     void localSyncFailureLeavesPendingThenRecoveryReconcilesWithoutASecondRefund() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("succeeded"));
         jdbc.execute("""
-                ALTER TABLE order_stripe_refunds
+                ALTER TABLE order_stripe_refund_attempts
                 ADD CONSTRAINT reject_terminal_refund_status
                 CHECK (stripe_status IS NULL OR stripe_status <> 'succeeded')
                 """);
@@ -448,7 +651,7 @@ class StripeRefundFlowTest {
         assertDoesNotThrow(() -> orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID));
 
         assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
-        OrderStripeRefund pending = refundRecord();
+        OrderStripeRefundAttempt pending = attemptRecord();
         assertNotNull(pending);
         assertNull(pending.getRefundId(), "状态与绑定写在同一个事务里，回滚后不应留下 refundId");
         assertNull(pending.getStripeStatus());
@@ -456,13 +659,15 @@ class StripeRefundFlowTest {
         // 库存在拒单事务内已归还并提交，不能因为退款同步失败而回滚成预扣状态
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundRowCount());
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        String originalKey = pending.getIdempotencyKey();
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(originalKey));
 
-        jdbc.execute("ALTER TABLE order_stripe_refunds DROP CONSTRAINT reject_terminal_refund_status");
+        jdbc.execute("ALTER TABLE order_stripe_refund_attempts DROP CONSTRAINT reject_terminal_refund_status");
         refundRecoveryTask.recoverPendingRefunds();
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
-        OrderStripeRefund refunded = refundRecord();
+        OrderStripeRefundAttempt refunded = attemptRecord();
         assertEquals(REFUND_ID, refunded.getRefundId());
         assertEquals("succeeded", refunded.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), refunded.getReconciliationState());
@@ -470,12 +675,12 @@ class StripeRefundFlowTest {
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundRowCount());
 
-        // 本地没有 refundId 只能重新发起创建，但两次用的是同一个幂等键
+        // 本地没有 refundId 时恢复同一请求，两次用的是同一个幂等键
         // → Stripe 返回同一笔退款，不会产生第二笔
         ArgumentCaptor<String> idempotencyKeys = ArgumentCaptor.forClass(String.class);
         verify(refundGateway, times(2)).createRefund(
                 eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), idempotencyKeys.capture());
-        assertEquals(List.of(IDEMPOTENCY_KEY, IDEMPOTENCY_KEY), idempotencyKeys.getAllValues());
+        assertEquals(List.of(originalKey, originalKey), idempotencyKeys.getAllValues());
         verify(refundGateway, never()).retrieveRefund(anyString());
     }
 
@@ -492,12 +697,13 @@ class StripeRefundFlowTest {
         stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_succeeded", "refund.updated"));
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
-        OrderStripeRefund refund = refundRecord();
+        OrderStripeRefundAttempt refund = attemptRecord();
         assertEquals("succeeded", refund.getStripeStatus());
         assertEquals(ReconciliationState.RECONCILED.code(), refund.getReconciliationState());
         assertEquals(1, refundEventCount("evt_refund_succeeded"));
         // 事件只推进状态，不会再下一笔退款
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(refund.getIdempotencyKey()));
         verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
     }
 
@@ -524,7 +730,7 @@ class StripeRefundFlowTest {
         pendingRefund();
         when(refundGateway.retrieveRefund(REFUND_ID)).thenReturn(snapshot("succeeded"));
         jdbc.execute("""
-                ALTER TABLE order_stripe_refunds
+                ALTER TABLE order_stripe_refund_attempts
                 ADD CONSTRAINT reject_webhook_terminal_status
                 CHECK (stripe_status IS NULL OR stripe_status <> 'succeeded')
                 """);
@@ -535,7 +741,7 @@ class StripeRefundFlowTest {
         assertEquals(0, refundEventCount("evt_refund_retry"));
         assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
 
-        jdbc.execute("ALTER TABLE order_stripe_refunds DROP CONSTRAINT reject_webhook_terminal_status");
+        jdbc.execute("ALTER TABLE order_stripe_refund_attempts DROP CONSTRAINT reject_webhook_terminal_status");
         stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_retry", "refund.updated"));
 
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
@@ -552,7 +758,7 @@ class StripeRefundFlowTest {
                 new StripeRefundSnapshot("re_other_701", PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, "succeeded", null)));
 
         assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
-        assertEquals("pending", refundRecord().getStripeStatus());
+        assertEquals("pending", attemptRecord().getStripeStatus());
         assertEquals(0, refundEventCount("evt_refund_foreign"));
         verify(refundGateway, never()).retrieveRefund(anyString());
     }
@@ -569,8 +775,9 @@ class StripeRefundFlowTest {
 
         stripeRefundService.processWebhookRefundEvent(refundEvent("evt_refund_failed", "refund.failed"));
 
-        OrderStripeRefund after = refundRecord();
+        OrderStripeRefundAttempt after = attemptRecord();
         assertEquals("failed", after.getStripeStatus());
+        assertEquals(ReconciliationState.RECONCILED.code(), after.getReconciliationState());
         // 失败原因要落库：后续按原因判断是否值得自动重试
         assertEquals("expired_or_canceled_card", after.getFailureReason());
         assertEquals(REFUND_ID, after.getRefundId());
@@ -579,23 +786,36 @@ class StripeRefundFlowTest {
         assertEquals(1, refundEventCount("evt_refund_failed"));
 
         // 失败巡检查询能看到这条记录，且它只读，不改状态
-        List<OrderStripeRefund> failed = refundMapper.selectFailedList(10);
+        List<OrderStripeRefundAttempt> failed = refundAttemptMapper.selectFailedAttempts(10);
         assertEquals(1, failed.size());
         assertEquals(ORDER_ID, failed.get(0).getOrderId());
         assertEquals("expired_or_canceled_card", failed.get(0).getFailureReason());
-        assertEquals("failed", refundRecord().getStripeStatus());
+        assertEquals("failed", attemptRecord().getStripeStatus());
+        assertEquals(RefundStatus.REVIEW.code(), refundRecord().getStatus());
+
+        stripeRefundService.refundRejectedOrder(ORDER_ID);
+        assertEquals(1, attemptCount());
+        verify(refundGateway, times(1)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), eq(attemptRecord().getIdempotencyKey()));
     }
 
     @Test
-    void refundFailedWebhookReopensRefundedOrderWithoutReturningStockAgain() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
-                .thenReturn(snapshot("succeeded"));
+    void lateWebhookForFailedOldAttemptCannotChangeSuccessfulCurrentAttempt() {
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
+                .thenReturn(snapshot(REFUND_ID, "failed", RETRYABLE_FAILURE_REASON))
+                .thenReturn(snapshot(NEXT_REFUND_ID, "succeeded", null));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
+        OrderStripeRefundAttempt oldAttempt = attemptRecord();
+        assertEquals("failed", oldAttempt.getStripeStatus());
+
+        stripeRefundService.refundRejectedOrder(ORDER_ID);
+        OrderStripeRefundAttempt currentAttempt = attemptRecord();
+        assertEquals("succeeded", currentAttempt.getStripeStatus());
         assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         assertEquals(STOCK_AFTER_REFUND, stock());
 
-        String failureReason = "expired_or_canceled_card";
-        StripeRefundSnapshot failedSnapshot = snapshot("failed", failureReason);
+        String lateFailureReason = "late_webhook_failure_reason";
+        StripeRefundSnapshot failedSnapshot = snapshot(REFUND_ID, "failed", lateFailureReason);
         when(refundGateway.retrieveRefund(REFUND_ID)).thenReturn(failedSnapshot);
         StripeWebhookEvent failedEvent = new StripeWebhookEvent(
                 "evt_refund_failed_after_success", "refund.failed", false, null, failedSnapshot);
@@ -603,26 +823,71 @@ class StripeRefundFlowTest {
         stripeRefundService.processWebhookRefundEvent(failedEvent);
         stripeRefundService.processWebhookRefundEvent(failedEvent);
 
-        OrderStripeRefund refund = refundRecord();
-        assertEquals(REFUND_ID, refund.getRefundId());
-        assertEquals("failed", refund.getStripeStatus());
-        assertEquals(failureReason, refund.getFailureReason());
-        assertEquals(ReconciliationState.REVIEW.code(), refund.getReconciliationState());
-        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+        OrderStripeRefundAttempt afterWebhook = attemptRecord();
+        assertEquals(NEXT_REFUND_ID, afterWebhook.getRefundId());
+        assertEquals("succeeded", afterWebhook.getStripeStatus());
+        assertEquals(RefundStatus.SUCCEEDED.code(), refundRecord().getStatus());
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
         assertEquals(STOCK_AFTER_REFUND, stock());
         assertEquals(1, refundEventCount(failedEvent.id()));
-        verify(refundGateway, times(1)).createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY);
+        OrderStripeRefundAttempt historicalAttempt = refundAttemptMapper.selectById(oldAttempt.getId());
+        assertEquals("failed", historicalAttempt.getStripeStatus());
+        assertEquals(lateFailureReason, historicalAttempt.getFailureReason());
+        assertEquals(ReconciliationState.RECONCILED.code(), historicalAttempt.getReconciliationState());
+        assertTrue(refundAttemptMapper.selectFailedAttempts(10).isEmpty());
+        verify(refundGateway, times(2)).createRefund(
+                eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString());
         verify(refundGateway, times(1)).retrieveRefund(REFUND_ID);
+    }
+
+    @Test
+    void unboundAttemptWebhookMustMatchItsAttemptMetadata() {
+        refundTransactions.prepareRefund(ORDER_ID, MERCHANT_ID);
+        OrderStripeRefundAttempt failedAttempt = attemptRecord();
+        refundTransactions.syncRefundStatus(ORDER_ID, failedAttempt.getId(),
+                snapshot(REFUND_ID, "failed", RETRYABLE_FAILURE_REASON));
+
+        RefundExecution execution = refundTransactions.prepareRefundExecution(ORDER_ID, failedAttempt.getId());
+        assertNotNull(execution);
+        OrderStripeRefundAttempt unboundAttempt = execution.attempt();
+        assertNull(unboundAttempt.getRefundId());
+        assertEquals(2, attemptCount());
+
+        StripeRefundSnapshot wrongMetadata = snapshot(
+                NEXT_REFUND_ID, "succeeded", null, "refund_attempt_unmatched_key");
+        stripeRefundService.processWebhookRefundEvent(new StripeWebhookEvent(
+                "evt_unbound_refund_wrong_key", "refund.updated", false, null, wrongMetadata));
+
+        assertEquals(RefundStatus.PENDING.code(), refundRecord().getStatus());
+        assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
+        assertNull(attemptRecord().getRefundId());
+        assertEquals(0, refundEventCount("evt_unbound_refund_wrong_key"));
+        verifyNoInteractions(refundGateway);
+
+        StripeRefundSnapshot matchedMetadata = snapshot(
+                NEXT_REFUND_ID, "succeeded", null, unboundAttempt.getIdempotencyKey());
+        when(refundGateway.retrieveRefund(NEXT_REFUND_ID)).thenReturn(matchedMetadata);
+        stripeRefundService.processWebhookRefundEvent(new StripeWebhookEvent(
+                "evt_unbound_refund_matching_key", "refund.updated", false, null, matchedMetadata));
+
+        assertEquals(unboundAttempt.getId(), attemptRecord().getId());
+        assertEquals(NEXT_REFUND_ID, attemptRecord().getRefundId());
+        assertEquals("succeeded", attemptRecord().getStripeStatus());
+        assertEquals("failed", refundAttemptMapper.selectById(failedAttempt.getId()).getStripeStatus());
+        assertEquals(RefundStatus.SUCCEEDED.code(), refundRecord().getStatus());
+        assertEquals(OrderStatusEnum.REFUNDED.getCode(), orderStatus());
+        assertEquals(1, refundEventCount("evt_unbound_refund_matching_key"));
+        verify(refundGateway, times(1)).retrieveRefund(NEXT_REFUND_ID);
     }
 
     /** 准备一条已绑定退款单号、仍在等待远端的本地退款记录。 */
     private void pendingRefund() {
-        when(refundGateway.createRefund(PAYMENT_INTENT_ID, AMOUNT_MINOR, IDEMPOTENCY_KEY))
+        when(refundGateway.createRefund(eq(PAYMENT_INTENT_ID), eq(AMOUNT_MINOR), anyString()))
                 .thenReturn(snapshot("pending"));
         orderCommands.rejectOrderByMerchant(ORDER_ID, MERCHANT_ID);
 
         assertEquals(OrderStatusEnum.REFUNDING.getCode(), orderStatus());
-        OrderStripeRefund pending = refundRecord();
+        OrderStripeRefundAttempt pending = attemptRecord();
         assertEquals(REFUND_ID, pending.getRefundId());
         assertEquals("pending", pending.getStripeStatus());
         assertEquals(ReconciliationState.PENDING.code(), pending.getReconciliationState());
@@ -649,7 +914,7 @@ class StripeRefundFlowTest {
                 INSERT INTO order_stripe_payments (
                     order_id, payment_intent_id, amount_minor, currency, stripe_status,
                     idempotency_key, create_time, update_time, reconciliation_state
-                ) VALUES (?, ?, ?, ?, 'succeeded', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'COMPLETE')
+                ) VALUES (?, ?, ?, ?, 'succeeded', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'RECONCILED')
                 """, ORDER_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, "order_pay_" + ORDER_ID);
 
         // 下单已扣 3 件，因此这里只剩 7 件
@@ -668,6 +933,7 @@ class StripeRefundFlowTest {
     private void recreateSchema() {
         // 依赖顺序：先删引用方，再删被引用方
         jdbc.execute("DROP TABLE IF EXISTS stripe_refund_events");
+        jdbc.execute("DROP TABLE IF EXISTS order_stripe_refund_attempts");
         jdbc.execute("DROP TABLE IF EXISTS order_stripe_refunds");
         jdbc.execute("DROP TABLE IF EXISTS order_stripe_payments");
         jdbc.execute("DROP TABLE IF EXISTS order_item");
@@ -723,14 +989,25 @@ class StripeRefundFlowTest {
                     refund_id VARCHAR(255) UNIQUE,
                     amount_minor BIGINT NOT NULL,
                     currency VARCHAR(10) NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+                    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbc.execute("""
+                CREATE TABLE order_stripe_refund_attempts (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    order_id BIGINT NOT NULL,
+                    refund_id VARCHAR(255) UNIQUE,
                     idempotency_key VARCHAR(255) NOT NULL UNIQUE,
                     stripe_status VARCHAR(32),
-                    failure_reason VARCHAR(64) NULL,
                     reconciliation_state VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                    failure_reason VARCHAR(64),
                     retry_count INT NOT NULL DEFAULT 0,
                     next_retry_at TIMESTAMP NULL,
                     create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (order_id) REFERENCES order_stripe_refunds(order_id)
                 )
                 """);
         jdbc.execute("""
@@ -760,8 +1037,16 @@ class StripeRefundFlowTest {
         return jdbc.queryForObject("SELECT COUNT(*) FROM order_stripe_refunds", Integer.class);
     }
 
+    private int attemptCount() {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM order_stripe_refund_attempts", Integer.class);
+    }
+
     private OrderStripeRefund refundRecord() {
-        return refundMapper.selectRefundmentByOrderId(ORDER_ID);
+        return refundMapper.selectById(ORDER_ID);
+    }
+
+    private OrderStripeRefundAttempt attemptRecord() {
+        return refundAttemptMapper.selectLatestAttemptByOrderId(ORDER_ID);
     }
 
     private int refundEventCount(String eventId) {
@@ -781,10 +1066,23 @@ class StripeRefundFlowTest {
         return new StripeRefundSnapshot(REFUND_ID, PAYMENT_INTENT_ID, AMOUNT_MINOR, CURRENCY, status, failureReason);
     }
 
+    private static StripeRefundSnapshot snapshot(String refundId, String status, String failureReason) {
+        return new StripeRefundSnapshot(refundId, PAYMENT_INTENT_ID, AMOUNT_MINOR,
+                CURRENCY, status, failureReason);
+    }
+
+    private static StripeRefundSnapshot snapshot(String refundId, String status,
+                                                  String failureReason, String attemptKey) {
+        return new StripeRefundSnapshot(refundId, PAYMENT_INTENT_ID, AMOUNT_MINOR,
+                CURRENCY, status, failureReason, attemptKey);
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement
     @Import(MybatisPlusConfig.class)
+    @EnableConfigurationProperties(StripeRefundRetryPolicy.class)
     @MapperScan(basePackageClasses = {OrderStripePaymentMapper.class, OrderStripeRefundMapper.class,
+            OrderStripeRefundAttemptMapper.class,
             OrderMapper.class, OrderItemMapper.class, ProductMapper.class},
             annotationClass = Mapper.class)
     static class TestConfig {
@@ -824,25 +1122,26 @@ class StripeRefundFlowTest {
 
         @Bean
         StripeRefundTransactionService refundTransactionService(OrderStripeRefundMapper refundMapper,
+                                                                OrderStripeRefundAttemptMapper attemptMapper,
                                                                 OrderMapper orderMapper,
                                                                 OrderStripePaymentMapper paymentMapper,
-                                                                StripeRefundEventMapper refundEventMapper) {
-            return new StripeRefundTransactionService(refundMapper, orderMapper, paymentMapper, refundEventMapper);
+                                                                StripeRefundEventMapper refundEventMapper,
+                                                                StripeRefundRetryPolicy retryPolicy) {
+            return new StripeRefundTransactionService(
+                    refundMapper, attemptMapper, orderMapper, paymentMapper, refundEventMapper, retryPolicy);
         }
 
         @Bean
         StripeRefundService stripeRefundService(StripeRefundTransactionService transactions,
                                                 StripeRefundGateway gateway,
-                                                OrderStripePaymentMapper paymentMapper,
-                                                OrderStripeRefundMapper refundMapper) {
-            return new StripeRefundService(transactions, gateway, paymentMapper, refundMapper);
+                                                OrderStripeRefundAttemptMapper attemptMapper) {
+            return new StripeRefundService(transactions, gateway, attemptMapper);
         }
 
         @Bean
-        StripeRefundRecoveryTask refundRecoveryTask(OrderStripeRefundMapper refundMapper,
-                                                   StripeRefundService refundService,
-                                                   StripeRefundTransactionService refundTransactions) {
-            return new StripeRefundRecoveryTask(refundMapper, refundService, refundTransactions);
+        StripeRefundRecoveryTask refundRecoveryTask(OrderStripeRefundAttemptMapper attemptMapper,
+                                                   StripeRefundService refundService) {
+            return new StripeRefundRecoveryTask(attemptMapper, refundService);
         }
     }
 }

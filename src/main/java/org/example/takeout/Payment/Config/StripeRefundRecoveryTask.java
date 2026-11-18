@@ -1,54 +1,31 @@
 package org.example.takeout.Payment.Config;
 
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.example.takeout.Payment.Domain.ReconciliationState;
-import org.example.takeout.Payment.Entity.OrderStripeRefund;
-import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
+import org.example.takeout.Payment.Entity.OrderStripeRefundAttempt;
+import org.example.takeout.Payment.Mapper.OrderStripeRefundAttemptMapper;
 import org.example.takeout.Payment.Service.StripeRefundService;
-import org.example.takeout.Payment.Service.StripeRefundTransactionService;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-
 @Slf4j
 @Component
+@RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "payment.stripe", name = "enabled", havingValue = "true")
 public class StripeRefundRecoveryTask {
-    private final OrderStripeRefundMapper orderStripeRefundMapper;
+    private final OrderStripeRefundAttemptMapper attemptMapper;
     private final StripeRefundService stripeRefundService;
-    private final StripeRefundTransactionService stripeRefundTransactionService;
-
-    public StripeRefundRecoveryTask(OrderStripeRefundMapper orderStripeRefundMapper, StripeRefundService stripeRefundService, StripeRefundTransactionService stripeRefundTransactionService) {
-        this.orderStripeRefundMapper = orderStripeRefundMapper;
-        this.stripeRefundService = stripeRefundService;
-        this.stripeRefundTransactionService = stripeRefundTransactionService;
-    }
 
     @Scheduled(fixedDelay = 60_000)
     public void recoverPendingRefunds() {
-        // 1. 查询 reconciliation_state = PENDING 的退款记录
-        List<OrderStripeRefund> orderStripeRefunds = orderStripeRefundMapper.selectPendingRetryList(ReconciliationState.PENDING.code());
-        if (orderStripeRefunds.isEmpty()) {
-            return;
-        }
-        // 2. 对每条记录执行恢复
-        for (OrderStripeRefund orderStripeRefund : orderStripeRefunds) {
+        for (OrderStripeRefundAttempt attempt : attemptMapper.selectPendingRetryList(1000)) {
             try {
-                stripeRefundService.recoverRefund(orderStripeRefund);
-            } catch (Exception e) {
-                log.error("stripe自动恢复失败，orderID={}",orderStripeRefund.getOrderId(),e);
-                try {
-                    stripeRefundTransactionService.scheduleConflictRetry(orderStripeRefund.getOrderId());
-                } catch (Exception schedulingException) {
-                    log.error("退款重试调度数据库异常，等待下一轮扫描，orderId={}",
-                            orderStripeRefund.getOrderId(), schedulingException);
-                }
-
+                stripeRefundService.recoverRefund(attempt);
+            } catch (RuntimeException failure) {
+                log.error("Stripe 退款恢复失败，orderId={}, scannedAttemptId={}",
+                        attempt.getOrderId(), attempt.getId(), failure);
             }
         }
-
     }
 }

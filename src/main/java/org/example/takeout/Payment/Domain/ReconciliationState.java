@@ -1,10 +1,8 @@
 package org.example.takeout.Payment.Domain;
 
 /**
- * 本地对账协调状态，与 Stripe 的支付状态相互独立。
- * <p>原本以字符串形式出现在 8 处赋值与比较里（PENDING / COMPLETE / REVIEW），
- * 且数据库有 CHECK 约束，改成枚举后拼写错误会在编译期暴露。</p>
- * <p>数据库列 {@code reconciliation_state} 仍存枚举名本身，因此 {@link #name()} 即落库值。</p>
+ * 支付和退款共用的本地对账协调状态，与 Stripe 原生状态及订单业务状态相互独立。
+ * <p>数据库列 {@code reconciliation_state} 存储枚举名。</p>
  */
 public enum ReconciliationState {
     /** 仍需后台恢复任务继续推进，{@code next_retry_at} 决定何时到期。 */

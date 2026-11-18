@@ -40,6 +40,8 @@ jwt:
 # Test-only Stripe. Actual key values must be supplied by the runtime environment.
 payment:
   stripe:
+    refund:
+      auto-retry-failure-reasons: []
     enabled: ${STRIPE_ENABLED:false}
     secret-key: ${STRIPE_SECRET_KEY:}
     publishable-key: ${STRIPE_PUBLISHABLE_KEY:}

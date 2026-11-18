@@ -10,14 +10,19 @@ import org.example.takeout.Order.Enums.OrderStatusEnum;
 import org.example.takeout.Order.Mapper.OrderMapper;
 import org.example.takeout.Payment.Domain.PaymentPolicy;
 import org.example.takeout.Payment.Domain.ReconciliationState;
+import org.example.takeout.Payment.Domain.RefundStatus;
 import org.example.takeout.Payment.Domain.RefundSyncResult;
 import org.example.takeout.Payment.Entity.OrderStripePayment;
 import org.example.takeout.Payment.Entity.OrderStripeRefund;
+import org.example.takeout.Payment.Entity.OrderStripeRefundAttempt;
+import org.example.takeout.Payment.Config.StripeRefundRetryPolicy;
 import org.example.takeout.Payment.Gateway.StripeRefundSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.OrderStripeRefundMapper;
+import org.example.takeout.Payment.Mapper.OrderStripeRefundAttemptMapper;
 import org.example.takeout.Payment.Mapper.StripeRefundEventMapper;
 import org.example.takeout.Payment.VO.RefundPreparation;
+import org.example.takeout.Payment.VO.RefundExecution;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -26,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -38,10 +44,12 @@ public class StripeRefundTransactionService {
             Set.of("pending", "succeeded", "failed", "canceled");
 
     private final OrderStripeRefundMapper orderStripeRefundMapper;
+    private final OrderStripeRefundAttemptMapper refundAttemptMapper;
 
     private final OrderMapper orderMapper;
     private final OrderStripePaymentMapper orderStripePaymentMapper;
     private final StripeRefundEventMapper refundEventMapper;
+    private final StripeRefundRetryPolicy refundRetryPolicy;
 
     @Transactional
     public RefundPreparation prepareRefund(Long orderId, Long merchantId) {
@@ -111,23 +119,85 @@ public class StripeRefundTransactionService {
         orderStripeRefund.setOrderId(orderId);
         orderStripeRefund.setAmountMinor(orderStripePayment.getAmountMinor());
         orderStripeRefund.setCurrency("cny");
-        // 幂等键：同一订单的退款操作重试时复用，保证 Stripe 侧幂等
-        orderStripeRefund.setIdempotencyKey("order_refund_" + orderId);
-        orderStripeRefund.setReconciliationState(ReconciliationState.PENDING.code());
+        orderStripeRefund.setStatus(RefundStatus.PENDING.code());
         orderStripeRefundMapper.insert(orderStripeRefund);
-        return new RefundPreparation(orderStripeRefund,true);
+
+        insertRefundAttempt(orderId);
+        return new RefundPreparation(orderStripeRefund, true);
     }
 
     /**
-     * 用 Stripe 的退款快照推进本地退款记录与订单状态。
-     * <p>锁顺序与支付保持一致：先 orders，再 order_stripe_refunds，避免与支付链路交叉死锁。</p>
-     * <p>首次同步时本地还没有 {@code refundId}，此时额外核对 payment 表，确认这笔退款确实属于
-     * 该订单的 PaymentIntent，防止把别的退款对象关联到本订单。</p>
+     * 在一次短事务内决定应恢复当前请求、建立新的退款请求，还是停止自动处理。
+     * expectedAttemptId 用于定时扫描，避免基于过期扫描结果操作另一条新 Attempt。
      */
     @Transactional(rollbackFor = Exception.class)
-    public RefundSyncResult syncRefundStatus(Long orderId,
-            StripeRefundSnapshot snapshot){
-        return applyRefundSnapshot(orderId, snapshot);
+    public RefundExecution prepareRefundExecution(Long orderId, Long expectedAttemptId) {
+        Order order = orderMapper.selectOrderForUpdate(orderId);
+        if (order == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "订单不存在，无法继续退款");
+        }
+
+        OrderStripeRefund refund = orderStripeRefundMapper.selectByOrderIdForUpdate(orderId);
+        if (refund == null) {
+            throw new IllegalStateException("退款记录不存在");
+        }
+
+        if (!RefundStatus.PENDING.matches(refund.getStatus())) {
+            return null;
+        }
+        OrderStripeRefundAttempt attempt = refundAttemptMapper.selectLatestAttemptByOrderIdForUpdate(orderId);
+        if (expectedAttemptId != null && (attempt == null || !expectedAttemptId.equals(attempt.getId()))) {
+            return null;
+        }
+        if (attempt == null || !Objects.equals(order.getStatus(), OrderStatusEnum.REFUNDING.getCode())) {
+            markRefundForReview(refund);
+            return null;
+        }
+
+        boolean reconciled = ReconciliationState.RECONCILED.matches(attempt.getReconciliationState());
+        if (reconciled) {
+            if (StringUtils.isBlank(attempt.getRefundId())
+                    || !allowsNewAttempt(attempt.getStripeStatus(), attempt.getFailureReason())) {
+                markRefundForReview(refund);
+                return null;
+            }
+        } else {
+            if (!ReconciliationState.isPending(attempt.getReconciliationState())
+                    || (attempt.getStripeStatus() != null && !REFUND_STATUSES.contains(attempt.getStripeStatus()))
+                    || (attempt.getRefundId() == null && isTerminal(attempt.getStripeStatus()))) {
+                markRefundForReview(refund);
+                return null;
+            }
+            LocalDateTime now = orderStripePaymentMapper.selectDatabaseTime();
+            if (attempt.getRefundId() == null && (attempt.getCreateTime() == null
+                    || !now.isBefore(attempt.getCreateTime().plus(PaymentPolicy.IDEMPOTENCY_TTL)))) {
+                refundAttemptMapper.markAttemptReconciliationReview(attempt.getId(), attempt.getIdempotencyKey());
+                markRefundForReview(refund);
+                log.warn("退款幂等窗口已过期，orderId={}, attemptId={}", orderId, attempt.getId());
+                return null;
+            }
+            if (attempt.getNextRetryAt() != null && attempt.getNextRetryAt().isAfter(now)) {
+                return null;
+            }
+        }
+
+        OrderStripePayment payment = orderStripePaymentMapper.selectPaymentByOrderId(orderId);
+        if (payment == null || StringUtils.isBlank(payment.getPaymentIntentId())) {
+            markRefundForReview(refund);
+            return null;
+        }
+
+        if (reconciled) {
+            attempt = insertRefundAttempt(orderId);
+        }
+        return new RefundExecution(attempt, refund.getAmountMinor(), payment.getPaymentIntentId());
+    }
+
+    /** 用 Stripe 的快照更新指定 Attempt，并在它仍是当前 Attempt 时推进退款业务。 */
+    @Transactional(rollbackFor = Exception.class)
+    public RefundSyncResult syncRefundStatus(Long orderId, Long attemptId,
+                                             StripeRefundSnapshot snapshot) {
+        return applyRefundSnapshot(orderId, attemptId, snapshot);
     }
 
     /**
@@ -136,7 +206,8 @@ public class StripeRefundTransactionService {
      * 反过来，只要事务提交，就说明业务状态已经落库，此时才允许把事件标记为已处理。</p>
      */
     @Transactional(rollbackFor = Exception.class)
-    public RefundSyncResult syncWebhookRefundStatus(Long orderId, StripeRefundSnapshot snapshot,
+    public RefundSyncResult syncWebhookRefundStatus(Long orderId, Long attemptId,
+                                                    StripeRefundSnapshot snapshot,
                                                     String eventId, String eventType) {
         if (StringUtils.isBlank(eventId)) {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "退款事件缺少事件 ID");
@@ -146,7 +217,7 @@ public class StripeRefundTransactionService {
             return RefundSyncResult.UNCHANGED;
         }
 
-        RefundSyncResult result = applyRefundSnapshot(orderId, snapshot);
+        RefundSyncResult result = applyRefundSnapshot(orderId, attemptId, snapshot);
 
         refundEventMapper.insertRefundEvent(eventId, snapshot.refundId(), eventType);
         return result;
@@ -158,30 +229,11 @@ public class StripeRefundTransactionService {
         return !StringUtils.isBlank(eventId) && refundEventMapper.countEventsByEventId(eventId) != 0;
     }
 
-    /**
-     * 为一条退款事件找到它对应的本地退款记录。
-     * <p>优先用退款单号反查；本地还没绑定单号（远端创建结果未知）时用 PaymentIntent 反查，
-     * 让这类事件也能把 {@code refundId} 补上。都找不到说明不属于本地订单，交由调用方忽略。</p>
-     */
-    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
-    public OrderStripeRefund findRefundForEvent(String refundId, String paymentIntentId) {
-        if (!StringUtils.isBlank(refundId)) {
-            OrderStripeRefund refund = orderStripeRefundMapper.selectByRefundId(refundId);
-            if (refund != null) {
-                return refund;
-            }
-        }
-        if (StringUtils.isBlank(paymentIntentId)) {
-            return null;
-        }
-        return orderStripeRefundMapper.selectByPaymentIntentId(paymentIntentId);
-    }
-
-    private RefundSyncResult applyRefundSnapshot(Long orderId,
-            StripeRefundSnapshot snapshot){
-        if (orderId == null || snapshot == null) {
+    private RefundSyncResult applyRefundSnapshot(Long orderId, Long attemptId,
+            StripeRefundSnapshot snapshot) {
+        if (orderId == null || attemptId == null || snapshot == null) {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR,
-                    "订单 ID 与退款快照不能为空");
+                    "订单 ID、退款 Attempt ID 与快照不能为空");
         }
         if (StringUtils.isBlank(snapshot.refundId())) {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR,
@@ -198,8 +250,13 @@ public class StripeRefundTransactionService {
             throw new IllegalStateException("退款记录不存在");
         }
 
-        if (orderStripeRefund.getRefundId() != null
-                && !orderStripeRefund.getRefundId().equals(snapshot.refundId())) {
+        OrderStripeRefundAttempt attempt = refundAttemptMapper.selectAttemptByIdForUpdate(attemptId);
+        if (attempt == null || !Objects.equals(orderId, attempt.getOrderId())) {
+            throw new IllegalStateException("退款 Attempt 不属于指定订单");
+        }
+
+        if (attempt.getRefundId() != null
+                && !attempt.getRefundId().equals(snapshot.refundId())) {
             throw new IllegalStateException("退款对象不匹配");
         }
 
@@ -210,153 +267,182 @@ public class StripeRefundTransactionService {
                     "退款金额或币种与本地记录不一致");
         }
 
-        //在第一次绑定的时候，RefundId == null是正常的，需要额外查询一次payment表
-        if (orderStripeRefund.getRefundId() == null){
-            OrderStripePayment orderStripePayment = orderStripePaymentMapper.selectPaymentByOrderId(orderId);
-
-            if (orderStripePayment == null
-                    || orderStripePayment.getPaymentIntentId() == null
-                    || !Objects.equals(
-                    orderStripePayment.getPaymentIntentId(),
-                    snapshot.paymentIntentId())) {
-                throw new BusinessException(
-                        ResultCodeEnum.PAYMENT_ERROR,
-                        "退款关联的支付对象不匹配"
-                );
-            }
-
+        OrderStripePayment orderStripePayment = orderStripePaymentMapper.selectPaymentByOrderId(orderId);
+        if (orderStripePayment == null
+                || StringUtils.isBlank(orderStripePayment.getPaymentIntentId())
+                || !Objects.equals(orderStripePayment.getPaymentIntentId(), snapshot.paymentIntentId())) {
+            throw new BusinessException(ResultCodeEnum.PAYMENT_ERROR, "退款关联的支付对象不匹配");
         }
-        //状态同步
-        RefundSyncResult refundSyncResult = syncStatus(orderStripeRefund, snapshot);
+
+        OrderStripeRefundAttempt latestAttempt =
+                refundAttemptMapper.selectLatestAttemptByOrderIdForUpdate(orderId);
+        boolean currentAttempt = latestAttempt != null && Objects.equals(latestAttempt.getId(), attemptId);
+        RefundSyncResult refundSyncResult = syncStatus(orderStripeRefund, attempt, currentAttempt, order, snapshot);
 
         if (refundSyncResult == RefundSyncResult.CONFLICT) {
             log.warn("Stripe 退款状态冲突: orderId={}, previous={}, incoming={}",
-                    orderId, orderStripeRefund.getStripeStatus(), snapshot.status());
+                    orderId, attempt.getStripeStatus(), snapshot.status());
         }
 
         return refundSyncResult;
 
     }
 
-    /**
-     * 退款状态机：本地只跑一次 {@code null/pending -> 终态}，终态不再回退。
-     * <p>状态相同不代表无事可做：首次同步时本地还没有 {@code refundId}，如果远端同样处于
-     * {@code pending}，只比状态就会提前返回，退款对象永远绑不上。因此幂等短路的条件是
-     * "状态一致 <b>且</b> 已绑定"，未绑定的一律继续走下面的写入路径完成绑定。</p>
-     * <p>已绑定的终态回查一致时，结束仍在进行的本地对账重试。</p>
-     * <p>{@code succeeded} 会同时把订单从 {@code REFUNDING} 推到 {@code REFUNDED}，并让调用方归还库存；
-     * {@code failed}/{@code canceled} 表示钱没退出去，订单不能假装已退款，只把对账状态转人工。</p>
-     */
-    private RefundSyncResult syncStatus(
-            OrderStripeRefund refund,
-            StripeRefundSnapshot snapshot
-    ) {
-        String oldStatus = refund.getStripeStatus();
-        String newStatus = snapshot.status();
+    /** Attempt 状态只写回其自身；只有最新 Attempt 才能推进当前退款业务和订单。 */
+    private RefundSyncResult syncStatus(OrderStripeRefund refund,
+                                        OrderStripeRefundAttempt attempt,
+                                        boolean currentAttempt,
+                                        Order order,
+                                        StripeRefundSnapshot snapshot) {
+        String previousStatus = attempt.getStripeStatus();
+        String incomingStatus = snapshot.status();
+        String previousRefundId = attempt.getRefundId();
 
-        if (StringUtils.isBlank(newStatus) || !REFUND_STATUSES.contains(newStatus)) {
-            throw new IllegalStateException("不支持的退款状态: " + newStatus);
+        if (StringUtils.isBlank(incomingStatus) || !REFUND_STATUSES.contains(incomingStatus)) {
+            throw new IllegalStateException("不支持的退款状态: " + incomingStatus);
         }
 
-        // 首次同步：退款单号尚未落库
-        boolean needsBind = refund.getRefundId() == null;
+        if (Objects.equals(previousStatus, incomingStatus) && previousRefundId != null) {
+            boolean finishReconciliation = isTerminal(incomingStatus)
+                    && ReconciliationState.isPending(attempt.getReconciliationState());
+            if (!finishReconciliation && Objects.equals(attempt.getFailureReason(), snapshot.failureReason())) {
+                return RefundSyncResult.UNCHANGED;
+            }
+            String nextState = finishReconciliation ? ReconciliationState.RECONCILED.code()
+                    : attempt.getReconciliationState();
+            updateAttemptStatus(attempt, snapshot, nextState);
+            if (currentAttempt && isTerminal(incomingStatus) && !"succeeded".equals(incomingStatus)
+                    && !allowsNewAttempt(incomingStatus, snapshot.failureReason())) {
+                markRefundForReview(refund);
+            }
+            return RefundSyncResult.UPDATED;
+        }
 
-        // 回查确认已绑定的本地终态后，结束对账重试。
-        if (Objects.equals(oldStatus, newStatus) && !needsBind) {
-            if (isTerminal(oldStatus)
-                    && ReconciliationState.isPending(
-                    refund.getReconciliationState())) {
+        if (isTerminal(previousStatus)) {
+            if (!isTerminal(incomingStatus)) {
+                // 在途请求的 pending 可能晚于已确认的终态到达。
+                return RefundSyncResult.CONFLICT;
+            }
 
-                if (orderStripeRefundMapper.updateReconciliationState(
-                        refund.getOrderId(),
-                        ReconciliationState.RECONCILED.code()) != 1) {
-                    throw new IllegalStateException("退款对账状态更新失败");
-                }
-
+            if (!currentAttempt) {
+                updateAttemptStatus(attempt, snapshot, ReconciliationState.RECONCILED.code());
                 return RefundSyncResult.UPDATED;
             }
 
-            return RefundSyncResult.UNCHANGED;
-        }
+            if ("succeeded".equals(previousStatus) && "failed".equals(incomingStatus)) {
+                updateAttemptStatus(attempt, snapshot, ReconciliationState.REVIEW.code());
+                updateRefundStatus(refund, RefundStatus.SUCCEEDED, RefundStatus.REVIEW);
 
-        if ("succeeded".equals(oldStatus) && "failed".equals(newStatus)) {
+                int orderAffected = orderMapper.updateOrderStatusToRefundingIfRefunded(
+                        refund.getOrderId(),
+                        OrderStatusEnum.REFUNDED.getCode(),
+                        OrderStatusEnum.REFUNDING.getCode());
+                if (orderAffected != 1) {
+                    throw new IllegalStateException("退款失败后订单状态回退失败");
+                }
 
-            log.warn("Stripe 退款状态变化: orderId={}, refundId={}, localStatus={}, remoteStatus={}",
-                    refund.getOrderId(), snapshot.refundId(), oldStatus, newStatus);
-
-            int refundAffected = orderStripeRefundMapper.updateStatusToFailed(
-                    refund.getOrderId(),
-                    snapshot.refundId(),
-                    snapshot.failureReason()
-            );
-
-            int orderAffected = orderMapper.updateOrderStatusToRefundingIfRefunded(
-                    refund.getOrderId(),
-                    OrderStatusEnum.REFUNDED.getCode(),
-                    OrderStatusEnum.REFUNDING.getCode()
-            );
-
-            if (refundAffected != 1 || orderAffected != 1) {
-                throw new IllegalStateException("退款失败状态回写异常");
+                log.warn("Stripe 已成功退款后来报失败，退款业务转人工复核: orderId={}, attemptId={}, refundId={}",
+                        refund.getOrderId(), attempt.getId(), snapshot.refundId());
+                return RefundSyncResult.UPDATED;
             }
 
-            return RefundSyncResult.UPDATED;
-        }
-        // 除了success->failed之外，终态不允许覆盖；本地已是终态却还缺 refundId 属于异常数据，同样只能转人工
-        if (isTerminal(oldStatus)) {
+            markAttemptForReview(attempt);
+            markRefundForReview(refund);
             return RefundSyncResult.CONFLICT;
         }
 
-        // 只允许首次同步或 pending 转换
-        if (oldStatus != null && !"pending".equals(oldStatus)) {
-            throw new IllegalStateException("非法本地退款状态: " + oldStatus);
+        if (previousStatus != null && !"pending".equals(previousStatus)) {
+            throw new IllegalStateException("非法本地退款状态: " + previousStatus);
         }
 
-        if (needsBind) {
-            log.info("Stripe 退款单号首次绑定: orderId={}, refundId={}, localStatus={}, remoteStatus={}",
-                    refund.getOrderId(), snapshot.refundId(), oldStatus, newStatus);
+        ReconciliationState nextReconciliationState = isTerminal(incomingStatus)
+                ? ReconciliationState.RECONCILED
+                : ReconciliationState.PENDING;
+        updateAttemptStatus(attempt, snapshot, nextReconciliationState.code());
+
+        if (!currentAttempt) {
+            return RefundSyncResult.UPDATED;
         }
 
-        if ("succeeded".equals(newStatus)) {
-            int refundAffected =
-                    orderStripeRefundMapper.updateStatus(
-                            refund.getOrderId(), snapshot.refundId(), newStatus,
-                            ReconciliationState.RECONCILED.code(), null);
-
-            int orderAffected =
-                    orderMapper.updateOrderStatusToRefunded(
-                            refund.getOrderId(),
-                            OrderStatusEnum.REFUNDING.getCode(),
-                            OrderStatusEnum.REFUNDED.getCode());
-
-            if (refundAffected != 1 || orderAffected != 1) {
-                throw new IllegalStateException("退款状态更新失败");
-            }
-
+        if ("succeeded".equals(incomingStatus)) {
+            finishRefund(refund, order);
             return RefundSyncResult.REFUNDED;
         }
 
-        // pending 继续等；failed/canceled 是"钱没退成"的终态，需要人工决定重试还是回滚。
-        // 首次同步落到这里时，这一步同时完成 refundId 绑定。
-        ReconciliationState nextState = isTerminal(newStatus)
-                ? ReconciliationState.RECONCILED
-                : ReconciliationState.PENDING;
+        if (isTerminal(incomingStatus)) {
+            log.warn("Stripe 退款 Attempt 未成功: orderId={}, attemptId={}, status={}, failureReason={}",
+                    refund.getOrderId(), attempt.getId(), incomingStatus, snapshot.failureReason());
 
-        int affected = orderStripeRefundMapper.updateStatus(
-                refund.getOrderId(), snapshot.refundId(), newStatus, nextState.code(),
-                snapshot.failureReason());
-
-        if (affected != 1) {
-            throw new IllegalStateException("退款记录更新失败");
+            if (!allowsNewAttempt(incomingStatus, snapshot.failureReason())) {
+                markRefundForReview(refund);
+            }
         }
 
-        if (isTerminal(newStatus)) {
-            log.warn("Stripe 退款未成功: orderId={}, status={}, failureReason={}",
-                    refund.getOrderId(), newStatus, snapshot.failureReason());
-        }
-
-        // pending / failed / canceled
         return RefundSyncResult.UPDATED;
+    }
+
+    private void updateAttemptStatus(OrderStripeRefundAttempt attempt,
+                                     StripeRefundSnapshot snapshot,
+                                     String reconciliationState) {
+        int affected = refundAttemptMapper.updateAttemptStatus(
+                attempt.getId(),
+                attempt.getRefundId(),
+                snapshot.refundId(),
+                snapshot.status(),
+                reconciliationState,
+                snapshot.failureReason());
+        if (affected != 1) {
+            throw new IllegalStateException("退款 Attempt 状态更新失败");
+        }
+    }
+
+    private void finishRefund(OrderStripeRefund refund, Order order) {
+        if (!RefundStatus.SUCCEEDED.matches(refund.getStatus())) {
+            updateRefundStatus(refund, RefundStatus.valueOf(refund.getStatus()), RefundStatus.SUCCEEDED);
+        }
+
+        if (Objects.equals(order.getStatus(), OrderStatusEnum.REFUNDING.getCode())) {
+            int orderAffected = orderMapper.updateOrderStatusToRefunded(
+                    refund.getOrderId(),
+                    OrderStatusEnum.REFUNDING.getCode(),
+                    OrderStatusEnum.REFUNDED.getCode());
+            if (orderAffected != 1) {
+                throw new IllegalStateException("退款成功后订单状态更新失败");
+            }
+        } else if (!Objects.equals(order.getStatus(), OrderStatusEnum.REFUNDED.getCode())) {
+            throw new IllegalStateException("退款成功但订单不处于退款中");
+        }
+    }
+
+    private void updateRefundStatus(OrderStripeRefund refund,
+                                    RefundStatus expectedStatus,
+                                    RefundStatus nextStatus) {
+        if (orderStripeRefundMapper.updateRefundBusinessStatus(
+                refund.getOrderId(), expectedStatus.code(), nextStatus.code()) != 1) {
+            throw new IllegalStateException("退款业务状态更新失败");
+        }
+        refund.setStatus(nextStatus.code());
+    }
+
+    private OrderStripeRefundAttempt insertRefundAttempt(Long orderId) {
+        OrderStripeRefundAttempt attempt = new OrderStripeRefundAttempt();
+        attempt.setOrderId(orderId);
+        attempt.setIdempotencyKey(PaymentPolicy.REFUND_ATTEMPT_KEY_PREFIX + UUID.randomUUID());
+        attempt.setReconciliationState(ReconciliationState.PENDING.code());
+        if (refundAttemptMapper.insert(attempt) != 1 || attempt.getId() == null) {
+            throw new IllegalStateException("未能持久化退款 Attempt");
+        }
+        return attempt;
+    }
+
+    private boolean allowsNewAttempt(String stripeStatus, String failureReason) {
+        return "failed".equals(stripeStatus) && refundRetryPolicy.allowsNewRefund(failureReason);
+    }
+
+    private void markRefundForReview(OrderStripeRefund refund) {
+        if (RefundStatus.PENDING.matches(refund.getStatus())) {
+            updateRefundStatus(refund, RefundStatus.PENDING, RefundStatus.REVIEW);
+        }
     }
 
     private boolean isTerminal(String status) {
@@ -365,57 +451,60 @@ public class StripeRefundTransactionService {
                 || "canceled".equals(status);
     }
 
-    @Transactional
-    public void markReconciliationReview(Long orderId) {
-        // 退款已绑定或对账状态已变化时，条件更新影响 0 行属于正常结果。
-        orderStripeRefundMapper.markReconciliationReview(orderId);
+    private void markAttemptForReview(OrderStripeRefundAttempt attempt) {
+        if (!ReconciliationState.REVIEW.matches(attempt.getReconciliationState())
+                && attempt.getReconciliationState() != null) {
+            refundAttemptMapper.updateAttemptReconciliationState(
+                    attempt.getId(), attempt.getReconciliationState(), ReconciliationState.REVIEW.code());
+        }
     }
 
-    @Transactional
-    public void scheduleConflictRetry(Long orderId) {
-        OrderStripeRefund refund =
-                orderStripeRefundMapper.selectByOrderIdForUpdate(orderId);
-
-        if (refund == null) {
-            throw new IllegalStateException("退款记录不存在");
-        }
-
-        // 调度以加锁后的状态为准，旧快照或恢复异常可能晚于另一条同步完成。
-        if (!ReconciliationState.isPending(refund.getReconciliationState())) {
+    @Transactional(rollbackFor = Exception.class)
+    public void scheduleConflictRetry(Long orderId, Long attemptId) {
+        Order order = orderMapper.selectOrderForUpdate(orderId);
+        OrderStripeRefund refund = orderStripeRefundMapper.selectByOrderIdForUpdate(orderId);
+        OrderStripeRefundAttempt attempt = refundAttemptMapper.selectAttemptByIdForUpdate(attemptId);
+        if (order == null || refund == null || attempt == null
+                || !Objects.equals(orderId, attempt.getOrderId())
+                || !ReconciliationState.isPending(attempt.getReconciliationState())) {
             return;
         }
 
-        // 以恢复查询使用的数据库时钟为准，同一退避窗口内只安排一次。
         LocalDateTime now = orderStripePaymentMapper.selectDatabaseTime();
-        if (refund.getNextRetryAt() != null && refund.getNextRetryAt().isAfter(now)) {
+        if (attempt.getNextRetryAt() != null && attempt.getNextRetryAt().isAfter(now)) {
             return;
         }
 
-        int retryCount = refund.getRetryCount() == null ? 0 : refund.getRetryCount();
+        int retryCount = attempt.getRetryCount() == null ? 0 : attempt.getRetryCount();
         if (retryCount < PaymentPolicy.MAX_RECOVERY_ATTEMPTS) {
             retryCount++;
         }
 
-        boolean needsReview = retryCount >= PaymentPolicy.MAX_RECOVERY_ATTEMPTS
-                || (isTerminal(refund.getStripeStatus()) && StringUtils.isBlank(refund.getRefundId()));
+        boolean needsReview = retryCount >= PaymentPolicy.MAX_RECOVERY_ATTEMPTS;
+        ReconciliationState nextState = needsReview
+                ? ReconciliationState.REVIEW
+                : ReconciliationState.PENDING;
+        LocalDateTime nextRetryAt = needsReview
+                ? null
+                : now.plusSeconds(PaymentPolicy.retryDelaySeconds(retryCount));
 
-        ReconciliationState nextState;
-        LocalDateTime nextRetryAt;
-
-        if (needsReview) {
-            nextState = ReconciliationState.REVIEW;
-            nextRetryAt = null;
-        } else {
-            nextState = ReconciliationState.PENDING;
-            nextRetryAt = now.plusSeconds(
-                    PaymentPolicy.retryDelaySeconds(retryCount));
+        if (refundAttemptMapper.updateAttemptRetrySchedule(
+                attemptId,
+                ReconciliationState.PENDING.code(),
+                nextState.code(),
+                retryCount,
+                nextRetryAt) != 1) {
+            throw new IllegalStateException("退款 Attempt 对账重试调度失败");
         }
 
-        if (orderStripeRefundMapper.updateRetrySchedule(orderId, nextState.code(), retryCount, nextRetryAt) != 1) {
-            throw new IllegalStateException("退款对账重试调度失败");
+        OrderStripeRefundAttempt latest = refundAttemptMapper.selectLatestAttemptByOrderIdForUpdate(orderId);
+        boolean currentAttempt = latest != null && Objects.equals(latest.getId(), attemptId);
+        if (needsReview && currentAttempt && RefundStatus.PENDING.matches(refund.getStatus())) {
+            markRefundForReview(refund);
         }
         if (needsReview) {
-            log.warn("Stripe 退款对账转人工复核: orderId={}, retryCount={}", orderId, retryCount);
+            log.warn("Stripe 退款 Attempt 对账转人工复核: orderId={}, attemptId={}, retryCount={}",
+                    orderId, attemptId, retryCount);
         }
     }
 }

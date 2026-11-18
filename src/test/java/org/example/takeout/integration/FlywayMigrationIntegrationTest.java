@@ -83,6 +83,75 @@ class FlywayMigrationIntegrationTest {
     }
 
     @Test
+    void stripePaymentReconciliationMigrationPreservesLegacyCompleteAndAllowsReconciled() throws Exception {
+        try (TestDatabase database = TestDatabase.create()) {
+            database.loadLocalSchema();
+            Flyway beforeReconciliationMigration = database.baselinedFlyway("20261117");
+            beforeReconciliationMigration.migrate();
+            assertThat(beforeReconciliationMigration.info().current().getVersion().getVersion())
+                    .isEqualTo("20261117");
+
+            insertMerchant(database, 10, 7);
+            insertUser(database, 1);
+            database.execute("INSERT INTO orders (id, order_no, user_id, merchant_id, merchant_name, total_amount, "
+                    + "status, receiver_name, receiver_phone, receiver_address, request_id, request_hash) VALUES "
+                    + "(60, 'stripe-reconciliation-legacy', 1, 10, 'merchant', 12.50, 2, "
+                    + "'receiver', '13800000001', 'address', 'stripe-reconciliation-legacy', REPEAT('a', 64)), "
+                    + "(61, 'stripe-reconciliation-current', 1, 10, 'merchant', 12.50, 2, "
+                    + "'receiver', '13800000001', 'address', 'stripe-reconciliation-current', REPEAT('b', 64))");
+            database.execute("INSERT INTO order_stripe_payments "
+                    + "(order_id, payment_intent_id, amount_minor, currency, idempotency_key, reconciliation_state) "
+                    + "VALUES (60, 'pi_reconciliation_legacy', 1250, 'cny', 'reconciliation-legacy-key', 'COMPLETE'), "
+                    + "(61, 'pi_reconciliation_current', 1250, 'cny', 'reconciliation-current-key', 'PENDING')");
+
+            assertThatThrownBy(() -> database.execute("UPDATE order_stripe_payments "
+                    + "SET reconciliation_state = 'RECONCILED' WHERE order_id = 61"))
+                    .isInstanceOf(SQLException.class);
+
+            Flyway reconciliationFlyway = database.flyway("20261118", false, BASELINE_VERSION);
+            assertThat(reconciliationFlyway.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(reconciliationFlyway.info().current().getVersion().getVersion()).isEqualTo("20261118");
+            assertThat(database.rows("SELECT order_id, reconciliation_state FROM order_stripe_payments "
+                    + "ORDER BY order_id"))
+                    .containsExactly(row("60", "COMPLETE"), row("61", "PENDING"));
+
+            database.execute("UPDATE order_stripe_payments SET reconciliation_state = 'RECONCILED' "
+                    + "WHERE order_id = 61");
+            assertThat(database.rows("SELECT order_id, reconciliation_state FROM order_stripe_payments "
+                    + "ORDER BY order_id"))
+                    .containsExactly(row("60", "COMPLETE"), row("61", "RECONCILED"));
+            assertThatThrownBy(() -> database.execute("UPDATE order_stripe_payments "
+                    + "SET reconciliation_state = 'UNKNOWN' WHERE order_id = 61"))
+                    .isInstanceOf(SQLException.class);
+            assertThatThrownBy(() -> database.execute("UPDATE order_stripe_payments "
+                    + "SET retry_count = -1 WHERE order_id = 61"))
+                    .isInstanceOf(SQLException.class);
+
+            List<List<String>> reconciliationChecks = database.rows("""
+                    SELECT tc.constraint_name, tc.enforced, cc.check_clause
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.check_constraints cc
+                      ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name
+                    WHERE tc.table_schema = DATABASE() AND tc.table_name = 'order_stripe_payments'
+                      AND tc.constraint_type = 'CHECK'
+                      AND tc.constraint_name IN (
+                          'chk_stripe_reconciliation_state', 'chk_stripe_payment_reconciliation_state',
+                          'chk_stripe_retry_count'
+                      )
+                    ORDER BY tc.constraint_name
+                    """);
+            assertThat(reconciliationChecks.stream().map(check -> row(check.get(0), check.get(1),
+                            check.get(2).replace("\\'", "'")
+                                    .replaceAll("(?i)_[a-z0-9]+(?=')|[\\s`()]+", ""))).toList())
+                    .containsExactly(
+                            row("chk_stripe_payment_reconciliation_state", "YES",
+                                    "reconciliation_statein'PENDING','COMPLETE','REVIEW','RECONCILED'"),
+                            row("chk_stripe_retry_count", "YES", "retry_count>=0"));
+            assertThat(reconciliationFlyway.migrate().migrationsExecuted).isZero();
+        }
+    }
+
+    @Test
     void stripeRecoveryMigrationStopsBeforeChangingOrphanPayingOrders() throws Exception {
         try (TestDatabase database = TestDatabase.create()) {
             database.loadLocalSchema();
@@ -579,6 +648,11 @@ class FlywayMigrationIntegrationTest {
             database.executeDeploymentScript(Path.of("deploy", "demo-data.sql"));
             assertDemoRows(database);
             assertThat(flyway.migrate().migrationsExecuted).isZero();
+
+            Flyway currentFlyway = database.flyway("20261118", true, "1");
+            assertThat(currentFlyway.migrate().migrationsExecuted).isEqualTo(3);
+            assertThat(currentFlyway.info().current().getVersion().getVersion()).isEqualTo("20261118");
+            assertThat(currentFlyway.migrate().migrationsExecuted).isZero();
         }
     }
 

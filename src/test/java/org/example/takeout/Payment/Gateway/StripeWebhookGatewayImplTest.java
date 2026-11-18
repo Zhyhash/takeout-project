@@ -122,7 +122,7 @@ class StripeWebhookGatewayImplTest {
                 {"id":"evt_refund_123","object":"event","api_version":"%s","created":1700000000,
                  "type":"refund.created","livemode":false,
                  "data":{"object":{"id":"re_test_123","object":"refund","amount":500,"currency":"cny",
-                 "payment_intent":"pi_test_123","status":"succeeded"}}}
+                 "payment_intent":"pi_test_123","metadata":{"refund_attempt_key":"refund_attempt_test"},"status":"succeeded"}}}
                 """.formatted(Stripe.API_VERSION);
         String signature = signPayload(rawBody, WEBHOOK_SECRET);
 
@@ -136,7 +136,23 @@ class StripeWebhookGatewayImplTest {
             assertThat(refund.amountMinor()).isEqualTo(500L);
             assertThat(refund.currency()).isEqualTo("cny");
             assertThat(refund.status()).isEqualTo("succeeded");
+            assertThat(refund.attemptKey()).isEqualTo("refund_attempt_test");
         });
+    }
+
+    @Test
+    void legacyRefundOnlyUsesTheIdempotencyKeyOfTheCreationRequest() throws Exception {
+        String rawBody = """
+                {"id":"evt_legacy","object":"event","api_version":"%s","livemode":false,"type":"refund.created",
+                 "request":{"id":"req_legacy","idempotency_key":"order_refund_42"},
+                 "data":{"object":{"id":"re_legacy","object":"refund","amount":500,"currency":"cny",
+                 "payment_intent":"pi_42","status":"pending"}}}
+                """.formatted(Stripe.API_VERSION);
+        assertThat(gateway.verifySignatureAndParseEvent(rawBody, signPayload(rawBody, WEBHOOK_SECRET))
+                .refund().attemptKey()).isEqualTo("order_refund_42");
+        String update = rawBody.replace("refund.created", "refund.updated");
+        assertThat(gateway.verifySignatureAndParseEvent(update, signPayload(update, WEBHOOK_SECRET))
+                .refund().attemptKey()).isNull();
     }
 
     @Test
