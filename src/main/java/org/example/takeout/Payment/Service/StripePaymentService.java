@@ -166,6 +166,16 @@ public class StripePaymentService {
         try {
             paymentTransactions.recordWebhookPaymentEvent(event);
         } catch (RuntimeException failure) {
+            if (failure instanceof StripePaymentTransactionService.DuplicateWebhookReceiptException) {
+                // 事务代理已回滚写入，复核以新事务的已提交数据为准。
+                try {
+                    if (paymentTransactions.confirmCommittedWebhookPaymentEvent(event)) {
+                        return;
+                    }
+                } catch (RuntimeException verificationFailure) {
+                    failure.addSuppressed(verificationFailure);
+                }
+            }
             try {
                 paymentTransactions.recordWebhookFailure(event.payment());
             } catch (RuntimeException persistenceFailure) {

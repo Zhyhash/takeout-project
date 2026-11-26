@@ -14,15 +14,17 @@ flowchart TD
     B --> C[锁购物车总表]
     C --> D{当前商家绑定}
     D -->|未绑定| E[绑定本次商家]
-    D -->|同一商家| F[锁商品条目]
+    D -->|同一商家| F[写入条目<br/>INSERT ON DUPLICATE KEY UPDATE]
     E --> F
     D -->|其他商家| R[拒绝并回滚]
-    F --> G[新增或数量加一]
+    F --> G[回查条目真实数据]
     G --> H[构建返回数据]
     H --> I[提交并释放锁]
 ```
 
 `CartService.add` 的方法事务覆盖全部节点，包括锁前的商品、商家、库存预检；任一步骤抛出的异常都会回滚，不再继续后续节点。图中只单独画出商家冲突这一核心业务分支，其他失败见下表。
+
+条目本身不预锁：加购直接用 `INSERT ... ON DUPLICATE KEY UPDATE` 写入，由唯一索引 `uk_user_product` 保证原子性，写入后再回查该行拿到真实 `id`、数量和版本，再构造返回数据。先做 `SELECT ... FOR UPDATE` 预判存在性会带来两个问题：记录不存在时会在唯一索引上加间隙锁，并发插入容易升级成死锁；命中已有行时读到的数量也是加锁瞬间的旧值，返回值只能靠内存 `+1` 推算。
 
 预检直接查询数据库，要求商品在售、商家营业、库存大于零，不读商品详情缓存。新条目保存名称、图片、价格快照；已有条目只增加数量和版本，不刷新快照。加购不预占库存，也不校验累计数量是否超库存。
 
@@ -127,7 +129,7 @@ flowchart TD
 | HTTP 入口 | [CartController](../../src/main/java/org/example/takeout/Cart/Controller/CartController.java)：`add/list/updateQuantity/delete/deleteAll`，对应 `/cart/items` 的 POST/GET/PATCH/DELETE 与 `DELETE /cart/items/all` |
 | 加购、修改与展示 | [CartService](../../src/main/java/org/example/takeout/Cart/Service/CartService.java)：`add/update/delete/clear/list/getCartVO`；四个写入口均为 `rollbackFor=Exception` 方法事务，列表无事务注解 |
 | 绑定与行锁 | [CartHeaderManager](../../src/main/java/org/example/takeout/CartHeader/Manager/CartHeaderManager.java)：`lock/bindMerchant/unbindMerchant`；绑定、解绑为 `MANDATORY`。对应 [CartHeaderMapper](../../src/main/java/org/example/takeout/CartHeader/Mapper/CartHeaderMapper.java)：`lockCartHeader/bindMerchant/unbindMerchant` |
-| 数量 SQL 与版本 | [CartMapper](../../src/main/java/org/example/takeout/Cart/Mapper/CartMapper.java)：`selectByUserIdAndProductIdForUpdate/addOrIncrease/consumeQuantity/deleteIfEmpty/existsByUserId`；[CartItem](../../src/main/java/org/example/takeout/Cart/Entity/CartItem.java) 的 `version`；[MybatisPlusConfig](../../src/main/java/org/example/takeout/Config/MybatisPlusConfig.java) 的 `mybatisPlusInterceptor` |
+| 数量 SQL 与版本 | [CartMapper](../../src/main/java/org/example/takeout/Cart/Mapper/CartMapper.java)：`addOrIncrease/selectByUserIdAndProductId/consumeQuantity/deleteIfEmpty/existsByUserId`；加购走 `INSERT ... ON DUPLICATE KEY UPDATE` 先写后回查，不做 `SELECT ... FOR UPDATE` 预判（避免 `uk_user_product` 间隙锁与并发插入死锁）；[CartItem](../../src/main/java/org/example/takeout/Cart/Entity/CartItem.java) 的 `version`；[MybatisPlusConfig](../../src/main/java/org/example/takeout/Config/MybatisPlusConfig.java) 的 `mybatisPlusInterceptor` |
 | 查询与结算准备 | [CartCheckoutService](../../src/main/java/org/example/takeout/Cart/Service/CartCheckoutService.java)：`prepareCheckout/isAvailable`；[ProductQueryService](../../src/main/java/org/example/takeout/Product/Service/ProductQueryService.java)：`findOnSaleProduct/selectProductsByIds`；[MerchantQueryService](../../src/main/java/org/example/takeout/Merchant/Service/MerchantQueryService.java)：`checkMerchantOpen/selectMerchantById` |
 | 下单校验与共同事务 | [OrderService](../../src/main/java/org/example/takeout/Order/Service/OrderService.java)：`prepareOrderDataContext/getCartItems/calculateTotalAmount`；[OrderTransactionExecutor](../../src/main/java/org/example/takeout/Order/Service/OrderTransactionExecutor.java)：`executeOrderCreation`；[CartCommandService](../../src/main/java/org/example/takeout/Cart/Service/CartCommandService.java)：`consumeCheckedOutItems` |
 | 库存与明细 | [OrderItemService](../../src/main/java/org/example/takeout/Order/Service/OrderItemService.java)：`decreaseStocksOrderedByProductId/buildOrderItems/saveBatch`；[ProductCommandService](../../src/main/java/org/example/takeout/Product/Service/ProductCommandService.java)：`decreaseStock`；[ProductMapper](../../src/main/java/org/example/takeout/Product/Mapper/ProductMapper.java)：`decreaseStock` |

@@ -29,6 +29,12 @@ public enum OrderStatusEnum {
         this.msg = msg;
     }
 
+    public static boolean hasConfirmedPayment(Integer status) {
+        return PAID.code.equals(status) || PREPARING.code.equals(status) || READY.code.equals(status)
+                || DELIVERING.code.equals(status) || DELIVERED.code.equals(status) || FINISHED.code.equals(status)
+                || REFUNDING.code.equals(status) || REFUNDED.code.equals(status);
+    }
+
     public static String descriptionOf(Integer code) {
         if (code == null) {
             log.warn("订单状态码为空，返回未知状态");

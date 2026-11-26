@@ -231,6 +231,80 @@ class StripePaymentTransactionServiceTest {
     }
 
     @Test
+    void reusedEventIdWithDifferentTypeIsRejectedWithoutChangingPayment() {
+        StripeWebhookEvent success = successEvent("evt_reused_type");
+        transactions.recordWebhookPaymentEvent(success);
+        StripeWebhookEvent failure = new StripeWebhookEvent("evt_reused_type", "payment_intent.payment_failed",
+                false, snapshot("requires_payment_method", 0L), null);
+
+        assertThrows(BusinessException.class, () -> transactions.recordWebhookPaymentEvent(failure));
+
+        assertEquals(1, paymentEventMapper.countEventsByEventId("evt_reused_type"));
+        assertEquals("payment_intent.succeeded",
+                paymentEventMapper.selectPaymentEventById("evt_reused_type").eventType());
+        assertEquals(OrderStatusEnum.PAID.getCode(), status());
+        assertEquals("succeeded", payment().getStripeStatus());
+        assertEquals(ReconciliationState.RECONCILED.code(), payment().getReconciliationState());
+        verify(merchantSseService, times(1)).notifyNewOrder(MERCHANT_ID);
+        verifyNoMoreInteractions(merchantSseService);
+    }
+
+    @Test
+    void reusedEventIdWithDifferentPaymentIntentIsRejectedWithoutChangingPayment() {
+        StripeWebhookEvent success = successEvent("evt_reused_intent");
+        transactions.recordWebhookPaymentEvent(success);
+        StripePaymentSnapshot otherIntent = new StripePaymentSnapshot("pi_test_other", 12_345L, 12_345L,
+                "cny", "succeeded", false, String.valueOf(ORDER_ID), null);
+        StripeWebhookEvent conflicting = new StripeWebhookEvent("evt_reused_intent", "payment_intent.succeeded",
+                false, otherIntent, null);
+
+        assertThrows(BusinessException.class, () -> transactions.recordWebhookPaymentEvent(conflicting));
+
+        assertEquals(1, paymentEventMapper.countEventsByEventId("evt_reused_intent"));
+        assertEquals(INTENT_ID, paymentEventMapper.selectPaymentEventById("evt_reused_intent").paymentIntentId());
+        assertEquals(OrderStatusEnum.PAID.getCode(), status());
+        assertEquals("succeeded", payment().getStripeStatus());
+        assertEquals(ReconciliationState.RECONCILED.code(), payment().getReconciliationState());
+        verify(merchantSseService, times(1)).notifyNewOrder(MERCHANT_ID);
+        verifyNoMoreInteractions(merchantSseService);
+    }
+
+    @Test
+    void committedReceiptWithInconsistentPaymentStatusIsRejectedWithoutMutation() {
+        StripeWebhookEvent event = successEvent("evt_inconsistent_payment");
+        transactions.recordWebhookPaymentEvent(event);
+        jdbc.update("UPDATE order_stripe_payments "
+                + "SET stripe_status = 'requires_payment_method', reconciliation_state = 'PENDING' WHERE order_id = ?",
+                ORDER_ID);
+
+        assertThrows(BusinessException.class, () -> transactions.confirmCommittedWebhookPaymentEvent(event));
+
+        assertEquals(1, paymentEventMapper.countEventsByEventId("evt_inconsistent_payment"));
+        assertEquals(OrderStatusEnum.PAID.getCode(), status());
+        assertEquals("requires_payment_method", payment().getStripeStatus());
+        assertEquals(ReconciliationState.PENDING.code(), payment().getReconciliationState());
+        verify(merchantSseService, times(1)).notifyNewOrder(MERCHANT_ID);
+        verifyNoMoreInteractions(merchantSseService);
+    }
+
+    @Test
+    void committedReceiptWithInconsistentOrderStatusIsRejectedWithoutMutation() {
+        StripeWebhookEvent event = successEvent("evt_inconsistent_order");
+        transactions.recordWebhookPaymentEvent(event);
+        jdbc.update("UPDATE orders SET status = ?, pay_time = NULL WHERE id = ?",
+                OrderStatusEnum.CANCELLED.getCode(), ORDER_ID);
+
+        assertThrows(BusinessException.class, () -> transactions.confirmCommittedWebhookPaymentEvent(event));
+
+        assertEquals(1, paymentEventMapper.countEventsByEventId("evt_inconsistent_order"));
+        assertEquals(OrderStatusEnum.CANCELLED.getCode(), status());
+        assertEquals("succeeded", payment().getStripeStatus());
+        assertEquals(ReconciliationState.RECONCILED.code(), payment().getReconciliationState());
+        verify(merchantSseService, times(1)).notifyNewOrder(MERCHANT_ID);
+        verifyNoMoreInteractions(merchantSseService);
+    }
+
+    @Test
     void failedPaymentCanBeRetriedAndAnOlderFailureCannotUndoSuccess() {
         transactions.recordWebhookPaymentEvent(new StripeWebhookEvent(
                 "evt_failed", "payment_intent.payment_failed", false, snapshot("requires_payment_method", 0L), null));

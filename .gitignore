@@ -21,6 +21,10 @@ Thumbs.db
 
 /.workbuddy/
 
+/performance-lab/
+
+/reliability-lab/
+
 # Keep relocated local documents out of Git as well
 /docs/REDIS_LEARNING_LOG.md
 /docs/Java后端实习面试题库.md

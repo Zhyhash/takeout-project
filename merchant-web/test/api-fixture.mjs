@@ -1,8 +1,13 @@
 // Local browser-QA fixture only. This does not change the application API client or add a mock mode.
 // Start it only with TAKEOUT_UI_QA_FIXTURE=1; it listens on loopback port 18080.
+import {randomUUID} from 'node:crypto'
 import {createServer} from 'node:http'
+import {pathToFileURL} from 'node:url'
 
 const PORT = 18080
+const PAYMENT_WINDOW_MS = 30 * 60_000
+// The fixture uses the short-distance delivery example for its orders and rider tasks.
+const FIXTURE_DELIVERY_FEE = 5
 const tokenByRole = {
   customer: 'qa-customer-token',
   merchant: 'qa-merchant-token',
@@ -65,19 +70,51 @@ let orders = [
   {
     id: 701, orderNo: 'QA-701', merchantId: 10, merchantAccountId: 22, merchantName: '青禾小馆', customerId: 11,
     receiverName: '测试顾客', receiverPhone: '13800000000', receiverAddress: '杭州市拱墅区示范小区 1 幢',
-    originalAmount: 28.5, discountAmount: 0, totalAmount: 28.5, status: 2,
+    originalAmount: 28.5, discountAmount: 0, totalAmount: 28.5 + FIXTURE_DELIVERY_FEE, status: 2,
     statusDesc: '已支付', createTime: now(), payTime: now(), remark: '', merchantSeen: false,
     items: [{ productId: 1001, productName: '招牌鸡腿饭', productPicture: '', productPrice: 28.5, quantity: 1, subtotal: 28.5 }],
   },
   {
     id: 702, orderNo: 'QA-702', merchantId: 10, merchantAccountId: 22, merchantName: '青禾小馆', customerId: 11,
     receiverName: '测试顾客', receiverPhone: '13800000000', receiverAddress: '杭州市拱墅区示范小区 2 幢',
-    originalAmount: 22, discountAmount: 0, totalAmount: 22, status: 7,
+    originalAmount: 22, discountAmount: 0, totalAmount: 22 + FIXTURE_DELIVERY_FEE, status: 7,
     statusDesc: '骑手正在配送', createTime: now(), payTime: now(), remark: '', merchantSeen: true,
     items: [{ productId: 1002, productName: '清爽时蔬饭', productPicture: '', productPrice: 22, quantity: 1, subtotal: 22 }],
   },
 ]
 let tasks = [makeTask(77, orders[1], { status: 1, riderId: 33 })]
+
+const orderPayments = new Map([[orders[0].id, createFixturePayment(orders[0], 'succeeded')]])
+for (const [id, paymentStatus] of [[703, null], [704, 'processing'], [705, 'requires_action']]) {
+  const order = { ...orders[0], id, orderNo: `QA-${id}`, payTime: null }
+  setOrderStatus(order, 1)
+  orders.push(order)
+  orderPayments.set(id, createFixturePayment(order, paymentStatus))
+}
+
+function createFixturePayment(order, paymentStatus) {
+  return {
+    paymentIntentId: paymentStatus === null ? null : `pi_qa_fixture_${randomUUID()}`,
+    amountMinor: Math.round(order.totalAmount * 100),
+    paymentStatus,
+    nextRecoveryAt: 0,
+    retryDelayMs: 15_000,
+  }
+}
+
+function orderPaymentView(order, payment, includeClientSecret = false) {
+  const paymentIntentId = payment?.paymentIntentId ?? null
+  return {
+    orderId: order.id,
+    paymentIntentId,
+    clientSecret: includeClientSecret ? `${paymentIntentId}_secret_qa_fixture` : null,
+    publishableKey: 'pk_test_qa_fixture',
+    amountMinor: payment?.amountMinor ?? null,
+    currency: 'cny',
+    paymentStatus: payment?.paymentStatus ?? null,
+    orderStatus: order.status,
+  }
+}
 
 function makeTask(taskId, order, { status = 0, riderId = null } = {}) {
   return {
@@ -89,7 +126,7 @@ function makeTask(taskId, order, { status = 0, riderId = null } = {}) {
     receiverAddress: order.receiverAddress,
     receiverPhone: order.receiverPhone,
     receiverName: order.receiverName,
-    deliveryReward: 5,
+    deliveryReward: FIXTURE_DELIVERY_FEE,
     status,
     statusDesc: status === 0 ? '等待骑手取餐' : status === 1 ? '骑手正在配送' : '骑手已经完成配送',
     acceptedTime: status === 0 ? null : now(),
@@ -377,7 +414,7 @@ function setOrderStatus(order, status) {
   order.statusDesc = text[status] || '未知状态'
 }
 
-const server = createServer(async (request, response) => {
+export async function handleRequest(request, response) {
   const url = new URL(request.url || '/', 'http://127.0.0.1')
   const path = url.pathname.replace(/\/$/, '') || '/'
   const method = request.method || 'GET'
@@ -617,13 +654,14 @@ const server = createServer(async (request, response) => {
         const product = getProduct(line.productId)
         return { productId: product.id, productName: product.productName, productPicture: product.imageUrl, productPrice: product.price, quantity: line.quantity, subtotal: Number((product.price * line.quantity).toFixed(2)) }
       })
-      const total = Number(items.reduce((sum, item) => sum + item.subtotal, 0).toFixed(2))
+      const originalAmount = Number(items.reduce((sum, item) => sum + item.subtotal, 0).toFixed(2))
+      const totalAmount = Number((originalAmount + FIXTURE_DELIVERY_FEE).toFixed(2))
       const order = {
         id: nextOrderId++, orderNo: `QA-${nextOrderId - 1}`, merchantId: shop.id,
         merchantAccountId: firstProduct.merchantId, merchantName: shop.merchantName, customerId,
         receiverName: body.receiverName, receiverPhone: body.receiverPhone, receiverAddress: body.receiverAddress,
         longitude: body.longitude, latitude: body.latitude,
-        originalAmount: total, discountAmount: 0, totalAmount: total, status: 0,
+        originalAmount, discountAmount: 0, totalAmount, status: 0,
         statusDesc: '待支付', createTime: now(), payTime: null, remark: body.remark || '',
         merchantSeen: false, requestId: body.requestId, items,
       }
@@ -642,8 +680,46 @@ const server = createServer(async (request, response) => {
       return send(response, 200, page(own.map(customerOrderListItem), url.searchParams))
     }
     const id = Number(path.split('/')[2])
+    const paymentRoute = path.match(/^\/order\/[1-9]\d*\/payment(\/sync)?$/)
     const order = orders.find((item) => item.id === id && item.customerId === customerId)
-    if (!order) return fail(response, '订单不存在')
+    if (!order) return fail(response, paymentRoute ? '订单不存在或无权操作' : '订单不存在')
+    if (paymentRoute) {
+      const syncing = Boolean(paymentRoute[1])
+      let payment = orderPayments.get(id)
+      if (method === 'GET' && !syncing) return send(response, 200, orderPaymentView(order, payment))
+      if (method !== 'POST') return fail(response, '不支持的请求', 404)
+
+      const requestedAt = Date.now()
+      // now() serializes UTC to the backend's zone-less, second-precision wire format.
+      const withinWindow = Date.parse(`${order.createTime}Z`) > requestedAt - PAYMENT_WINDOW_MS
+      if (syncing) {
+        if (!payment) return fail(response, '订单尚未创建 Stripe 支付请求')
+      } else {
+        if (order.status === 0 && withinWindow) {
+          setOrderStatus(order, 1)
+        } else if (order.status !== 1) {
+          return fail(response, '订单不存在、已过期或当前状态不可支付')
+        } else if (!payment) {
+          return fail(response, '支付中订单缺少支付记录')
+        }
+      }
+
+      // An expired PAYING order keeps its last known result until a remote outcome is confirmed.
+      if (!withinWindow || order.status !== 1 || (payment && requestedAt < payment.nextRecoveryAt)) {
+        return send(response, 200, orderPaymentView(order, payment))
+      }
+      if (!payment?.paymentIntentId) {
+        payment = createFixturePayment(order, 'requires_payment_method')
+        orderPayments.set(id, payment)
+      }
+      if (payment.paymentStatus === 'succeeded' || payment.paymentStatus === 'canceled') {
+        return send(response, 200, orderPaymentView(order, payment))
+      }
+      // Both POST routes claim the same recovery attempt. Only create/reuse can return its secret.
+      payment.nextRecoveryAt = requestedAt + payment.retryDelayMs
+      payment.retryDelayMs = Math.min(payment.retryDelayMs * 2, 1_800_000)
+      return send(response, 200, orderPaymentView(order, payment, !syncing))
+    }
     if (method === 'GET' && path === `/order/${id}`) return send(response, 200, customerOrderDetail(order))
     if (method === 'PATCH' && path === `/order/${id}/pay`) {
       if (order.status !== 0) return fail(response, '当前订单状态不能支付')
@@ -915,9 +991,11 @@ const server = createServer(async (request, response) => {
   }
 
   return fail(response, '本地 QA fixture 未实现此请求', 404)
-})
+}
 
-if (process.env.TAKEOUT_UI_QA_FIXTURE === '1') {
+if (process.env.TAKEOUT_UI_QA_FIXTURE === '1'
+    && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const server = createServer(handleRequest)
   server.on('error', (error) => {
     console.error(`UI QA fixture could not listen on 127.0.0.1:${PORT}: ${error.message}`)
     process.exitCode = 1

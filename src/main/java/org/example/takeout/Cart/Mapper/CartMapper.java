@@ -1,8 +1,6 @@
 package org.example.takeout.Cart.Mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Positive;
 import org.apache.ibatis.annotations.*;
 import org.example.takeout.Cart.Entity.CartItem;
 
@@ -51,17 +49,20 @@ public interface CartMapper extends BaseMapper<CartItem> {
     """)
     void deleteIfEmpty(Long userId, Long id);
 
-    @Select(
-            """
-    
+    /**
+     * 按用户 + 商品回查购物车条目。
+     * 故意不加 FOR UPDATE：add() 已经通过 INSERT ... ON DUPLICATE KEY UPDATE 拿到该行的记录锁，
+     * 这里的普通回查读的是本事务自己写入后的结果，不需要再加锁；
+     * 也避免在记录不存在时对 uk_user_product 加间隙锁，引发并发插入死锁。
+     */
+    @Select("""
         SELECT *
         FROM cart
         WHERE user_id = #{userId}
           AND product_id = #{productId}
-        FOR UPDATE;
-    """
-    )
-    CartItem selectByUserIdAndProductIdForUpdate(Long userId, @NotNull(message = "商品id不能为空") @Positive(message = "商品id必须为正数") Long productId);
+    """)
+    CartItem selectByUserIdAndProductId(@Param("userId") Long userId,
+                                        @Param("productId") Long productId);
 
     @Select("""
     SELECT EXISTS (

@@ -17,8 +17,10 @@ import org.example.takeout.Payment.Gateway.StripeWebhookEvent;
 import org.example.takeout.Payment.Gateway.StripePaymentSnapshot;
 import org.example.takeout.Payment.Mapper.OrderStripePaymentMapper;
 import org.example.takeout.Payment.Mapper.StripePaymentEventMapper;
+import org.example.takeout.Payment.Mapper.StripePaymentEventMapper.PaymentEventReceipt;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -76,12 +78,12 @@ public class StripePaymentTransactionService {
     /** First binding and all subsequent results use exactly the same local application rules. */
     @Transactional(rollbackFor = Exception.class)
     public OrderStripePayment bindPaymentIntentToOrder(Long orderId, StripePaymentSnapshot snapshot) {
-        return applySnapshot(orderId, snapshot, null, null);
+        return applySnapshot(orderId, snapshot, null);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public OrderStripePayment syncPaymentStatusFromSnapshot(StripePaymentSnapshot snapshot) {
-        return applySnapshot(requireBoundPayment(snapshot).getOrderId(), snapshot, null, null);
+        return applySnapshot(requireBoundPayment(snapshot).getOrderId(), snapshot, null);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -89,6 +91,9 @@ public class StripePaymentTransactionService {
         StripePaymentSnapshot snapshot = event.payment();
         OrderStripePayment payment = orderPaymentMapper.selectPaymentByPaymentIntentId(snapshot.id());
         if (payment == null) {
+            if (paymentEventMapper.selectPaymentEventById(event.id()) != null) {
+                throw paymentValidationError("Stripe 支付事件回执与本地支付不一致");
+            }
             Long referencedOrderId = null;
             try { referencedOrderId = Long.valueOf(snapshot.orderReference()); }
             catch (NumberFormatException ignored) { /* Unrelated account activity is not a local order. */ }
@@ -97,7 +102,22 @@ public class StripePaymentTransactionService {
             }
             return null; // Do not insert a receipt or associate arbitrary signed Stripe objects.
         }
-        return applySnapshot(payment.getOrderId(), snapshot, event.id(), event.type());
+        return applySnapshot(payment.getOrderId(), snapshot, event);
+    }
+
+    /** 回执插入撞键后，从新事务读取已提交的回执和业务状态。 */
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    public boolean confirmCommittedWebhookPaymentEvent(StripeWebhookEvent event) {
+        PaymentEventReceipt receipt = paymentEventMapper.selectPaymentEventById(event.id());
+        if (receipt == null) {
+            return false;
+        }
+        StripePaymentSnapshot snapshot = event.payment();
+        OrderStripePayment payment = orderPaymentMapper.selectPaymentByPaymentIntentId(snapshot.id());
+        Order order = payment == null ? null : orderMapper.selectById(payment.getOrderId());
+        validatePaymentSnapshotMatchesOrder(order, payment, snapshot);
+        validateRecordedPaymentEvent(event, receipt, order, payment, validateWebhookEventStatus(event));
+        return true;
     }
 
     private OrderStripePayment requireBoundPayment(StripePaymentSnapshot snapshot) {
@@ -131,8 +151,7 @@ public class StripePaymentTransactionService {
     private OrderStripePayment applySnapshot(
             Long orderId,
             StripePaymentSnapshot snapshot,
-            String eventId,
-            String eventType) {
+            StripeWebhookEvent event) {
 
         Order order = orderMapper.selectOrderForUpdate(orderId);
         OrderStripePayment payment =
@@ -140,9 +159,13 @@ public class StripePaymentTransactionService {
 
         validatePaymentSnapshotMatchesOrder(order, payment, snapshot);
 
-        if (eventId != null
-                && paymentEventMapper.countEventsByEventId(eventId) != 0) {
-            return payment;
+        if (event != null) {
+            StripeStatus eventStatus = validateWebhookEventStatus(event);
+            PaymentEventReceipt receipt = paymentEventMapper.selectPaymentEventById(event.id());
+            if (receipt != null) {
+                validateRecordedPaymentEvent(event, receipt, order, payment, eventStatus);
+                return payment;
+            }
         }
 
         String previous = payment.getStripeStatus();
@@ -152,7 +175,7 @@ public class StripePaymentTransactionService {
         // 两个互斥终态同时出现时，无论哪个方向，重投都不会改变结论，
         // 因此不抛异常（否则 Stripe 会连续重投到放弃），而是保留先到的终态并转人工核实。
         if (isTerminalConflict(previous, status)) {
-            return flagTerminalConflict(orderId, snapshot, eventId, eventType, previous, status);
+            return flagTerminalConflict(orderId, event, previous, status);
         }
 
         // 终态不可回退，与快照到达顺序无关。
@@ -164,7 +187,9 @@ public class StripePaymentTransactionService {
 
         if (apply || Objects.equals(previous, status)) {
 
+            boolean orderAlreadyPaid = StripeStatus.SUCCEEDED.matches(previous) && hasConfirmedOrderPayment(order);
             if (incoming != null && incoming.isSucceeded()
+                    && !orderAlreadyPaid
                     && !orderService.confirmOrderPayment(orderId, order.getUserId())) {
                 throw paymentValidationError("Stripe 已成功但订单无法确认，保留待恢复状态");
             }
@@ -196,12 +221,72 @@ public class StripePaymentTransactionService {
 
         // 只有支付状态与订单状态均成功同步，才记录事件。
         // 任何异常都应使当前事务回滚。
-        if (eventId != null) {
-            paymentEventMapper.insertPaymentEvent(
-                    eventId, snapshot.id(), eventType);
-        }
+        insertWebhookReceipt(event);
 
         return orderPaymentMapper.selectPaymentByOrderId(orderId);
+    }
+
+    private static StripeStatus validateWebhookEventStatus(StripeWebhookEvent event) {
+        StripeStatus status = StripeStatus.parseOrNull(event.payment().status());
+        boolean matches = switch (event.type()) {
+            case "payment_intent.succeeded" -> status == StripeStatus.SUCCEEDED;
+            case "payment_intent.canceled" -> status == StripeStatus.CANCELED;
+            case "payment_intent.payment_failed" -> status != null && !status.isTerminal();
+            default -> false;
+        };
+        if (!matches) {
+            throw paymentValidationError("Stripe 支付事件类型与支付状态不一致");
+        }
+        return status;
+    }
+
+    private static void validateRecordedPaymentEvent(StripeWebhookEvent event, PaymentEventReceipt receipt,
+                                                     Order order, OrderStripePayment payment, StripeStatus eventStatus) {
+        if (!Objects.equals(receipt.eventId(), event.id())
+                || !Objects.equals(receipt.paymentIntentId(), event.payment().id())
+                || !Objects.equals(receipt.eventType(), event.type())
+                || !Objects.equals(payment.getPaymentIntentId(), receipt.paymentIntentId())) {
+            throw paymentValidationError("Stripe 支付事件 ID 已用于不同的支付对象或事件类型");
+        }
+
+        StripeStatus current = StripeStatus.parseOrNull(payment.getStripeStatus());
+        String reconciliation = payment.getReconciliationState();
+        boolean underReview = ReconciliationState.REVIEW.matches(reconciliation);
+        // 已转人工的终态冲突也会提交回执。待支付事件之后则可能推进到终态。
+        boolean resultMatches = false;
+        if (current != null && current.isTerminal()) {
+            boolean orderMatches = current.isSucceeded() ? hasConfirmedOrderPayment(order)
+                    : OrderStatusEnum.CANCELLED.getCode().equals(order.getStatus());
+            resultMatches = orderMatches && (underReview || ReconciliationState.RECONCILED.matches(reconciliation))
+                    && (!eventStatus.isTerminal() || current == eventStatus || underReview);
+        } else if (current != null && !eventStatus.isTerminal()) {
+            resultMatches = OrderStatusEnum.PAYING.getCode().equals(order.getStatus())
+                    && (underReview || ReconciliationState.isPending(reconciliation));
+        }
+        if (!resultMatches) {
+            throw paymentValidationError("Stripe 支付事件回执与本地处理结果不一致");
+        }
+    }
+
+    private static boolean hasConfirmedOrderPayment(Order order) {
+        return order.getPayTime() != null && OrderStatusEnum.hasConfirmedPayment(order.getStatus());
+    }
+
+    private void insertWebhookReceipt(StripeWebhookEvent event) {
+        if (event == null) {
+            return;
+        }
+        try {
+            paymentEventMapper.insertPaymentEvent(event.id(), event.payment().id(), event.type());
+        } catch (DuplicateKeyException failure) {
+            throw new DuplicateWebhookReceiptException(failure);
+        }
+    }
+
+    static final class DuplicateWebhookReceiptException extends DuplicateKeyException {
+        DuplicateWebhookReceiptException(DuplicateKeyException cause) {
+            super(cause.getMessage(), cause);
+        }
     }
 
     /**
@@ -218,13 +303,10 @@ public class StripePaymentTransactionService {
      * <p>事件回执照常记录，表示"已收到并已交人工处理"。这是有意为之——本地终态不会因为
      * Stripe 重投而改变，反复投递同一事件也无法解决这次冲突。</p>
      */
-    private OrderStripePayment flagTerminalConflict(Long orderId, StripePaymentSnapshot snapshot,
-                                                    String eventId, String eventType,
+    private OrderStripePayment flagTerminalConflict(Long orderId, StripeWebhookEvent event,
                                                     String previous, String incoming) {
         orderPaymentMapper.updateReconciliation(orderId, ReconciliationState.REVIEW.code(), null);
-        if (eventId != null) {
-            paymentEventMapper.insertPaymentEvent(eventId, snapshot.id(), eventType);
-        }
+        insertWebhookReceipt(event);
         log.error("Stripe 终态冲突，保留先到状态并转人工: orderId={}, previous={}, incoming={}",
                 orderId, previous, incoming);
         return orderPaymentMapper.selectPaymentByOrderId(orderId);

@@ -79,37 +79,36 @@ public class CartService {
             );
         }
 
-        CartItem cartItem =
-                cartMapper.selectByUserIdAndProductIdForUpdate(
-                        userId,
-                        addCartDTO.getProductId()
-                );
+        // 这里故意不再先做 SELECT ... FOR UPDATE 预判条目是否存在。
+        // 当 (user_id, product_id) 记录还不存在时，该语句会在唯一索引 uk_user_product 上加间隙锁，
+        // 两个并发请求各自持锁后再互相等待对方插入，就会死锁。
+        // 改为直接写入：唯一索引 + INSERT ... ON DUPLICATE KEY UPDATE 保证原子性，写完再回查。
+        CartItem cartItem = new CartItem();
+        cartItem.setUserId(userId);
+        cartItem.setProductId(onSaleProduct.getId());
+        cartItem.setProductName(onSaleProduct.getProductName());
+        cartItem.setProductImage(onSaleProduct.getImageUrl());
+        cartItem.setPrice(onSaleProduct.getPrice());
+        cartItem.setMerchantId(onSaleProduct.getMerchantId());
+        cartItem.setQuantity(1);
 
-
-        if (cartItem == null) {
-            // 1. 如果不存在，创建新对象并完整赋值
-            cartItem = new CartItem();
-            cartItem.setUserId(userId);
-            cartItem.setProductId(onSaleProduct.getId());
-            cartItem.setProductName(onSaleProduct.getProductName());
-            cartItem.setProductImage(onSaleProduct.getImageUrl());
-            cartItem.setPrice(onSaleProduct.getPrice());
-            cartItem.setMerchantId(onSaleProduct.getMerchantId());
-            cartItem.setQuantity(1);
-        }
-        int i = cartMapper.addOrIncrease(cartItem);
         // MySQL INSERT ... ON DUPLICATE KEY UPDATE:
         // 1: 新增成功
-        // 2: 更新成功
+        // 2: 更新成功（记录已存在，数量 +1）
         // 0: 未产生变化
-        if (i <= 0) {
-            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR,"购物车数量增加失败");
+        int affectedRows = cartMapper.addOrIncrease(cartItem);
+        if (affectedRows <= 0) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车数量增加失败");
         }
-        //返回值也要更新
-        if (i==2)
-            cartItem.setQuantity(cartItem.getQuantity() + 1);
 
-        return getCartVO(cartItem);
+        // 写入后回查真实数据：此时本事务已持有该行记录锁，读到的一定是本次写入后的结果，
+        // 条目 ID、数量、版本号都以数据库为准，不再依赖内存里 +1 推算。
+        CartItem savedItem = cartMapper.selectByUserIdAndProductId(userId, onSaleProduct.getId());
+        if (savedItem == null) {
+            throw new BusinessException(ResultCodeEnum.BUSINESS_ERROR, "购物车写入后回查失败");
+        }
+
+        return getCartVO(savedItem);
     }
 
     private static CartVO getCartVO(CartItem cartItem) {

@@ -1,5 +1,7 @@
 package org.example.takeout.CacheInvalidationTask.Service;
 
+import org.example.takeout.Product.Config.ProductImageCleanupService;
+
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
@@ -27,6 +29,7 @@ import static org.mockito.Mockito.*;
 
 @SpringBootTest
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
+@MockitoBean(types = ProductImageCleanupService.class)
 class CacheInvalidationTaskServiceIntegrationTest {
 
     private static final String CACHE_KEY = "product:detail:transaction-test";

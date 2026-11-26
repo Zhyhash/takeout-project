@@ -1,5 +1,7 @@
 package org.example.takeout.integration;
 
+import org.example.takeout.Product.Config.ProductImageCleanupService;
+
 import lombok.RequiredArgsConstructor;
 import org.example.takeout.CacheInvalidationTask.Config.CacheInvalidationTaskScheduler;
 import org.example.takeout.CacheInvalidationTask.Enum.CacheInvalidationTaskStatus;
@@ -39,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @SpringBootTest
 @ActiveProfiles("redis-test")
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
+@MockitoBean(types = ProductImageCleanupService.class)
 class ProductDetailCacheInvalidationIntegrationTest {
 
     private static final Long TEST_MERCHANT_ID = 9_021_001L;

@@ -98,8 +98,9 @@ public class OrderTransactionExecutor {
         orderItemService.saveBatch(orderItems);
         return order;
     }
-    private @NonNull String createOrderNo(){
-        return "ORD" + System.currentTimeMillis() +
-                UUID.randomUUID().toString().substring(0, 4);
+    private @NonNull String createOrderNo() {
+        return UUID.randomUUID()
+                .toString()
+                .replace("-", "");
     }
 }

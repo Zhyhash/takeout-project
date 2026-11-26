@@ -62,6 +62,18 @@ export function payOrder(orderId) {
   return http.patch(`/order/${encodeURIComponent(orderId)}/pay`)
 }
 
+export function createOrderPayment(orderId, config) {
+  return http.post(`/order/${encodeURIComponent(orderId)}/payment`, undefined, config)
+}
+
+export function getOrderPayment(orderId, config) {
+  return http.get(`/order/${encodeURIComponent(orderId)}/payment`, config)
+}
+
+export function syncOrderPayment(orderId, config) {
+  return http.post(`/order/${encodeURIComponent(orderId)}/payment/sync`, undefined, config)
+}
+
 export function confirmOrder(orderId) {
   return http.patch(`/order/${encodeURIComponent(orderId)}/confirm`)
 }
